@@ -9,7 +9,7 @@ export TOKENIZERS_PARALLELISM=false
 
 METHOD="emo"
 TRAIN_DATA="../data/test_debug.csv"
-STUDENT_MODEL="..\model_hub\MiniLMv2-L6-H384-distilled-from-BERT-Base\MiniLM-L6-H384-distilled-from-BERT-Base"
+STUDENT_MODEL="jim12345/MiniLMv2-L6-H384-distilled-from-BERT-Base"
 TEACHER_MODEL="Qwen/Qwen3-Embedding-0.6B"
 BATCH_SIZE=32
 EPOCHS=5
