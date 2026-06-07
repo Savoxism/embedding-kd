@@ -1,0 +1,38 @@
+# Deep Learning Frameworks
+torch>=2.0.0
+torchvision>=0.15.0
+
+# Optimizers
+pytorch-optimizer>=2.12.0
+
+# Transformers and NLP
+transformers>=4.30.0
+huggingface_hub>=0.16.0
+tokenizers>=0.13.0
+peft>=0.4.0
+sentencepiece>=0.1.99
+
+# Data Processing
+pandas>=1.5.0
+numpy>=1.24.0
+
+# Machine Learning & Metrics
+scikit-learn>=1.2.0
+scipy>=1.10.0
+
+# String Similarity & Distance Metrics
+Levenshtein>=0.21.0
+editdistance>=0.6.0
+fastdtw>=0.3.4
+
+# Utilities
+tqdm>=4.65.0
+kagglehub>=0.1.0
+datasets>=2.14.0
+
+# Development Tools
+jupyter>=1.0.0
+ipykernel>=6.25.0
+
+# Optional: for LLM2Vec variant
+# llm2vec>=0.1.0
