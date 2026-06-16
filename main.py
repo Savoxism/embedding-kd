@@ -1,6 +1,6 @@
 import argparse
 import sys
-from config import CDMConfig, DSKDConfig, EMOConfig, StellaConfig, TALASConfig, BaseConfig
+from config import CDMConfig, DSKDConfig, EMOConfig, StellaConfig, TALASConfig, HeatGeoConfig, BaseConfig
 from distiller import KnowledgeDistiller
 
 
@@ -13,7 +13,7 @@ def parse_args():
         '--method',
         type=str,
         default='cdm',
-        choices=['cdm', 'dskd', 'emo', 'stella', 'talas'],
+        choices=['cdm', 'dskd', 'emo', 'stella', 'talas', 'heatgeo'],
         help='Distillation method to use'
     )
     
@@ -120,6 +120,8 @@ def get_config(method: str, args):
         config = StellaConfig()
     elif method == 'talas':
         config = TALASConfig()
+    elif method == 'heatgeo':
+        config = HeatGeoConfig()
     else:
         config = BaseConfig()
     

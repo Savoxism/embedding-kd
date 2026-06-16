@@ -23,8 +23,14 @@ except ImportError:
     SAM_AVAILABLE = False
     print("Warning: pytorch_optimizer not installed. SAM optimizer unavailable for TALAS.")
 from src.data_utils import TextPairRaw, DualTokenizerCollate
-from src.data_utils.dataset_cache import TextPairWithTeacher, DualTokenizerCollateWithTeacher
+from src.data_utils.dataset_cache import (
+    HeatGeoCollate,
+    TextPairWithTeacher,
+    TextPairWithTeacherAndHeatGeo,
+    DualTokenizerCollateWithTeacher,
+)
 from src.cache_teacher import cache_teacher_embeddings, load_cached_embeddings
+from src.heatgeo import build_or_load_heatgeo_artifact
 from src.loss import info_nce
 from src.pooling import last_token_pool, mean_pooling
 from src.criterions.contextual_dynamic_mapping import ContextualDynamicMapping
@@ -33,6 +39,7 @@ from src.criterions.emo_embedding_distillation import EMODistillation
 from src.criterions.stella_distillation import StellaModel
 from src.criterions.stella_distillation import stella_stage1_loss, stella_stage2_loss
 from src.criterions.teacher_anchor_kd import TeacherAnchorKD
+from src.criterions.heatgeo_distillation import HeatGeoDistillation
                 
 # Use evaluation_automodel for AutoModel (not evaluation_model_define which is for Stella)
 from src.evaluation.evaluation_automodel import (
@@ -107,6 +114,35 @@ class KnowledgeDistiller:
                 "lr": config.learning_rate
             })
             print("EMO criterion initialized and added to optimizer")
+        elif config.distill_method == 'heatgeo':
+            spectral_dim = int(self.heatgeo_artifact["spectral_coords"].shape[-1])
+            self.criterion = HeatGeoDistillation(
+                student_dim=self.model_student.config.hidden_size,
+                teacher_dim=self.teacher_cls_all.shape[-1],
+                spectral_dim=spectral_dim,
+                scale_weights=getattr(config, 'scale_weights', (1.0, 0.5, 0.25)),
+                w_task=config.w_task,
+                lambda_diff=getattr(config, 'lambda_diff', 1.0),
+                lambda_spec=getattr(config, 'lambda_spec', 0.1),
+                lambda_anchor=getattr(config, 'lambda_anchor', 0.05),
+                student_temp=getattr(config, 'student_temp', 0.07),
+                eps_norm=getattr(config, 'eps_norm', 1e-8),
+            ).to(self.device_s)
+            self.optimizer.add_param_group({
+                "params": self.criterion.parameters(),
+                "lr": config.learning_rate * 5
+            })
+            num_steps = len(self.train_loader)
+            total_steps = num_steps * config.epochs
+            min_lr_rate = config.min_lr / config.learning_rate
+            self.scheduler = get_scheduler(
+                name='cosine_with_min_lr',
+                optimizer=self.optimizer,
+                num_warmup_steps=int(total_steps * config.warmup_ratio),
+                num_training_steps=total_steps,
+                scheduler_specific_kwargs={'min_lr_rate': min_lr_rate}
+            )
+            print("HeatGeo criterion initialized and added to optimizer")
         else:
             self.criterion = None
         
@@ -201,8 +237,8 @@ class KnowledgeDistiller:
                 df["premise"] = df["text"] if "text" in df.columns else df.iloc[:, 0]
                 df["hypothesis"] = df["text"] if "text" in df.columns else df.iloc[:, 0]
         
-        # TALAS method uses cached teacher embeddings
-        if cfg.distill_method == 'talas':
+        # TALAS and HeatGeo use cached teacher embeddings
+        if cfg.distill_method in ('talas', 'heatgeo'):
             cache_path = Path(cfg.cache_path)
             
             # Check if cache exists
@@ -243,21 +279,57 @@ class KnowledgeDistiller:
                     cache_path=str(cache_path)
                 )
                 print(f"Cached {len(teacher_cls_list)} teacher embeddings to {cache_path}")
+
+            if len(teacher_cls_list) != len(df):
+                raise ValueError(
+                    f"Cached teacher embeddings length mismatch: cache has {len(teacher_cls_list)} "
+                    f"rows but training data has {len(df)} rows. Remove or regenerate {cache_path}."
+                )
+
+            self.teacher_cls_all = teacher_cls_list
+
+            if cfg.distill_method == 'heatgeo':
+                self.heatgeo_artifact = build_or_load_heatgeo_artifact(
+                    teacher_embeddings=teacher_cls_list,
+                    cache_path=cfg.heatgeo_cache_path,
+                    graph_k=getattr(cfg, 'graph_k', 50),
+                    graph_temp=getattr(cfg, 'graph_temp', 0.1),
+                    diffusion_scales=getattr(cfg, 'diffusion_scales', (1, 2, 4)),
+                    diffusion_topk=getattr(cfg, 'diffusion_topk', 32),
+                    hard_neg_k=getattr(cfg, 'hard_neg_k', 16),
+                    random_neg_k=getattr(cfg, 'random_neg_k', 16),
+                    candidate_size=getattr(cfg, 'candidate_size', 64),
+                    spectral_dim=getattr(cfg, 'spectral_dim', 16),
+                    use_spectral=getattr(cfg, 'use_spectral', True),
+                    seed=cfg.seed,
+                )
             
-            # Free teacher model to save GPU memory (for TALAS, teacher not needed after caching)
+            # Free teacher model to save GPU memory (teacher not needed after caching)
             del self.model_teacher
             self.model_teacher = None
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
             print("Teacher model freed from GPU memory")
             
-            self.train_ds = TextPairWithTeacher(df, cfg.task_type, teacher_cls_list)
-            
-            self.collate_fn = DualTokenizerCollateWithTeacher(
-                self.tok_student,
-                cfg.task_type,
-                cfg.max_length
-            )
+            if cfg.distill_method == 'heatgeo':
+                self.train_ds = TextPairWithTeacherAndHeatGeo(
+                    df,
+                    cfg.task_type,
+                    teacher_cls_list,
+                    self.heatgeo_artifact,
+                )
+                self.collate_fn = HeatGeoCollate(
+                    self.tok_student,
+                    cfg.task_type,
+                    cfg.max_length
+                )
+            else:
+                self.train_ds = TextPairWithTeacher(df, cfg.task_type, teacher_cls_list)
+                self.collate_fn = DualTokenizerCollateWithTeacher(
+                    self.tok_student,
+                    cfg.task_type,
+                    cfg.max_length
+                )
         else:
             # Standard distillation methods
             self.train_ds = TextPairRaw(df, cfg.task_type)
@@ -326,6 +398,75 @@ class KnowledgeDistiller:
         cfg = self.config
         method = cfg.distill_method
         
+        if method == 'heatgeo':
+            batch_s = {}
+            for k, v in batch.items():
+                if not torch.is_tensor(v):
+                    continue
+                if (
+                    k.endswith("_stu")
+                    or k in {
+                        "labels",
+                        "idx",
+                        "candidate_idx",
+                        "teacher_cls",
+                        "teacher_probs",
+                        "spectral_target",
+                    }
+                ):
+                    batch_s[k] = v.to(self.device_s, non_blocking=True)
+
+            self.optimizer.zero_grad(set_to_none=True)
+
+            with autocast(enabled=torch.cuda.is_available()):
+                s_out1 = self.model_student(
+                    input_ids=batch_s["input_ids1_stu"],
+                    attention_mask=batch_s["attention_mask1_stu"],
+                    return_dict=True
+                )
+                s_out2 = self.model_student(
+                    input_ids=batch_s["input_ids2_stu"],
+                    attention_mask=batch_s["attention_mask2_stu"],
+                    return_dict=True
+                )
+                s_out_candidates = self.model_student(
+                    input_ids=batch_s["candidate_input_ids_stu"],
+                    attention_mask=batch_s["candidate_attention_mask_stu"],
+                    return_dict=True
+                )
+
+                S_cls1 = s_out1.last_hidden_state[:, 0, :]
+                S_cls2 = s_out2.last_hidden_state[:, 0, :]
+                S_candidates = s_out_candidates.last_hidden_state[:, 0, :]
+                loss_task, _ = info_nce(S_cls1, S_cls2, temperature=cfg.temperature)
+
+                loss, metrics = self.criterion(
+                    anchor_embeddings=S_cls1,
+                    candidate_embeddings=S_candidates,
+                    teacher_probs=batch_s["teacher_probs"],
+                    teacher_cls=batch_s["teacher_cls"],
+                    spectral_target=batch_s["spectral_target"],
+                    task_loss=loss_task,
+                    epoch=self.current_epoch,
+                )
+                loss = loss.float()
+
+            if not is_finite(loss):
+                raise RuntimeError(f"HeatGeo loss NaN/Inf at epoch={self.current_epoch} step={self.current_step}")
+
+            self.scaler.scale(loss).backward()
+            self.scaler.unscale_(self.optimizer)
+            if not grads_are_finite(self.optimizer):
+                self.optimizer.zero_grad(set_to_none=True)
+                self.scaler.update()
+                return loss, {**metrics, 'skip': 'grad_inf'}
+
+            self.scaler.step(self.optimizer)
+            self.scaler.update()
+            self.scheduler.step()
+
+            return loss, metrics
+
         if method == 'talas':
             batch_s = {}
             for k, v in batch.items():
@@ -795,6 +936,9 @@ class KnowledgeDistiller:
         
         if self.proj_s2t is not None:
             checkpoint['proj_s2t_state_dict'] = self.proj_s2t.state_dict()
+
+        if self.criterion is not None and hasattr(self.criterion, "state_dict"):
+            checkpoint['criterion_state_dict'] = self.criterion.state_dict()
         
         if metrics:
             checkpoint['metrics'] = metrics
