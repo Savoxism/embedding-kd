@@ -8,7 +8,7 @@ and a compact student encoder $S_{\theta}$ maps the same input to
 \begin{equation}
     s_i = S_{\theta}(x_i) \in \mathbb{R}^{d_S}.
 \end{equation}
-The goal is to train $S_{\theta}$ so that the student embedding space preserves the semantic organization induced by the teacher, especially nearest-neighbor rankings, local semantic regions, and higher-order corpus structure.
+The goal is to train $S_{\theta}$ so that the student embedding space preserves the semantic geometry induced by the teacher, especially nearest-neighbor relations, local semantic regions, and higher-order manifold structure.
 
 Standard pointwise embedding distillation minimizes a distance between each projected student embedding and its teacher embedding:
 \begin{equation}
@@ -26,4 +26,4 @@ where $W$ is an optional projection. Relational distillation instead matches stu
     G_B^S - G_B^T
     \right\|_F^2,
 \end{equation}
-where $G_B^S$ and $G_B^T$ are cosine-similarity matrices over examples in $B$. HeatGeo generalizes the relational view from mini-batch snapshots to a precomputed corpus-level teacher graph.
+where $G_B^S$ and $G_B^T$ are cosine-similarity matrices over examples in $B$. HeatGeo lifts the relational view from mini-batch snapshots to a teacher-induced semantic manifold represented by a neighborhood graph.
