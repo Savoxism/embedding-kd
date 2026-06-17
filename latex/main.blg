@@ -1,11 +1,11 @@
-This is BibTeX, Version 0.99d (TeX Live 2023/Debian)
+This is BibTeX, Version 0.99e (TeX Live 2026)
 Capacity: max_strings=200000, hash_size=200000, hash_prime=170003
-The top-level auxiliary file: anonymous-submission-latex-2026.aux
+The top-level auxiliary file: main.aux
 The style file: aaai2026.bst
 Database file #1: aaai2026.bib
 You've used 33 entries,
             2840 wiz_defined-function locations,
-            774 strings with 13061 characters,
+            774 strings with 13007 characters,
 and the built_in function-call counts, 27180 in all, are:
 = -- 1996
 > -- 1872
