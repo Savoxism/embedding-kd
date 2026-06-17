@@ -1,0 +1,59 @@
+\begin{table*}[t]
+\centering
+\caption{Main evaluation results across teacher--student pairs. Classification tasks report F1, pair classification tasks report average precision (AP), and STS tasks report Spearman correlation. Avg-In averages in-domain tasks, Avg-Out averages out-of-domain tasks, and Avg. reports the overall average.}
+\label{tab:main_results}
+\scriptsize
+\setlength{\tabcolsep}{2.4pt}
+\begin{tabular}{l|ccc|ccc|ccc|cc|c}
+\hline
+ & \multicolumn{3}{c|}{\textbf{Classification (F1)}} &
+ \multicolumn{3}{c|}{\textbf{Pair Classification (AP)}} &
+ \multicolumn{3}{c|}{\textbf{STS (Spearman)}} &
+ \multicolumn{2}{c|}{\textbf{Domain Avg}} &
+ \textbf{Avg.} \\
+ & Banking77 & Tweet & Emotion$^{\star}$ &
+ MRPC & SciTail & WiC$^{\star}$ &
+ SICK & STS12 & STSB$^{\star}$ &
+ Avg-In & Avg-Out & Avg. \\
+\hline
+\multicolumn{13}{c}{\textbf{BGE-M3 $\rightarrow$ BERT-base}} \\
+\hline
+Teacher & -- & -- & -- & -- & -- & -- & -- & -- & -- & -- & -- & -- \\
+Student base & -- & -- & -- & -- & -- & -- & -- & -- & -- & -- & -- & -- \\
+\hline
+CDM & -- & -- & -- & -- & -- & -- & -- & -- & -- & -- & -- & -- \\
+DSKD & -- & -- & -- & -- & -- & -- & -- & -- & -- & -- & -- & -- \\
+Jasper and Stella & -- & -- & -- & -- & -- & -- & -- & -- & -- & -- & -- & -- \\
+DistillCSE & -- & -- & -- & -- & -- & -- & -- & -- & -- & -- & -- & -- \\
+EMO & -- & -- & -- & -- & -- & -- & -- & -- & -- & -- & -- & -- \\
+TALAS & -- & -- & -- & -- & -- & -- & -- & -- & -- & -- & -- & -- \\
+\textbf{HeatGeo} & -- & -- & -- & -- & -- & -- & -- & -- & -- & -- & -- & -- \\
+\hline
+\multicolumn{13}{c}{\textbf{Qwen-Embedding-0.6B $\rightarrow$ BERT-base}} \\
+\hline
+Teacher & -- & -- & -- & -- & -- & -- & -- & -- & -- & -- & -- & -- \\
+Student base & -- & -- & -- & -- & -- & -- & -- & -- & -- & -- & -- & -- \\
+\hline
+CDM & -- & -- & -- & -- & -- & -- & -- & -- & -- & -- & -- & -- \\
+DSKD & -- & -- & -- & -- & -- & -- & -- & -- & -- & -- & -- & -- \\
+Jasper and Stella & -- & -- & -- & -- & -- & -- & -- & -- & -- & -- & -- & -- \\
+DistillCSE & -- & -- & -- & -- & -- & -- & -- & -- & -- & -- & -- & -- \\
+EMO & -- & -- & -- & -- & -- & -- & -- & -- & -- & -- & -- & -- \\
+TALAS & -- & -- & -- & -- & -- & -- & -- & -- & -- & -- & -- & -- \\
+\textbf{HeatGeo} & -- & -- & -- & -- & -- & -- & -- & -- & -- & -- & -- & -- \\
+\hline
+\multicolumn{13}{c}{\textbf{Qwen-Embedding-4B $\rightarrow$ BERT-base}} \\
+\hline
+Teacher & -- & -- & -- & -- & -- & -- & -- & -- & -- & -- & -- & -- \\
+Student base & -- & -- & -- & -- & -- & -- & -- & -- & -- & -- & -- & -- \\
+\hline
+CDM & -- & -- & -- & -- & -- & -- & -- & -- & -- & -- & -- & -- \\
+DSKD & -- & -- & -- & -- & -- & -- & -- & -- & -- & -- & -- & -- \\
+Jasper and Stella & -- & -- & -- & -- & -- & -- & -- & -- & -- & -- & -- & -- \\
+DistillCSE & -- & -- & -- & -- & -- & -- & -- & -- & -- & -- & -- & -- \\
+EMO & -- & -- & -- & -- & -- & -- & -- & -- & -- & -- & -- & -- \\
+TALAS & -- & -- & -- & -- & -- & -- & -- & -- & -- & -- & -- & -- \\
+\textbf{HeatGeo} & -- & -- & -- & -- & -- & -- & -- & -- & -- & -- & -- & -- \\
+\hline
+\end{tabular}
+\end{table*}

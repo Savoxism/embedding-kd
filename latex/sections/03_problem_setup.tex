@@ -1,0 +1,29 @@
+\section{Problem Setup}
+
+Let $\mathcal{D}=\{x_i\}_{i=1}^{N}$ denote a training corpus. A teacher encoder $T$ maps each input to a teacher embedding
+\begin{equation}
+    t_i = T(x_i) \in \mathbb{R}^{d_T},
+\end{equation}
+and a compact student encoder $S_{\theta}$ maps the same input to
+\begin{equation}
+    s_i = S_{\theta}(x_i) \in \mathbb{R}^{d_S}.
+\end{equation}
+The goal is to train $S_{\theta}$ so that the student embedding space preserves the semantic organization induced by the teacher, especially nearest-neighbor rankings, local semantic regions, and higher-order corpus structure.
+
+Standard pointwise embedding distillation minimizes a distance between each projected student embedding and its teacher embedding:
+\begin{equation}
+    \mathcal{L}_{\mathrm{point}}
+    =
+    \frac{1}{N}
+    \sum_{i=1}^{N}
+    \left(1-\cos(Ws_i,t_i)\right),
+\end{equation}
+where $W$ is an optional projection. Relational distillation instead matches student and teacher similarity matrices inside a mini-batch $B$:
+\begin{equation}
+    \mathcal{L}_{\mathrm{rel}}
+    =
+    \left\|
+    G_B^S - G_B^T
+    \right\|_F^2,
+\end{equation}
+where $G_B^S$ and $G_B^T$ are cosine-similarity matrices over examples in $B$. HeatGeo generalizes the relational view from mini-batch snapshots to a precomputed corpus-level teacher graph.

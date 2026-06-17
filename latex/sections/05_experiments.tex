@@ -1,0 +1,30 @@
+\section{Experiments}
+
+\subsection{Experimental Setup}
+
+\paragraph{Models.}
+Our implementation uses a compact BERT/MiniLM-style student encoder and an LLM-based teacher embedding model. Teacher embeddings are cached once before HeatGeo training. After graph construction, the teacher model is removed from GPU memory; HeatGeo training uses cached teacher embeddings, precomputed diffusion targets, and spectral coordinates.
+
+\paragraph{Training Data.}
+We train on text-pair data assembled from multiple semantic tasks. Each training row provides either a text pair or a single text field depending on the task format. HeatGeo constructs the teacher graph over the training examples, using the anchor text for candidate neighborhoods.
+
+\paragraph{Evaluation Tasks and Metrics.}
+We evaluate the distilled student on three task families. For semantic textual similarity, we report Spearman correlation on SICK, STS12, and STS-B. For text classification, we freeze the encoder, train a logistic regression classifier on top of embeddings, and report accuracy and macro-F1 on Banking77, Emotion, and Tweet. For pair classification, we threshold cosine similarity and report accuracy, macro-F1, precision, recall, and average precision on MRPC, SciTail, and WiC.
+
+\paragraph{Baselines.}
+We compare HeatGeo with the undistilled student, pointwise teacher anchoring, mini-batch relational distillation, cross-tokenizer alignment methods such as CDM and DSKD, EMO-style token/attention alignment, Stella-style multi-faceted embedding distillation, TALAS teacher-anchored layer alignment, and the full teacher embedding model when feasible.
+
+\paragraph{Implementation Details.}
+Unless otherwise specified, HeatGeo uses graph size $k=50$, graph temperature $\tau_g=0.1$, diffusion scales $\{1,2,4\}$, candidate size $64$, $32$ diffusion positives, $16$ hard negatives, $16$ random negatives, spectral dimension $16$, and five training epochs. The scale weights are $(1.0,0.5,0.25)$, giving higher weight to sharper local diffusion. The loss weights are $\lambda_{\mathrm{diff}}=1.0$, $\lambda_{\mathrm{spec}}=0.1$, $\lambda_{\mathrm{anchor}}=0.05$, and $\lambda_{\mathrm{task}}=0.001$.
+
+\subsection{Main Results}
+
+Table~\ref{tab:main_results} provides the planned reporting format. The key comparison is whether HeatGeo improves downstream embedding quality relative to local distillation baselines while retaining the efficiency of the compact student. We expect gains to be most visible on tasks that depend strongly on neighborhood geometry, such as semantic textual similarity and pair classification.
+
+\input{tables/main_results}
+
+\subsection{Ablation Study}
+
+We isolate the contributions of HeatGeo with the ablations in Table~\ref{tab:ablations}. Removing diffusion reduces the method to task loss plus weak anchoring. Removing spectral anchoring tests whether local diffusion alone preserves global topology. Removing the curriculum tests whether long-range diffusion introduced from the start over-smooths early training. Candidate-set ablations test the role of hard and random negatives.
+
+\input{tables/ablations}
