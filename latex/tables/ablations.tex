@@ -1,20 +1,34 @@
-\begin{table}[t]
+\begin{center}
 \centering
-\caption{Ablation template for HeatGeo. Report average score across task groups or a selected validation suite.}
+\captionof{table}{Ablation template for HeatGeo. Checkmarks indicate enabled components. Avg-In, Avg-Out, and Avg-All follow the domain split in Tables~\ref{tab:bge_results} and~\ref{tab:qwen4b_results}.}
 \label{tab:ablations}
-\begin{tabular}{lc}
+\scriptsize
+\setlength{\tabcolsep}{2pt}
+\resizebox{\columnwidth}{!}{
+\begin{tabular}{lccccc|ccc}
 \hline
-Variant & Average Score \\
+Variant &
+$\mathcal{L}_{\mathrm{diff}}$ &
+$\mathcal{L}_{\mathrm{spec}}$ &
+$\mathcal{L}_{\mathrm{anchor}}$ &
+Curr. &
+Full $C_i$ &
+Avg-In &
+Avg-Out &
+Avg-All \\
 \hline
-HeatGeo full & -- \\
-w/o diffusion loss & -- \\
-w/o spectral anchoring & -- \\
-w/o pointwise anchor & -- \\
-w/o diffusion curriculum & -- \\
-w/o hard negatives & -- \\
-w/o random negatives & -- \\
-single scale $r=1$ & -- \\
-single scale $r=4$ & -- \\
+HeatGeo full & \checkmark & \checkmark & \checkmark & \checkmark & \checkmark & -- & -- & -- \\
+w/o diffusion loss & -- & \checkmark & \checkmark & \checkmark & \checkmark & -- & -- & -- \\
+w/o spectral anchoring & \checkmark & -- & \checkmark & \checkmark & \checkmark & -- & -- & -- \\
+w/o anchor & \checkmark & \checkmark & -- & \checkmark & \checkmark & -- & -- & -- \\
+w/o curriculum & \checkmark & \checkmark & \checkmark & -- & \checkmark & -- & -- & -- \\
+w/o hard negatives & \checkmark & \checkmark & \checkmark & \checkmark & partial & -- & -- & -- \\
+w/o random negatives & \checkmark & \checkmark & \checkmark & \checkmark & partial & -- & -- & -- \\
+single scale $r=1$ & \checkmark & \checkmark & \checkmark & -- & \checkmark & -- & -- & -- \\
+single scale $r=4$ & \checkmark & \checkmark & \checkmark & -- & \checkmark & -- & -- & -- \\
+pointwise anchor only & -- & -- & \checkmark & -- & -- & -- & -- & -- \\
+mini-batch relational & -- & -- & \checkmark & -- & -- & -- & -- & -- \\
 \hline
 \end{tabular}
-\end{table}
+}
+\end{center}

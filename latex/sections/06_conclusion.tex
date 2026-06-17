@@ -1,0 +1,3 @@
+\section{Conclusion}
+
+We introduced HeatGeo, a corpus-level heat-kernel geometry distillation framework for compact text embedding models. Instead of matching only teacher vectors, token states, or mini-batch similarity snapshots, HeatGeo distills multi-scale semantic diffusion over a teacher-induced mutual $k$NN graph and anchors global topology with spectral coordinates. This directly targets the neighborhood geometry that embedding models use in retrieval, clustering, and transfer settings while requiring only cached teacher embeddings and no student architecture changes. Together, the diffusion, spectral, and anchor objectives position HeatGeo as a practical and retrieval-aligned alternative to local embedding distillation objectives.

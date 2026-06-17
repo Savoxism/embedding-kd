@@ -10,6 +10,7 @@
 \def\UrlFont{\rm}  % DO NOT CHANGE THIS
 \usepackage{natbib}  % DO NOT CHANGE THIS AND DO NOT ADD ANY OPTIONS TO IT
 \usepackage{caption} % DO NOT CHANGE THIS AND DO NOT ADD ANY OPTIONS TO IT
+\usepackage{placeins}
 \frenchspacing  % DO NOT CHANGE THIS
 \setlength{\pdfpagewidth}{8.5in} % DO NOT CHANGE THIS
 \setlength{\pdfpageheight}{11in} % DO NOT CHANGE THIS
@@ -23,7 +24,7 @@
 /TemplateVersion (2026.1)
 }
 
-\setcounter{secnumdepth}{0}
+\setcounter{secnumdepth}{2}
 
 \title{HeatGeo: Corpus-Level Heat-Kernel Geometry Distillation for Compact Text Embedding Models}
 \author{Anonymous Submission}
@@ -39,16 +40,17 @@
 
 \input{sections/02_related_work}
 
-\input{sections/03_problem_setup}
+\input{sections/03_methodology}
 
-\input{sections/04_heatgeo}
+\input{sections/04_experiments}
 
-\input{sections/05_experiments}
+\input{sections/05_discussion}
 
-\input{sections/06_discussion}
-
-\input{sections/07_conclusion}
+\input{sections/06_conclusion}
 
 \bibliography{aaai2026}
+
+\appendix
+\input{sections/08_appendix}
 
 \end{document}
