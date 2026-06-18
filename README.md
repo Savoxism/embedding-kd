@@ -52,7 +52,7 @@ Update the `--train_data` parameter in training scripts:
 - **Bash**: Edit `scripts/train_*.sh`
 
 ```powershell
-# Example in train_talas.ps1
+# Example in train_heatgeo.ps1
 $TRAIN_DATA = "data/your_training_file.csv"
 ```
 
@@ -95,7 +95,7 @@ $TEACHER_MODEL = "Qwen/Qwen3-Embedding-0.6B"  # Or local path
 ## File Structure
 
 ```
-TALAS/
+AAAI-TALAS/
 ├── main.py                      # Main entry point for training
 ├── distiller.py                 # Unified training engine for all KD methods
 ├── requirements.txt             # Python dependencies
@@ -105,7 +105,7 @@ TALAS/
 ├── config/                      # Configuration files for each method
 │   ├── __init__.py
 │   ├── base_config.py           # Base configuration class
-│   ├── talas_config.py          # TALAS method configuration
+│   ├── heatgeo_config.py        # HeatGeo method configuration
 │   ├── dskd_config.py           # DSKD method configuration
 │   ├── cdm_config.py            # CDM method configuration
 │   ├── emo_config.py            # EMO method configuration
@@ -120,11 +120,11 @@ TALAS/
 │   ├── data_utils/              # Dataset and data loading
 │   │   ├── __init__.py
 │   │   ├── dataset.py           # TextPairRaw dataset
-│   │   └── dataset_cache.py     # TextPairWithTeacher (for TALAS)
+│   │   └── dataset_cache.py     # HeatGeo cached-teacher datasets/collate
 │   │
 │   ├── criterions/              # Knowledge Distillation implementations
 │   │   ├── __init__.py
-│   │   ├── teacher_anchor_kd.py           # TALAS implementation
+│   │   ├── heatgeo_distillation.py        # HeatGeo implementation
 │   │   ├── dual_space_kd.py               # DSKD implementation
 │   │   ├── contextual_dynamic_mapping.py  # CDM implementation
 │   │   ├── emo_embedding_distillation.py  # EMO implementation
@@ -136,8 +136,8 @@ TALAS/
 │       └── evaluation_model_define.py     # Custom model evaluation
 │
 ├── scripts/                     # Training shell scripts
-│   ├── train_talas.ps1          # TALAS training (PowerShell)
-│   ├── train_talas.sh           # TALAS training (Bash)
+│   ├── train_heatgeo.ps1        # HeatGeo training (PowerShell)
+│   ├── train_heatgeo.sh         # HeatGeo training (Bash)
 │   ├── train_dskd.ps1           # DSKD training (PowerShell)
 │   ├── train_dskd.sh            # DSKD training (Bash)
 │   ├── train_cdm.ps1            # CDM training (PowerShell)
@@ -231,7 +231,7 @@ Place training CSV file in `data/` directory:
 
 For PowerShell (`.ps1` files):
 ```powershell
-# In scripts/train_talas.ps1, change line:
+# In scripts/train_heatgeo.ps1, change line:
 $TRAIN_DATA = "data/test_debug.csv"
 # To your actual data file:
 $TRAIN_DATA = "data/merged_3_data_5k_each.csv"
@@ -239,7 +239,7 @@ $TRAIN_DATA = "data/merged_3_data_5k_each.csv"
 
 For Bash (`.sh` files):
 ```bash
-# In scripts/train_talas.sh, change line:
+# In scripts/train_heatgeo.sh, change line:
 TRAIN_DATA="../data/test_debug.csv"
 # To your actual data file:
 TRAIN_DATA="../data/merged_3_data_5k_each.csv"
@@ -250,9 +250,9 @@ TRAIN_DATA="../data/merged_3_data_5k_each.csv"
 
 **Windows PowerShell:**
 ```powershell
-# TALAS method (our method)
+# HeatGeo method
 cd scripts
-.\train_talas.ps1
+.\train_heatgeo.ps1
 
 # Other methods
 .\train_dskd.ps1
@@ -266,9 +266,9 @@ cd scripts
 # Make scripts executable
 chmod +x scripts/*.sh
 
-# TALAS method
+# HeatGeo method
 cd scripts
-./train_talas.sh
+./train_heatgeo.sh
 
 # Other methods
 ./train_dskd.sh
@@ -277,7 +277,7 @@ cd scripts
 ./train_stella.sh
 ```
 
-### TALAS training
+### HeatGeo training
 
 If you change data, delete cache first to re-calculate cache teacher.
 
@@ -291,7 +291,7 @@ The training precision can be switched between float16 and float32 as required.
 
 ### Hyperparameter Tuning
 
-You can access the corresponding config file (e.g., `config/talas_config.py`, `config/stella_config.py`) to adjust hyperparameters such as learning rate, batch size, epochs, loss weights, and other training configurations.
+You can access the corresponding config file (e.g., `config/heatgeo_config.py`, `config/stella_config.py`) to adjust hyperparameters such as learning rate, batch size, epochs, loss weights, and other training configurations.
 
 
 ## Evaluation
@@ -306,4 +306,3 @@ eval_classification_task(model, test_cls_tasks)
 # Evaluate pair classification tasks
 eval_pair_task(model, test_pair_tasks)
 ```
-

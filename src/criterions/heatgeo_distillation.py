@@ -11,7 +11,6 @@ class HeatGeoDistillation(nn.Module):
         teacher_dim: int,
         spectral_dim: int,
         scale_weights: Sequence[float],
-        w_task: float = 0.001,
         lambda_diff: float = 1.0,
         lambda_spec: float = 0.1,
         lambda_anchor: float = 0.05,
@@ -22,7 +21,6 @@ class HeatGeoDistillation(nn.Module):
         self.student_dim = student_dim
         self.teacher_dim = teacher_dim
         self.spectral_dim = spectral_dim
-        self.w_task = w_task
         self.lambda_diff = lambda_diff
         self.lambda_spec = lambda_spec
         self.lambda_anchor = lambda_anchor
@@ -59,7 +57,6 @@ class HeatGeoDistillation(nn.Module):
         teacher_probs: torch.Tensor,
         teacher_cls: torch.Tensor,
         spectral_target: torch.Tensor,
-        task_loss: torch.Tensor,
         epoch: int,
     ) -> Tuple[torch.Tensor, Dict[str, float]]:
         batch_size = anchor_embeddings.size(0)
@@ -105,14 +102,12 @@ class HeatGeoDistillation(nn.Module):
             loss_spec = torch.tensor(0.0, device=anchor_embeddings.device, dtype=anchor_embeddings.dtype)
 
         total_loss = (
-            self.w_task * task_loss
-            + self.lambda_diff * loss_diff
+            self.lambda_diff * loss_diff
             + self.lambda_spec * loss_spec
             + self.lambda_anchor * loss_anchor
         )
         metrics = {
             "loss_total": float(total_loss.detach()),
-            "loss_task": float(task_loss.detach()),
             "loss_diff": float(loss_diff.detach()),
             "loss_spec": float(loss_spec.detach()),
             "loss_anchor": float(loss_anchor.detach()),

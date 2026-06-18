@@ -15,7 +15,6 @@ class HeatGeoConfig(BaseConfig):
     temperature = 0.1
     student_temp = 0.07
     
-    w_task = 0.001
     lambda_diff = 1.0
     lambda_spec = 0.1
     lambda_anchor = 0.05
