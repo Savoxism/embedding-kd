@@ -1,0 +1,385 @@
+\section{Methodology}
+\label{sec:method}
+
+\subsection{Problem Formulation}
+
+Let $\mathcal{D}=\{x_i\}_{i=1}^{N}$ denote an unlabeled support set sampled from the text distribution. A teacher encoder $T$ maps each input to a cached teacher embedding
+\begin{equation}
+    t_i = T(x_i) \in \mathbb{R}^{d_T},
+\end{equation}
+and a compact student encoder $S_{\theta}$ maps the same input to
+\begin{equation}
+    s_i = S_{\theta}(x_i) \in \mathbb{R}^{d_S}.
+\end{equation}
+The objective is to train $S_{\theta}$ so that the student preserves the semantic organization induced by the teacher over this finite support, including nearest-neighbor rankings, local semantic regions, and higher-order community structure.
+
+Standard pointwise embedding distillation minimizes a distance between each projected student embedding and its teacher embedding:
+\begin{equation}
+    \mathcal{L}_{\mathrm{point}}
+    =
+    \frac{1}{N}
+    \sum_{i=1}^{N}
+    \left(1-\cos(Ws_i,t_i)\right),
+\end{equation}
+where $W$ is an optional projection. Relational distillation instead matches student and teacher similarity matrices inside a mini-batch $B$:
+\begin{equation}
+    \mathcal{L}_{\mathrm{rel}}
+    =
+    \left\|
+    G_B^S - G_B^T
+    \right\|_F^2,
+\end{equation}
+where $G_B^S$ and $G_B^T$ are cosine-similarity matrices over examples in $B$. These objectives are useful local surrogates, but they do not directly supervise the multi-scale neighborhood geometry induced by the teacher.
+
+\subsection{Motivation}
+
+MDD starts from the observation that representation transfer depends on how probability mass is organized over a teacher-induced support graph, not only on the absolute coordinate of each embedding. A compact student may be unable to reproduce the teacher's full embedding map, yet it can still preserve useful semantic geometry if it matches the teacher's neighborhood distributions and global topology.
+
+We therefore treat the teacher embedding space as a semantic graph and distill the random-walk behavior of this graph. For an anchor $x_i$, a one-hop walk captures direct semantic neighbors; multi-hop walks reveal broader regions connected through intermediate examples. This makes the distillation target a soft geometric object: how semantic mass should spread from an anchor to nearby candidates at different scales.
+
+For a diffusion scale $r$, write the full teacher diffusion row as
+\begin{equation}
+    q_{i,r}(j) = (P_r^T)_{ij}, \qquad j\in\mathcal{D}.
+\end{equation}
+Since matching a distribution over all $N$ examples is expensive, MDD samples a candidate set $C_i$ and uses the conditional diffusion distribution on that set. Its captured mass is
+\begin{equation}
+    \rho_{i,r}(C_i)=\sum_{j\in C_i}q_{i,r}(j).
+\end{equation}
+The method is designed so that $C_i$ contains high-diffusion neighbors, hard negatives, and random negatives, making the restricted target informative while keeping training tractable.
+
+The rest of the section defines the two geometric transfer losses and the stabilizing anchor objective.
+
+\subsection{Multi-Scale Diffusion Loss}
+
+MDD first encodes the support set with the teacher and constructs a teacher-induced support graph. For each example $x_i$, let
+\begin{equation}
+    \mathcal{N}_k^T(i)
+    =
+    \operatorname{TopK}_{j\neq i}\cos(t_i,t_j)
+\end{equation}
+be its top-$k$ teacher nearest neighbors. To reduce noisy one-directional edges and hubness, MDD uses a mutual $k$NN graph:
+\begin{equation}
+    j \in \mathcal{M}_k^T(i)
+    \Longleftrightarrow
+    j \in \mathcal{N}_k^T(i)
+    \;\mathrm{and}\;
+    i \in \mathcal{N}_k^T(j).
+\end{equation}
+The weighted adjacency matrix is
+\begin{equation}
+    W_{ij}^{T}
+    =
+    \begin{cases}
+    \exp(\cos(t_i,t_j)/\tau_g), & j \in \mathcal{M}_k^T(i),\\
+    0, & \mathrm{otherwise},
+    \end{cases}
+\end{equation}
+where $\tau_g$ controls graph sharpness. Mutual $k$NN can produce isolated support points, so we add self-loops and use a lazy random walk. Let $\bar W^T=W^T+I$ and let $\bar D^T$ be its diagonal degree matrix. The transition matrix is
+\begin{equation}
+    P^T =
+    \frac{1}{2}I
+    +
+    \frac{1}{2}(\bar D^T)^{-1}\bar W^T.
+\end{equation}
+This ensures every support point has non-zero degree and stabilizes multi-step diffusion. MDD then defines multi-scale diffusion targets
+\begin{equation}
+    P_r^T = (P^T)^r,
+    \qquad r \in \mathcal{R},
+\end{equation}
+where $\mathcal{R}$ is typically $\{1,2,4\}$. Small $r$ preserves sharp local neighborhoods, while larger $r$ captures semantic regions and multi-hop communities.
+
+For each anchor $x_i$, MDD builds a single candidate set shared across diffusion scales:
+\begin{equation}
+    C_i = C_i^{+} \cup C_i^{h} \cup C_i^{r},
+\end{equation}
+where $C_i^{+}$ contains high-probability diffusion neighbors, $C_i^{h}$ contains teacher hard negatives, and $C_i^{r}$ contains random negatives. The positives are selected from the weighted multi-scale teacher diffusion score
+\begin{equation}
+    \tilde q_i(j)
+    =
+    \frac{\sum_{r\in\mathcal{R}}\omega_r q_{i,r}(j)}
+    {\sum_{r\in\mathcal{R}}\omega_r},
+\end{equation}
+as
+\begin{equation}
+    C_i^{+}
+    =
+    \operatorname{TopM}_{j\neq i}\tilde q_i(j).
+\end{equation}
+Hard negatives are teacher-near examples outside the positive set,
+\begin{equation}
+    C_i^{h}
+    =
+    \operatorname{TopH}_{j\notin C_i^{+}\cup\{i\}}
+    \cos(t_i,t_j),
+\end{equation}
+and random negatives are sampled uniformly from the remaining support points,
+\begin{equation}
+    C_i^{r}
+    \sim
+    \operatorname{Uniform}
+    \left(
+    \mathcal{D}\setminus(C_i^{+}\cup C_i^{h}\cup\{i\})
+    \right).
+\end{equation}
+Thus the same candidate set contains multi-scale diffusion positives, teacher-similar non-positive examples, and background support points. The teacher diffusion target at scale $r$ is the diffusion mass restricted and renormalized over $C_i$:
+\begin{equation}
+    p_{i,r}^{T}(j)
+    =
+    \frac{(P_r^T)_{ij}}
+    {\sum_{j' \in C_i}(P_r^T)_{ij'}},
+    \qquad j\in C_i.
+\end{equation}
+
+Given an anchor embedding $s_i$ and candidate embeddings $\{s_j:j\in C_i\}$, the student induces a distribution over the same candidate set:
+\begin{equation}
+    p_i^{S}(j)
+    =
+    \frac{\exp(\cos(s_i,s_j)/\tau_s)}
+    {\sum_{j'\in C_i}\exp(\cos(s_i,s_{j'})/\tau_s)},
+    \qquad j\in C_i,
+\end{equation}
+where $\tau_s$ is the student temperature. The diffusion loss is
+\begin{equation}
+    \mathcal{L}_{\mathrm{diff}}
+    =
+    \frac{1}{|B|}
+    \sum_{i\in B}
+    \sum_{r\in\mathcal{R}_{e}}
+    \omega_r
+    D_{\mathrm{KL}}
+    \left(
+        p_{i,r}^{T} \| p_i^{S}
+    \right),
+\end{equation}
+where $\omega_r$ is the scale weight and $\mathcal{R}_{e}$ is the set of active scales at epoch $e$.
+
+Although the teacher target varies with $r$, the student distribution $p_i^S$ is intentionally shared across active scales. The weighted objective is equivalent to matching a multi-scale diffusion barycenter. Define
+\begin{equation}
+    \tilde p_i^T(j)
+    =
+    \frac{\sum_{r\in\mathcal{R}_e}\omega_r p_{i,r}^T(j)}
+    {\sum_{r\in\mathcal{R}_e}\omega_r},
+    \qquad j\in C_i.
+\end{equation}
+Then
+\begin{equation}
+    \sum_{r\in\mathcal{R}_e}
+    \omega_r
+    D_{\mathrm{KL}}
+    \left(p_{i,r}^{T}\|p_i^{S}\right)
+    =
+    \Omega_e
+    D_{\mathrm{KL}}
+    \left(\tilde p_i^T\|p_i^{S}\right)
+    +
+    \mathrm{const.},
+\end{equation}
+where $\Omega_e=\sum_{r\in\mathcal{R}_e}\omega_r$ and the constant does not depend on the student. Thus MDD trains the student to match one weighted multi-scale diffusion profile rather than forcing it to satisfy incompatible scale-specific distributions.
+
+\subsection{Spectral Manifold Anchoring}
+
+Diffusion matching transfers local and multi-hop neighborhoods, but a student can still fit candidate distributions while distorting broader community structure. MDD therefore computes spectral coordinates from the teacher graph. Let the symmetric normalized graph Laplacian be
+\begin{equation}
+    L^T = I - (\bar D^T)^{-1/2}\bar W^T(\bar D^T)^{-1/2}.
+\end{equation}
+Let $U^T\in\mathbb{R}^{N\times m}$ contain the first $m$ non-trivial eigenvectors of $L^T$, and let $u_i^T$ be the row corresponding to $x_i$. A learnable projection maps student embeddings to this spectral space:
+\begin{equation}
+    z_i^S = W_{\mathrm{spec}}s_i.
+\end{equation}
+The spectral loss is
+\begin{equation}
+    \mathcal{L}_{\mathrm{spec}}
+    =
+    \frac{1}{|B|}
+    \sum_{i\in B}
+    \left\|
+    z_i^S-u_i^T
+    \right\|_2^2.
+\end{equation}
+
+The first non-trivial eigenvectors of the normalized graph Laplacian are low-frequency modes of the teacher semantic graph. They vary smoothly over strongly connected regions and separate broader communities, following the graph-manifold principles behind Laplacian Eigenmaps and Diffusion Maps~\citep{belkin2003laplacian,coifman2006diffusionmaps}. The spectral loss therefore anchors the student to the teacher's global topology.
+
+\subsection{Optimization Objectives}
+
+MDD includes a lightweight pointwise anchor for stability:
+\begin{equation}
+    \mathcal{L}_{\mathrm{anchor}}
+    =
+    \frac{1}{|B|}
+    \sum_{i\in B}
+    \left(1-\cos(W_a s_i,t_i)\right),
+\end{equation}
+where $W_a$ maps student embeddings to the teacher dimension. This term acts as a boundary condition on the embedding map, while the diffusion and spectral objectives carry the main geometric supervision.
+
+The final objective is
+\begin{equation}
+\begin{aligned}
+    \mathcal{L}_{\mathrm{MDD}}
+    ={}&
+    \lambda_{1}\mathcal{L}_{\mathrm{diff}}
+    +
+    \lambda_{2}\mathcal{L}_{\mathrm{spec}}
+    \\
+    &+
+    \lambda_{3}\mathcal{L}_{\mathrm{anchor}}.
+\end{aligned}
+\end{equation}
+We use a diffusion-scale curriculum: the first epoch uses one-step diffusion, the second epoch adds two-step diffusion, and later epochs add the full scale set and spectral anchoring. This avoids forcing long-range, smoother structure before the student has learned reliable local neighborhoods.
+
+\subsection{Theoretical Analysis}
+
+We provide a finite-support analysis showing that MDD is a controlled surrogate for preserving teacher-induced diffusion geometry. The analysis separates four effects: multi-scale aggregation, candidate truncation, low-frequency spectral anchoring, and the coverage gap of purely mini-batch relational matching.
+
+\paragraph{Multi-scale diffusion as barycenter matching.}
+For an anchor $x_i$, let $\alpha_r=\omega_r/\sum_{r'\in\mathcal{R}_e}\omega_{r'}$ be the normalized active scale weights and define the multi-scale diffusion barycenter
+\begin{equation}
+    \bar p_i^T(j)=
+    \sum_{r\in\mathcal{R}_e}\alpha_r p_{i,r}^T(j),
+    \qquad j\in C_i.
+\end{equation}
+\noindent\textbf{Proposition 1.}
+For any student distribution $p_i^S$ over $C_i$,
+\begin{equation}
+\begin{aligned}
+&\sum_{r\in\mathcal{R}_e}\alpha_r
+D_{\mathrm{KL}}(p_{i,r}^T\|p_i^S)\\
+&\quad=
+D_{\mathrm{KL}}(\bar p_i^T\|p_i^S)
+\\
+&\qquad+
+\sum_{r\in\mathcal{R}_e}\alpha_r
+D_{\mathrm{KL}}(p_{i,r}^T\|\bar p_i^T).
+\end{aligned}
+\end{equation}
+The second term is independent of the student. Thus, optimizing the multi-scale KL loss is equivalent to matching the student to the teacher's multi-scale diffusion barycenter, up to a constant measuring scale diversity among teacher neighborhoods.
+
+\emph{Proof sketch.}
+Expand each KL term as
+\begin{equation}
+    \sum_j p_{i,r}^T(j)\log p_{i,r}^T(j)
+    -
+    \sum_j p_{i,r}^T(j)\log p_i^S(j).
+\end{equation}
+Adding and subtracting the barycenter log-density gives the stated decomposition.
+
+\paragraph{Candidate-truncated diffusion matching.}
+Let $q_{i,r}$ be the full teacher diffusion row over $\mathcal{D}$, let
+\begin{equation}
+    \rho_{i,r}(C_i)=\sum_{j\in C_i}q_{i,r}(j),
+\end{equation}
+and let $q_{i,r}^{C}$ be the conditional distribution of $q_{i,r}$ on $C_i$. Let $\widehat p_i^S$ be the zero extension of $p_i^S$ from $C_i$ to $\mathcal{D}$.
+
+\noindent\textbf{Theorem 1.}
+Assume $\rho_{i,r}(C_i)\ge 1-\epsilon$ for all $r\in\mathcal{R}_e$. If
+\begin{equation}
+    \sum_{r\in\mathcal{R}_e}\alpha_r
+    D_{\mathrm{KL}}(q_{i,r}^{C}\|p_i^S)
+    \le \eta,
+\end{equation}
+then
+\begin{equation}
+    \sum_{r\in\mathcal{R}_e}\alpha_r
+    \left\|q_{i,r}-\widehat p_i^S\right\|_1
+    \le
+    2\epsilon+\sqrt{2\eta}.
+\end{equation}
+Consequently, for any bounded probe function $f:\mathcal{D}\rightarrow[-1,1]$,
+\begin{equation}
+\begin{aligned}
+&\sum_{r\in\mathcal{R}_e}\alpha_r
+\left|
+\mathbb{E}_{j\sim q_{i,r}}[f(j)]
+-
+\mathbb{E}_{j\sim p_i^S}[f(j)]
+\right|\\
+&\quad\le
+2\epsilon+\sqrt{2\eta}.
+\end{aligned}
+\end{equation}
+This separates the approximation error into candidate truncation error $\epsilon$ and student matching error $\eta$.
+
+\emph{Proof sketch.}
+For each scale,
+\begin{equation}
+    \left\|q_{i,r}-\widehat p_i^S\right\|_1
+    \le
+    2(1-\rho_{i,r}(C_i))
+    +
+    \left\|q_{i,r}^{C}-p_i^S\right\|_1.
+\end{equation}
+Pinsker's inequality bounds the second term by
+\begin{equation}
+    \sqrt{2D_{\mathrm{KL}}(q_{i,r}^{C}\|p_i^S)}.
+\end{equation}
+Averaging over scales and applying Jensen's inequality gives the result. The probe bound follows from $|f|\le 1$.
+
+\paragraph{Low-frequency topology preservation.}
+Let $u_i^T$ be the teacher spectral coordinate and $z_i^S=W_{\mathrm{spec}}s_i$ be the student spectral prediction. Suppose the support-average spectral loss satisfies
+\begin{equation}
+    \frac{1}{N}\sum_{i=1}^{N}
+    \left\|z_i^S-u_i^T\right\|_2^2
+    \le \xi.
+\end{equation}
+Define $d_{T,m}(i,j)=\|u_i^T-u_j^T\|_2$ and
+$d_{S,m}(i,j)=\|z_i^S-z_j^S\|_2$.
+
+\noindent\textbf{Theorem 2.}
+If $(i,j)$ is sampled uniformly from $\mathcal{D}\times\mathcal{D}$, then
+\begin{equation}
+    \mathbb{E}_{i,j}
+    \left[
+    \left|d_{S,m}(i,j)-d_{T,m}(i,j)\right|
+    \right]
+    \le
+    2\sqrt{\xi}.
+\end{equation}
+More generally, if the spectral coordinates are multiplied by diagonal diffusion weights whose largest retained weight is $a_{\max}$, the bound becomes $2a_{\max}\sqrt{\xi}$.
+
+\emph{Proof sketch.}
+The reverse triangle inequality gives
+\begin{equation}
+\begin{aligned}
+&\left|d_{S,m}(i,j)-d_{T,m}(i,j)\right|\\
+&\quad\le
+\left\|z_i^S-u_i^T\right\|_2
++
+\left\|z_j^S-u_j^T\right\|_2.
+\end{aligned}
+\end{equation}
+Taking expectation and applying Jensen's inequality gives the result. This guarantee concerns preservation of teacher low-frequency coordinates encoded by the student; it does not claim that the student-induced graph recovers the full teacher spectrum.
+
+\paragraph{Mini-batch relational coverage gap.}
+Let $B$ be a batch of size $b$ containing anchor $i$, with the other $b-1$ examples sampled uniformly without replacement from $\mathcal{D}\setminus\{i\}$. For any teacher diffusion row $q_{i,r}$,
+\begin{equation}
+    \mathbb{E}_{B}
+    \left[
+    \sum_{j\in B\setminus\{i\}}q_{i,r}(j)
+    \right]
+    =
+    \frac{b-1}{N-1}
+    \left(1-q_{i,r}(i)\right).
+\end{equation}
+When $b\ll N$, a batch-local relational objective observes only a small expected fraction of the diffusion neighborhood around each anchor. MDD avoids this coverage bottleneck by constructing $C_i$ from high-diffusion neighbors, teacher hard negatives, and random negatives.
+
+\begin{algorithm}[t]
+\caption{MDD Training}
+\label{alg:mddkd}
+\begin{algorithmic}[1]
+\REQUIRE Support set $\mathcal{D}$, teacher $T$, student $S_{\theta}$, graph size $k$, diffusion scales $\mathcal{R}$
+\STATE Cache teacher embeddings $t_i=T(x_i)$ for all $x_i\in\mathcal{D}$
+\STATE Build a mutual $k$NN teacher graph $W^T$
+\STATE Add self-loops and compute lazy transition matrix $P^T$
+\STATE Precompute sparse diffusion candidates and targets $p_{i,r}^T$
+\STATE Compute spectral coordinates $u_i^T$ from the graph Laplacian
+\FOR{each training epoch}
+    \STATE Activate diffusion scales according to the curriculum
+    \FOR{each mini-batch $B$}
+        \STATE Encode anchors and candidate texts with $S_{\theta}$
+        \STATE Compute student candidate distributions $p_i^S$
+        \STATE Compute $\mathcal{L}_{\mathrm{diff}}$, $\mathcal{L}_{\mathrm{spec}}$, and $\mathcal{L}_{\mathrm{anchor}}$
+        \STATE Update $\theta$ by minimizing $\mathcal{L}_{\mathrm{MDD}}$
+    \ENDFOR
+\ENDFOR
+\RETURN Distilled student encoder $S_{\theta}$
+\end{algorithmic}
+\end{algorithm}

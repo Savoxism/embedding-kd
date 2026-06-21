@@ -1,0 +1,9 @@
+\begin{abstract}
+
+Text embedding models induce semantic geometries whose neighborhoods, paths, and low-frequency structures shape how representations transfer across tasks. Existing distillation objectives usually match teacher coordinates, token-level states, or mini-batch similarities. While useful, these signals provide local or coordinate-dependent supervision and may fail to preserve the intrinsic geometry induced by a stronger teacher.
+
+We introduce \textbf{Manifold Diffusion Distillation (MDD)}, a geometry-preserving framework for text embedding distillation. MDD treats teacher embeddings as finite support samples of a teacher-induced semantic manifold, constructs a sparse neighborhood graph, and defines multi-scale Markov diffusion profiles over this graph. A compact student is trained to match these diffusion profiles over sampled neighborhoods, while a spectral manifold anchor preserves low-frequency topology through graph Laplacian coordinates. The method requires only final teacher embeddings and does not modify the student architecture.
+
+We provide a finite-support analysis showing that MDD is a controlled surrogate for preserving teacher-induced diffusion geometry under candidate-mass and KL-matching conditions. Empirically, frozen-representation probes on classification, pair classification, and semantic textual similarity show that MDD transfers teacher geometry into compact embeddings across class-region separability, pairwise semantic discrimination, and continuous similarity calibration. On Qwen3-Embedding-4B $\rightarrow$ BERT-base, MDD improves the overall frozen-probe average from 77.60 to 78.04 over the strongest baseline, with larger gains on SciTail and STS-Benchmark.
+
+\end{abstract}
