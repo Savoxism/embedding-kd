@@ -1,0 +1,73 @@
+\begin{table*}[t]
+\centering
+\caption{Frozen-embedding probe template for BGE-M3 $\rightarrow$ BERT-base. Classification tasks report macro-F1, pair classification tasks report average precision (AP), and STS tasks report Spearman correlation. Starred datasets are in-domain.}
+\label{tab:bge_results}
+\scriptsize
+\setlength{\tabcolsep}{2.6pt}
+\resizebox{\textwidth}{!}{
+\begin{tabular}{l|ccc|ccc|ccc|cc|c}
+\hline
+ & \multicolumn{3}{c|}{\textbf{Classification (F1)}} &
+ \multicolumn{3}{c|}{\textbf{Pair Classification (AP)}} &
+ \multicolumn{3}{c|}{\textbf{STS (Spearman)}} &
+ \multicolumn{2}{c|}{\textbf{Domain Avg}} &
+\textbf{Avg-All} \\
+ & Banking77 & TweetEval & Emotion$^{\star}$ &
+ MRPC & SciTail & WiC$^{\star}$ &
+ SICK & STS12 & STSB$^{\star}$ &
+ Avg-In & Avg-Out & Avg-All \\
+\hline
+\multicolumn{13}{c}{\textbf{BGE-M3 $\rightarrow$ BERT-base}} \\
+\hline
+Teacher & -- & -- & -- & -- & -- & -- & -- & -- & -- & -- & -- & -- \\
+Student base & -- & -- & -- & -- & -- & -- & -- & -- & -- & -- & -- & -- \\
+SimCSE-unsup & -- & -- & -- & -- & -- & -- & -- & -- & -- & -- & -- & -- \\
+\hline
+CDM & -- & -- & -- & -- & -- & -- & -- & -- & -- & -- & -- & -- \\
+DSKD & -- & -- & -- & -- & -- & -- & -- & -- & -- & -- & -- & -- \\
+Jasper/Stella & -- & -- & -- & -- & -- & -- & -- & -- & -- & -- & -- & -- \\
+DistillCSE & -- & -- & -- & -- & -- & -- & -- & -- & -- & -- & -- & -- \\
+EMO & -- & -- & -- & -- & -- & -- & -- & -- & -- & -- & -- & -- \\
+TALAS & -- & -- & -- & -- & -- & -- & -- & -- & -- & -- & -- & -- \\
+\textbf{MDD} & -- & -- & -- & -- & -- & -- & -- & -- & -- & -- & -- & -- \\
+\hline
+\end{tabular}
+}
+\end{table*}
+
+\begin{table*}[t]
+\centering
+\caption{Frozen-embedding probe results for Qwen3-Embedding-4B $\rightarrow$ BERT-base. Classification tasks report macro-F1, pair classification tasks report average precision (AP), and STS tasks report Spearman correlation. Starred datasets are in-domain.}
+\label{tab:qwen4b_results}
+\scriptsize
+\setlength{\tabcolsep}{2.6pt}
+\resizebox{\textwidth}{!}{
+\begin{tabular}{l|ccc|ccc|ccc|cc|c}
+\hline
+ & \multicolumn{3}{c|}{\textbf{Classification (F1)}} &
+ \multicolumn{3}{c|}{\textbf{Pair Classification (AP)}} &
+ \multicolumn{3}{c|}{\textbf{STS (Spearman)}} &
+ \multicolumn{2}{c|}{\textbf{Domain Avg}} &
+\textbf{Avg-All} \\
+ & Banking77 & TweetEval & Emotion$^{\star}$ &
+ MRPC & SciTail & WiC$^{\star}$ &
+ SICK & STS12 & STSB$^{\star}$ &
+ Avg-In & Avg-Out & Avg-All \\
+\hline
+\multicolumn{13}{c}{\textbf{Qwen3-Embedding-4B $\rightarrow$ BERT-base}} \\
+\hline
+Teacher & 93.63 & 72.22 & 68.94 & 84.79 & 91.77 & 66.80 & 83.43 & 82.55 & 86.87 & 74.20 & 84.73 & 81.22 \\
+Student base & 84.86 & 47.79 & 68.02 & 77.36 & 67.74 & 59.22 & 42.43 & 21.54 & 20.30 & 42.44 & 60.33 & 54.36 \\
+SimCSE-unsup & 89.21 & 69.13 & 53.55 & 82.86 & 76.59 & 71.64 & 68.19 & 61.68 & 70.36 & 65.18 & 74.61 & 71.47 \\
+\hline
+CDM & 89.75 & 70.58 & 53.11 & 84.83 & 75.19 & 71.06 & 69.37 & 68.48 & 73.92 & 66.03 & 76.37 & 72.92 \\
+DSKD & 89.66 & 69.93 & 54.51 & 83.13 & 77.95 & 71.53 & 68.65 & 63.37 & 71.42 & 65.82 & 75.45 & 72.24 \\
+Jasper/Stella & 89.71 & 73.83 & 65.98 & 85.33 & 80.99 & 70.50 & 73.96 & 67.90 & 75.65 & 70.71 & 78.62 & 75.98 \\
+DistillCSE & 90.94 & 70.90 & 60.80 & 82.86 & 78.98 & 68.63 & 75.12 & 72.61 & 77.08 & 68.84 & 78.57 & 75.32 \\
+EMO & 90.78 & 73.54 & 67.48 & 84.46 & 81.57 & 69.76 & 75.66 & 68.83 & 77.17 & 71.47 & 79.14 & 76.58 \\
+TALAS & 92.34 & 73.74 & 64.41 & 85.97 & 82.66 & 68.65 & 78.38 & 72.27 & 79.98 & 71.01 & 80.89 & 77.60 \\
+\textbf{MDD} & \textbf{92.62} & 72.27 & 66.42 & 83.57 & \textbf{89.15} & 66.43 & \textbf{79.69} & 70.43 & \textbf{81.79} & \textbf{71.55} & \textbf{81.29} & \textbf{78.04} \\
+\hline
+\end{tabular}
+}
+\end{table*}

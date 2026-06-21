@@ -1,0 +1,37 @@
+\section{Experiments}
+
+\subsection{Experimental Setup}
+
+\paragraph{Benchmarks and metrics.}
+We evaluate MDD with a self-contained frozen-representation protocol organized around three geometry-sensitive probe families. For text classification, we report macro-F1 on BANKING77~\citep{casanueva2020efficient}, Emotion~\citep{saravia2018carer}, and TweetEval-Sentiment~\citep{barbieri2020tweeteval}; these probes test whether class-level semantic regions remain linearly separable. For pair classification, we report average precision (AP) on MRPC~\citep{dolan2004automatically}, SciTail~\citep{khot2018scitail}, and WiC~\citep{pilehvar2019wic}; these probes test whether local pairwise semantic boundaries are preserved. For semantic textual similarity, we report Spearman correlation on SICK~\citep{marelli2014sick}, STS12~\citep{agirre2012semeval}, and STS-Benchmark~\citep{cer2017semeval}; these probes test whether continuous similarity geometry remains calibrated. Emotion, WiC, and STS-Benchmark are treated as in-domain benchmarks because their unlabeled training texts are used to construct the support set; the remaining datasets are used only for out-of-domain transfer evaluation.
+
+\paragraph{Models.}
+We keep two teacher-student configurations: BGE-M3~\citep{chen2024bgem3} $\rightarrow$ BERT-base~\citep{devlin2019bert} and Qwen3-Embedding-4B~\citep{zhang2025qwen3embedding} $\rightarrow$ BERT-base. Teacher embeddings are cached once before MDD training. After graph construction, the teacher model is removed from GPU memory; student training uses cached teacher embeddings, sparse diffusion targets, and spectral coordinates.
+
+\paragraph{Training data.}
+The unlabeled support set is constructed from the text fields of the in-domain training splits. For pairwise datasets, both sides of each pair are flattened into individual support examples before graph construction. MDD builds the teacher-induced support graph and trains without using downstream labels, task-specific heads, or evaluation labels.
+
+\paragraph{Baselines.}
+We compare MDD with the full teacher, the undistilled BERT-base student, SimCSE-unsup~\citep{gao2021simcse}, cross-tokenizer distillation methods CDM~\citep{chen2025cdm} and DSKD~\citep{zhang2024dskd}, sentence embedding distillation methods Jasper and Stella~\citep{zhang2024jasperstella} and DistillCSE~\citep{gao2021distilcse,xu2023distillcse}, EMO~\citep{truong2025emo}, and TALAS~\citep{dao2026talas}. Component-level comparisons against pointwise anchoring and mini-batch relational matching are included in the ablation study.
+
+\paragraph{Evaluation protocol.}
+For classification, the encoder is frozen and a logistic regression classifier is trained on top of the sentence embeddings. For pair classification and STS, examples are embedded independently and compared by cosine similarity. We therefore use these benchmarks as representation probes rather than task-specific fine-tuning targets or direct retrieval benchmarks. We report per-task scores, the average over in-domain tasks, the average over out-of-domain tasks, and the overall average across all benchmarks.
+
+\paragraph{Implementation details.}
+Unless otherwise specified, MDD uses graph size $k=50$, graph temperature $\tau_g=0.1$, diffusion scales $\{1,2,4\}$, candidate size $64$, $32$ diffusion positives, $16$ hard negatives, $16$ random negatives, spectral dimension $16$, and five training epochs. The scale weights are $(1.0,0.5,0.25)$. The loss weights are $\lambda_1=1.0$, $\lambda_2=0.1$, and $\lambda_3=0.05$.
+
+\subsection{Geometry-Sensitive Representation Probes}
+
+Since our goal is to preserve the geometry of the teacher embedding space rather than optimize a specific downstream task, we evaluate the student using frozen embedding probes. Classification measures whether semantic regions remain linearly separable. Pair classification measures whether local pairwise semantic boundaries are preserved. STS measures whether the continuous similarity geometry of the teacher space is retained. Together, these probes provide complementary evidence about whether manifold-level supervision transfers useful embedding geometry.
+
+Tables~\ref{tab:bge_results} and~\ref{tab:qwen4b_results} define the main reporting format for the two teacher-student pairs. We group tasks by probe type and separately report in-domain, out-of-domain, and overall averages. In the Qwen3-Embedding-4B $\rightarrow$ BERT-base setting, MDD achieves the best overall average under this frozen-embedding protocol, with particularly strong out-of-domain transfer and similarity-oriented performance. The gains are not uniform across all datasets, which suggests that manifold diffusion primarily improves global similarity geometry and transfer robustness rather than every local decision boundary.
+
+\input{tables/main_results}
+
+\subsection{Ablation Study}
+
+Table~\ref{tab:ablations} isolates the contribution of each MDD component. The ablations separate the effect of multi-scale diffusion, spectral manifold anchoring, the pointwise anchor, curriculum scheduling, and candidate composition. This distinguishes manifold diffusion transfer from simpler local alignment objectives.
+
+\input{tables/ablations}
+
+\FloatBarrier

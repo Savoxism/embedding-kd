@@ -2,9 +2,6 @@
 torch>=2.0.0
 torchvision>=0.15.0
 
-# Optimizers
-pytorch-optimizer>=2.12.0
-
 # Transformers and NLP
 transformers>=4.30.0
 huggingface_hub>=0.16.0
