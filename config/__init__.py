@@ -3,7 +3,7 @@ from .cdm_config import CDMConfig
 from .dskd_config import DSKDConfig
 from .emo_config import EMOConfig
 from .stella_config import StellaConfig
-from .heatgeo_config import HeatGeoConfig
+from .talas_config import TALASConfig
 
 __all__ = [
     'BaseConfig',
@@ -11,5 +11,5 @@ __all__ = [
     'DSKDConfig',
     'EMOConfig',
     'StellaConfig',
-    'HeatGeoConfig'
+    'TALASConfig'
 ]
