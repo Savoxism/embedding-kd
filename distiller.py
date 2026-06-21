@@ -31,6 +31,7 @@ from src.criterions.emo_embedding_distillation import EMODistillation
 from src.criterions.stella_distillation import StellaModel
 from src.criterions.stella_distillation import stella_stage1_loss, stella_stage2_loss
 from src.criterions.heatgeo_distillation import HeatGeoDistillation
+from src.criterions.twmd_distillation import TWMDDistillation
                 
 # Use evaluation_automodel for AutoModel (not evaluation_model_define which is for Stella)
 from src.evaluation.evaluation_automodel import (
@@ -133,6 +134,36 @@ class KnowledgeDistiller:
                 scheduler_specific_kwargs={'min_lr_rate': min_lr_rate}
             )
             print("HeatGeo criterion initialized and added to optimizer")
+        elif config.distill_method == 'twmd':
+            spectral_dim = int(self.heatgeo_artifact["spectral_coords"].shape[-1])
+            self.criterion = TWMDDistillation(
+                student_dim=self.model_student.config.hidden_size,
+                teacher_dim=self.teacher_cls_all.shape[-1],
+                spectral_dim=spectral_dim,
+                scale_weights=getattr(config, "scale_weights", (1.0, 0.1, 0.02)),
+                lambda_rw_path=getattr(config, "lambda_rw_path", 1.0),
+                lambda_diff=getattr(config, "lambda_diff", 1.0),
+                lambda_spec=getattr(config, "lambda_spec", 0.01),
+                lambda_anchor=getattr(config, "lambda_anchor", 0.01),
+                student_temp=getattr(config, "student_temp", 0.07),
+                eps_norm=getattr(config, "eps_norm", 1e-8),
+                tau_rw=getattr(config, "tau_rw", 0.05),
+            ).to(self.device_s)
+            self.optimizer.add_param_group({
+                "params": self.criterion.parameters(),
+                "lr": config.learning_rate * 5
+            })
+            num_steps = len(self.train_loader)
+            total_steps = num_steps * config.epochs
+            min_lr_rate = config.min_lr / config.learning_rate
+            self.scheduler = get_scheduler(
+                name='cosine_with_min_lr',
+                optimizer=self.optimizer,
+                num_warmup_steps=int(total_steps * config.warmup_ratio),
+                num_training_steps=total_steps,
+                scheduler_specific_kwargs={'min_lr_rate': min_lr_rate}
+            )
+            print("TWMD criterion initialized and added to optimizer")
         else:
             self.criterion = None
         
@@ -274,7 +305,7 @@ class KnowledgeDistiller:
 
             self.teacher_cls_all = teacher_cls_list
 
-            if cfg.distill_method == 'heatgeo':
+            if cfg.distill_method in ['heatgeo', 'twmd']:
                 self.heatgeo_artifact = build_or_load_heatgeo_artifact(
                     teacher_embeddings=teacher_cls_list,
                     cache_path=cfg.heatgeo_cache_path,
@@ -288,6 +319,8 @@ class KnowledgeDistiller:
                     spectral_dim=getattr(cfg, 'spectral_dim', 16),
                     use_spectral=getattr(cfg, 'use_spectral', True),
                     seed=cfg.seed,
+                    num_walks=getattr(cfg, 'num_walks', 1) if cfg.distill_method == 'twmd' else 0,
+                    walk_length=getattr(cfg, 'walk_length', 3) if cfg.distill_method == 'twmd' else 0,
                 )
             
             # Free teacher model to save GPU memory (teacher not needed after caching)
@@ -369,7 +402,7 @@ class KnowledgeDistiller:
         cfg = self.config
         method = cfg.distill_method
         
-        if method == 'heatgeo':
+        if method in ['heatgeo', 'twmd']:
             batch_s = {}
             for k, v in batch.items():
                 if not torch.is_tensor(v):
@@ -380,6 +413,8 @@ class KnowledgeDistiller:
                         "labels",
                         "idx",
                         "candidate_idx",
+                        "walk_indices",
+                        "hard_neg_indices",
                         "teacher_cls",
                         "teacher_probs",
                         "spectral_target",
@@ -404,18 +439,30 @@ class KnowledgeDistiller:
                 S_cls1 = s_out1.last_hidden_state[:, 0, :]
                 S_candidates = s_out_candidates.last_hidden_state[:, 0, :]
 
-                loss, metrics = self.criterion(
-                    anchor_embeddings=S_cls1,
-                    candidate_embeddings=S_candidates,
-                    teacher_probs=batch_s["teacher_probs"],
-                    teacher_cls=batch_s["teacher_cls"],
-                    spectral_target=batch_s["spectral_target"],
-                    epoch=self.current_epoch,
-                )
+                if method == 'twmd':
+                    loss, metrics = self.criterion(
+                        anchor_embeddings=S_cls1,
+                        candidate_embeddings=S_candidates,
+                        walk_indices=batch_s.get("walk_indices"),
+                        hard_neg_indices=batch_s.get("hard_neg_indices"),
+                        teacher_probs=batch_s["teacher_probs"],
+                        teacher_cls=batch_s["teacher_cls"],
+                        spectral_target=batch_s["spectral_target"],
+                        epoch=self.current_epoch,
+                    )
+                else:
+                    loss, metrics = self.criterion(
+                        anchor_embeddings=S_cls1,
+                        candidate_embeddings=S_candidates,
+                        teacher_probs=batch_s["teacher_probs"],
+                        teacher_cls=batch_s["teacher_cls"],
+                        spectral_target=batch_s["spectral_target"],
+                        epoch=self.current_epoch,
+                    )
                 loss = loss.float()
 
             if not is_finite(loss):
-                raise RuntimeError(f"HeatGeo loss NaN/Inf at epoch={self.current_epoch} step={self.current_step}")
+                raise RuntimeError(f"{method} loss NaN/Inf at epoch={self.current_epoch} step={self.current_step}")
 
             self.scaler.scale(loss).backward()
             self.scaler.unscale_(self.optimizer)

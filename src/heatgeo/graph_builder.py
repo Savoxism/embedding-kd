@@ -1,6 +1,6 @@
 import os
 from pathlib import Path
-from typing import Dict, List, Sequence, Tuple
+from typing import Dict, List, Sequence, Tuple, Optional
 
 import numpy as np
 import torch
@@ -12,6 +12,32 @@ from tqdm import tqdm
 
 def _as_tuple(values: Sequence[int]) -> Tuple[int, ...]:
     return tuple(int(v) for v in values)
+
+
+def _generate_random_walks(
+    row_neighbors: List[np.ndarray],
+    row_probs: List[np.ndarray],
+    num_walks: int,
+    walk_length: int,
+    seed: int,
+) -> np.ndarray:
+    n_items = len(row_neighbors)
+    walk_indices = np.zeros((n_items, num_walks, walk_length), dtype=np.int64)
+    rng = np.random.default_rng(seed + 100)
+    
+    for i in tqdm(range(n_items), desc="TWMD random walks"):
+        for w in range(num_walks):
+            curr = i
+            for step in range(walk_length):
+                neighbors = row_neighbors[curr]
+                probs = row_probs[curr]
+                if len(neighbors) == 0:
+                    walk_indices[i, w, step] = curr
+                else:
+                    curr = rng.choice(neighbors, p=probs)
+                    walk_indices[i, w, step] = curr
+    return walk_indices
+
 
 
 def _compute_topk_cosine(embeddings: torch.Tensor, k: int, chunk_size: int = 1024) -> Tuple[np.ndarray, np.ndarray]:
@@ -110,7 +136,8 @@ def _build_diffusion_candidates(
     random_neg_k: int,
     candidate_size: int,
     seed: int,
-) -> Tuple[np.ndarray, np.ndarray]:
+    walk_indices: Optional[np.ndarray] = None,
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     n_items = top_indices.shape[0]
     n_scales = len(scales)
     candidate_indices = np.zeros((n_items, candidate_size), dtype=np.int64)
@@ -126,6 +153,16 @@ def _build_diffusion_candidates(
 
         candidates = []
         seen = {i}
+        
+        if walk_indices is not None:
+            for node in walk_indices[i].flatten():
+                node = int(node)
+                if node not in seen:
+                    candidates.append(node)
+                    seen.add(node)
+                if len(candidates) >= candidate_size:
+                    break
+
         for dist in scale_dists:
             for node, _ in sorted(dist.items(), key=lambda item: item[1], reverse=True)[:diffusion_topk]:
                 if node not in seen:
@@ -134,9 +171,12 @@ def _build_diffusion_candidates(
                 if len(candidates) >= candidate_size:
                     break
 
+        # Collect hard negatives before appending fallback top_indices
+        hard_negs = []
         for node in top_indices[i, : max(hard_neg_k * 4, hard_neg_k)]:
             node = int(node)
             if node not in seen:
+                hard_negs.append(node)
                 candidates.append(node)
                 seen.add(node)
             if len(candidates) >= candidate_size - random_neg_k:
@@ -178,7 +218,29 @@ def _build_diffusion_candidates(
                 probs /= prob_sum
             teacher_probs[scale_idx, i] = probs
 
-    return candidate_indices, teacher_probs
+    # Compute local walk indices (relative to candidates)
+    local_walk_indices = np.zeros_like(walk_indices) if walk_indices is not None else None
+    local_hard_negs = np.zeros((n_items, hard_neg_k), dtype=np.int64)
+
+    if walk_indices is not None:
+        for i in tqdm(range(n_items), desc="Mapping relative candidates"):
+            cand_list = candidate_indices[i].tolist()
+            # Map walk indices
+            for w in range(walk_indices.shape[1]):
+                for step in range(walk_indices.shape[2]):
+                    target = int(walk_indices[i, w, step])
+                    local_walk_indices[i, w, step] = cand_list.index(target) if target in cand_list else 0
+            
+            # Extract hard negatives from candidates (excluding anchor and walks)
+            walk_set = set(walk_indices[i].flatten().tolist())
+            walk_set.add(i)
+            hns = [idx for idx, c in enumerate(cand_list) if c not in walk_set]
+            # Pad or truncate to hard_neg_k
+            while len(hns) < hard_neg_k:
+                hns.append(0)
+            local_hard_negs[i] = np.array(hns[:hard_neg_k], dtype=np.int64)
+
+    return candidate_indices, teacher_probs, local_walk_indices, local_hard_negs
 
 
 def _compute_spectral_coords(
@@ -222,6 +284,8 @@ def _metadata_matches(artifact: Dict, metadata: Dict) -> bool:
         "candidate_size",
         "spectral_dim",
         "use_spectral",
+        "num_walks",
+        "walk_length",
     ]
     return all(old.get(key) == metadata.get(key) for key in keys)
 
@@ -239,6 +303,8 @@ def build_or_load_heatgeo_artifact(
     spectral_dim: int,
     use_spectral: bool,
     seed: int,
+    num_walks: int = 1,
+    walk_length: int = 3,
 ) -> Dict[str, torch.Tensor]:
     n_items = int(teacher_embeddings.size(0))
     scales = _as_tuple(diffusion_scales)
@@ -253,6 +319,8 @@ def build_or_load_heatgeo_artifact(
         "candidate_size": int(candidate_size),
         "spectral_dim": int(spectral_dim),
         "use_spectral": bool(use_spectral),
+        "num_walks": int(num_walks),
+        "walk_length": int(walk_length),
     }
 
     artifact_path = Path(cache_path)
@@ -273,7 +341,18 @@ def build_or_load_heatgeo_artifact(
         graph_k=graph_k,
         graph_temp=graph_temp,
     )
-    candidate_indices, teacher_probs = _build_diffusion_candidates(
+    
+    walk_indices = None
+    if num_walks > 0 and walk_length > 0:
+        walk_indices = _generate_random_walks(
+            row_neighbors=row_neighbors,
+            row_probs=row_probs,
+            num_walks=num_walks,
+            walk_length=walk_length,
+            seed=seed,
+        )
+        
+    candidate_indices, teacher_probs, local_walk_indices, local_hard_negs = _build_diffusion_candidates(
         top_indices=top_indices,
         scales=scales,
         row_neighbors=row_neighbors,
@@ -283,6 +362,7 @@ def build_or_load_heatgeo_artifact(
         random_neg_k=random_neg_k,
         candidate_size=candidate_size,
         seed=seed,
+        walk_indices=walk_indices,
     )
     spectral_coords = _compute_spectral_coords(transition, spectral_dim if use_spectral else 0)
 
@@ -292,6 +372,10 @@ def build_or_load_heatgeo_artifact(
         "spectral_coords": torch.from_numpy(spectral_coords).float(),
         "metadata": metadata,
     }
+    if local_walk_indices is not None:
+        artifact["walk_indices"] = torch.from_numpy(local_walk_indices).long()
+        artifact["hard_neg_indices"] = torch.from_numpy(local_hard_negs).long()
+        
     torch.save(artifact, artifact_path)
     print(f"Saved HeatGeo artifact to: {artifact_path}")
     return artifact

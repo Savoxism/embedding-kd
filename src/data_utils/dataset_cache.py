@@ -17,6 +17,8 @@ class TextPairWithTeacherAndHeatGeo(Dataset):
         self.candidate_indices = heatgeo_artifact["candidate_indices"]
         self.teacher_probs = heatgeo_artifact["teacher_probs"]
         self.spectral_coords = heatgeo_artifact["spectral_coords"]
+        self.walk_indices = heatgeo_artifact.get("walk_indices", None)
+        self.hard_neg_indices = heatgeo_artifact.get("hard_neg_indices", None)
 
         if task == "single_cls":
             self.samples = [(t, int(y)) for t, y in zip(df["text"].astype(str),
@@ -39,7 +41,7 @@ class TextPairWithTeacherAndHeatGeo(Dataset):
     def __getitem__(self, idx):
         candidate_idx = self.candidate_indices[idx]
         candidate_samples = [self._anchor_text(self.samples[int(j)]) for j in candidate_idx]
-        return {
+        out = {
             "idx": idx,
             "sample": self.samples[idx],
             "teacher_cls": self.teacher_cls[idx],
@@ -48,6 +50,10 @@ class TextPairWithTeacherAndHeatGeo(Dataset):
             "teacher_probs": self.teacher_probs[:, idx, :],
             "spectral_target": self.spectral_coords[idx],
         }
+        if self.walk_indices is not None:
+            out["walk_indices"] = self.walk_indices[idx]
+            out["hard_neg_indices"] = self.hard_neg_indices[idx]
+        return out
 
 
 class HeatGeoCollate:
@@ -101,6 +107,10 @@ class HeatGeoCollate:
             "teacher_probs": teacher_probs,
             "spectral_target": spectral_target,
         }
+        
+        if "walk_indices" in batch[0]:
+            out["walk_indices"] = torch.stack([item["walk_indices"] for item in batch], dim=0).long()
+            out["hard_neg_indices"] = torch.stack([item["hard_neg_indices"] for item in batch], dim=0).long()
 
         if self.task == "single_cls":
             out["labels"] = torch.tensor(ys, dtype=torch.long)
