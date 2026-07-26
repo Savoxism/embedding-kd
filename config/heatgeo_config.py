@@ -5,9 +5,10 @@ class HeatGeoConfig(BaseConfig):
     
     distill_method = "heatgeo"
     
-    student_model_name = "bert-base-uncased"
+    student_model_name = "jim12345/MiniLMv2-L6-H384-distilled-from-BERT-Base"
+    student_dtype = "float32"
     teacher_model_name = "Qwen/Qwen3-Embedding-0.6B"
-    teacher_dtype = "bfloat16"
+    teacher_dtype = "float32"
     
     student_special_token = "##"
     teacher_special_token = "G"
@@ -31,19 +32,26 @@ class HeatGeoConfig(BaseConfig):
     spectral_dim = 16
     use_spectral = True
     
-    batch_size = 16
+    batch_size = 4
     epochs = 5
     learning_rate = 2e-5
     min_lr = 2e-6
+    num_workers = 0
     
+    train_data_path = "data/merged_3_data_5k_each.csv"
     cache_teacher = True
-    cache_path = "cache/teacher_train.pt"
-    heatgeo_cache_path = "cache/heatgeo_graph.pt"
+    cache_path = "cache/heatgeo/qwen3_0_6b_minilmv2_h384_teacher_train.pt"
+    heatgeo_cache_path = "cache/heatgeo/qwen3_0_6b_minilmv2_h384_graph.pt"
+    heatgeo_log_dir = "logs/heatgeo"
     pooling_method = "last_token"
     normalize_cache = True
     cache_dtype = "float32"
     
-    save_dir = "checkpoints/heatgeo"
+    save_dir = "models/heatgeo/qwen3_0_6b_to_minilmv2_h384"
+    use_wandb = True
+    wandb_project = "iclr-mdd-heatgeo"
+    wandb_run_name = "heatgeo_qwen3_0_6b_to_minilmv2_h384"
+    wandb_mode = "online"
     
     def __init__(self, **kwargs):
         for k, v in kwargs.items():

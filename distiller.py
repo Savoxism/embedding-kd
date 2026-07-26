@@ -11,11 +11,17 @@ import numpy as np
 from pathlib import Path
 from torch.amp import GradScaler, autocast
 from torch.utils.data import DataLoader
-from transformers import AutoTokenizer, AutoModel, get_scheduler
+from transformers import AutoTokenizer, AutoModel, get_scheduler, __version__ as transformers_version
 from collections import deque
 from tqdm import tqdm
 from typing import Optional, Dict, Any, Tuple
 import pandas as pd
+try:
+    import wandb
+    WANDB_AVAILABLE = True
+except ImportError:
+    wandb = None
+    WANDB_AVAILABLE = False
 try:
     from pytorch_optimizer import SAM
     SAM_AVAILABLE = True
@@ -58,6 +64,39 @@ from src.evaluation.evaluation_automodel import (
 def is_finite(x: torch.Tensor) -> bool:
     return torch.is_tensor(x) and torch.isfinite(x).all().item()
 
+
+def nonfinite_details(name: str, tensor: torch.Tensor) -> str:
+    if not torch.is_tensor(tensor):
+        return f"{name}: expected tensor, got {type(tensor).__name__}"
+    if tensor.is_floating_point() or tensor.is_complex():
+        nan_count = int(torch.isnan(tensor).sum().item())
+        inf_count = int(torch.isinf(tensor).sum().item())
+    else:
+        nan_count = 0
+        inf_count = 0
+    return (
+        f"{name}: shape={tuple(tensor.shape)}, dtype={tensor.dtype}, "
+        f"device={tensor.device}, nan_count={nan_count}, inf_count={inf_count}"
+    )
+
+
+def assert_module_parameters_finite(module: nn.Module, module_name: str) -> None:
+    finite_status = None
+    for parameter in module.parameters():
+        current = torch.isfinite(parameter).all()
+        finite_status = current if finite_status is None else finite_status & current
+
+    if finite_status is None or bool(finite_status.item()):
+        return
+
+    for name, parameter in module.named_parameters():
+        if not bool(torch.isfinite(parameter).all().item()):
+            raise RuntimeError(
+                f"{module_name} parameters became NaN/Inf: "
+                f"{nonfinite_details(name, parameter)}"
+            )
+
+
 def grads_are_finite(optim) -> bool:
     for group in optim.param_groups:
         for p in group["params"]:
@@ -70,11 +109,14 @@ def grads_are_finite(optim) -> bool:
 class KnowledgeDistiller:
     def __init__(self, config):
         self.config = config
+        self.wandb_run = None
+        self.global_step = 0
         self.setup_seed(config.seed)
         self.setup_devices()
         self.setup_models()
         self.setup_data()
         self.setup_training()
+        self.setup_wandb()
         
         # Initialize criterion based on method
         if config.distill_method == 'cdm':
@@ -175,10 +217,53 @@ class KnowledgeDistiller:
         elif torch.cuda.is_available():
             self.device_s = self.device_t = torch.device("cuda:0")
             print("[WARN] Only 1 GPU available -> both on cuda:0")
+        elif hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
+            self.device_s = self.device_t = torch.device("mps")
+            print("Using Apple Silicon MPS device")
         else:
             self.device_s = self.device_t = torch.device("cpu")
             print("[WARN] No GPU -> CPU training")
         print("Done setup_devices")
+
+    def setup_wandb(self):
+        cfg = self.config
+        self.use_wandb = bool(getattr(cfg, "use_wandb", False))
+        if not self.use_wandb:
+            return
+        if not WANDB_AVAILABLE:
+            print("Warning: wandb is not installed. Install requirements in the project venv to enable W&B logging.")
+            self.use_wandb = False
+            return
+        mode = os.environ.get("WANDB_MODE", getattr(cfg, "wandb_mode", "online"))
+        project = os.environ.get("WANDB_PROJECT", getattr(cfg, "wandb_project", "iclr-mdd"))
+        run_name = os.environ.get("WANDB_RUN_NAME", getattr(cfg, "wandb_run_name", None))
+        self.wandb_run = wandb.init(
+            project=project,
+            name=run_name,
+            mode=mode,
+            config=cfg.to_dict() if hasattr(cfg, "to_dict") else vars(cfg),
+        )
+        print(f"W&B logging enabled: project={project}, run={run_name}, mode={mode}")
+        if cfg.distill_method == "heatgeo" and hasattr(self, "heatgeo_artifact"):
+            graph_stats = self.heatgeo_artifact.get("graph_stats", {})
+            if graph_stats:
+                wandb.log({f"heatgeo_graph/{k}": v for k, v in graph_stats.items() if isinstance(v, (int, float))})
+            graph_log_path = self.heatgeo_artifact.get("graph_log_path")
+            if graph_log_path and os.path.exists(graph_log_path):
+                artifact = wandb.Artifact("heatgeo-knn-graph-log", type="dataset")
+                artifact.add_file(graph_log_path)
+                self.wandb_run.log_artifact(artifact)
+
+    @staticmethod
+    def _flatten_metrics(prefix: str, values: Dict[str, Any]) -> Dict[str, float]:
+        flat = {}
+        for key, value in values.items():
+            name = f"{prefix}/{key}"
+            if isinstance(value, (int, float)):
+                flat[name] = float(value)
+            elif isinstance(value, dict):
+                flat.update(KnowledgeDistiller._flatten_metrics(name, value))
+        return flat
     
     def setup_models(self):
         cfg = self.config
@@ -213,7 +298,29 @@ class KnowledgeDistiller:
             self.current_stage = 1
         else:
             print(f"Loading student model: {cfg.student_model_name}")
-            self.model_student = AutoModel.from_pretrained(cfg.student_model_name)
+            student_kwargs = {}
+            student_dtype_name = getattr(cfg, "student_dtype", None)
+            student_dtypes = {
+                "float32": torch.float32,
+                "float16": torch.float16,
+                "bfloat16": torch.bfloat16,
+            }
+            if student_dtype_name is not None:
+                if student_dtype_name not in student_dtypes:
+                    raise ValueError(
+                        f"Unsupported student_dtype={student_dtype_name!r}; "
+                        f"expected one of {sorted(student_dtypes)}"
+                    )
+                try:
+                    transformers_major = int(transformers_version.split(".", maxsplit=1)[0])
+                except (TypeError, ValueError):
+                    transformers_major = 4
+                dtype_argument = "dtype" if transformers_major >= 5 else "torch_dtype"
+                student_kwargs[dtype_argument] = student_dtypes[student_dtype_name]
+            self.model_student = AutoModel.from_pretrained(
+                cfg.student_model_name,
+                **student_kwargs,
+            )
         
         print(f"Loading teacher model: {cfg.teacher_model_name}")
         teacher_kwargs = {"trust_remote_code": True}
@@ -234,6 +341,10 @@ class KnowledgeDistiller:
         
         self.model_student.to(self.device_s)
         self.model_teacher.to(self.device_t)
+
+        student_dtype = next(self.model_student.parameters()).dtype
+        print(f"Student training dtype: {student_dtype}")
+        assert_module_parameters_finite(self.model_student, "Student model after load")
         
         self.model_teacher.eval()
         for p in self.model_teacher.parameters():
@@ -320,6 +431,7 @@ class KnowledgeDistiller:
                 self.heatgeo_artifact = build_or_load_heatgeo_artifact(
                     teacher_embeddings=teacher_cls_list,
                     cache_path=cfg.heatgeo_cache_path,
+                    log_dir=getattr(cfg, "heatgeo_log_dir", "logs/heatgeo"),
                     graph_k=getattr(cfg, 'graph_k', 50),
                     graph_temp=getattr(cfg, 'graph_temp', 0.1),
                     diffusion_scales=getattr(cfg, 'diffusion_scales', (1, 2, 4)),
@@ -649,6 +761,11 @@ class KnowledgeDistiller:
 
             self.scaler.step(self.optimizer)
             self.scaler.update()
+            assert_module_parameters_finite(
+                self.model_student,
+                f"HeatGeo student after optimizer step "
+                f"(epoch={self.current_epoch}, step={self.current_step})",
+            )
             self.scheduler.step()
 
             return loss, metrics
@@ -1114,6 +1231,15 @@ class KnowledgeDistiller:
             self.sync_all()
             dt = time.perf_counter() - t0
             epoch_step_times.append(dt)
+            self.global_step += 1
+            if getattr(self, "use_wandb", False) and WANDB_AVAILABLE:
+                log_payload = {
+                    "train/epoch": epoch + 1,
+                    "train/global_step": self.global_step,
+                    "train/step_seconds": dt,
+                }
+                log_payload.update(self._flatten_metrics("train", metrics))
+                wandb.log(log_payload, step=self.global_step)
             
             bs = batch["input_ids1_stu"].size(0)
             total_loss += loss.item() * bs
@@ -1368,6 +1494,8 @@ class KnowledgeDistiller:
             self.save_checkpoint(cfg.epochs_stage2 - 1, {'loss': avg_loss})
             try:
                 test_results = self.evaluate("test")
+                if getattr(self, "use_wandb", False) and WANDB_AVAILABLE and test_results is not None:
+                    wandb.log(self._flatten_metrics("test", test_results), step=self.global_step)
                 self.log_experiment_record({"stage": 2, "test": test_results})
             except Exception as e:
                 print(f"Warning: Final test evaluation failed with error: {e}")
@@ -1399,6 +1527,8 @@ class KnowledgeDistiller:
                 if (epoch + 1) % cfg.eval_every == 0:
                     try:
                         validation_results = self.evaluate("validation")
+                        if getattr(self, "use_wandb", False) and WANDB_AVAILABLE and validation_results is not None:
+                            wandb.log(self._flatten_metrics("validation", validation_results), step=self.global_step)
                     except Exception as e:
                         print(f"Warning: Validation failed with error: {e}")
                         print("Continuing training...")
@@ -1426,6 +1556,8 @@ class KnowledgeDistiller:
             self.save_checkpoint(cfg.epochs - 1, {'loss': avg_loss})
             try:
                 test_results = self.evaluate("test")
+                if getattr(self, "use_wandb", False) and WANDB_AVAILABLE and test_results is not None:
+                    wandb.log(self._flatten_metrics("test", test_results), step=self.global_step)
                 self.log_experiment_record({"test": test_results})
             except Exception as e:
                 print(f"Warning: Final test evaluation failed with error: {e}")

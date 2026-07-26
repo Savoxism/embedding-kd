@@ -4,6 +4,31 @@ import torch.nn.functional as F
 from typing import Dict, Sequence, Tuple
 
 
+def _assert_finite_tensors(named_tensors: Sequence[Tuple[str, torch.Tensor]]) -> None:
+    finite_status = None
+    for _, tensor in named_tensors:
+        current = torch.isfinite(tensor).all()
+        finite_status = current if finite_status is None else finite_status & current
+
+    if finite_status is None or bool(finite_status.item()):
+        return
+
+    for name, tensor in named_tensors:
+        if bool(torch.isfinite(tensor).all().item()):
+            continue
+        if tensor.is_floating_point() or tensor.is_complex():
+            nan_count = int(torch.isnan(tensor).sum().item())
+            inf_count = int(torch.isinf(tensor).sum().item())
+        else:
+            nan_count = 0
+            inf_count = 0
+        raise RuntimeError(
+            f"HeatGeo non-finite tensor {name!r}: shape={tuple(tensor.shape)}, "
+            f"dtype={tensor.dtype}, device={tensor.device}, "
+            f"nan_count={nan_count}, inf_count={inf_count}"
+        )
+
+
 class HeatGeoDistillation(nn.Module):
     def __init__(
         self,
@@ -62,6 +87,17 @@ class HeatGeoDistillation(nn.Module):
         task_loss: torch.Tensor,
         epoch: int,
     ) -> Tuple[torch.Tensor, Dict[str, float]]:
+        _assert_finite_tensors(
+            (
+                ("anchor_embeddings", anchor_embeddings),
+                ("candidate_embeddings", candidate_embeddings),
+                ("teacher_probs", teacher_probs),
+                ("teacher_cls", teacher_cls),
+                ("spectral_target", spectral_target),
+                ("task_loss", task_loss),
+            )
+        )
+
         batch_size = anchor_embeddings.size(0)
         candidate_size = teacher_probs.size(-1)
         n_scales = teacher_probs.size(1)
@@ -110,12 +146,25 @@ class HeatGeoDistillation(nn.Module):
             + self.lambda_spec * loss_spec
             + self.lambda_anchor * loss_anchor
         )
+        _assert_finite_tensors(
+            (
+                ("task_loss", task_loss),
+                ("loss_diff", loss_diff),
+                ("loss_spec", loss_spec),
+                ("loss_anchor", loss_anchor),
+                ("total_loss", total_loss),
+            )
+        )
         metrics = {
             "loss_total": float(total_loss.detach()),
             "loss_task": float(task_loss.detach()),
             "loss_diff": float(loss_diff.detach()),
             "loss_spec": float(loss_spec.detach()),
             "loss_anchor": float(loss_anchor.detach()),
+            "weighted_task": float((self.w_task * task_loss).detach()),
+            "weighted_diff": float((self.lambda_diff * loss_diff).detach()),
+            "weighted_spec": float((self.lambda_spec * loss_spec).detach()),
+            "weighted_anchor": float((self.lambda_anchor * loss_anchor).detach()),
             "active_scales": float(active_scales),
         }
         return total_loss, metrics

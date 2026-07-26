@@ -1,4 +1,5 @@
 import os
+import json
 from pathlib import Path
 from typing import Dict, List, Sequence, Tuple
 
@@ -38,11 +39,13 @@ def _build_transition(
     top_scores: np.ndarray,
     graph_k: int,
     graph_temp: float,
-) -> Tuple[List[np.ndarray], List[np.ndarray], sparse.csr_matrix]:
+) -> Tuple[List[np.ndarray], List[np.ndarray], List[np.ndarray], np.ndarray, sparse.csr_matrix]:
     n_items = top_indices.shape[0]
     top_sets = [set(top_indices[i, :graph_k].tolist()) for i in range(n_items)]
     row_neighbors: List[np.ndarray] = []
     row_probs: List[np.ndarray] = []
+    row_scores: List[np.ndarray] = []
+    fallback_flags = np.zeros(n_items, dtype=bool)
     rows = []
     cols = []
     vals = []
@@ -57,6 +60,7 @@ def _build_transition(
                 scores.append(float(top_scores[i, pos]))
 
         if not neighbors:
+            fallback_flags[i] = True
             fallback_k = min(graph_k, top_indices.shape[1])
             neighbors = [int(j) for j in top_indices[i, :fallback_k]]
             scores = [float(s) for s in top_scores[i, :fallback_k]]
@@ -68,12 +72,64 @@ def _build_transition(
 
         row_neighbors.append(neighbor_arr)
         row_probs.append(prob_arr)
+        row_scores.append(np.asarray(scores, dtype=np.float32))
         rows.extend([i] * len(neighbor_arr))
         cols.extend(neighbor_arr.tolist())
         vals.extend(prob_arr.tolist())
 
     transition = sparse.csr_matrix((vals, (rows, cols)), shape=(n_items, n_items), dtype=np.float32)
-    return row_neighbors, row_probs, transition
+    return row_neighbors, row_probs, row_scores, fallback_flags, transition
+
+
+def _write_knn_graph_log(
+    log_dir: str,
+    row_neighbors: List[np.ndarray],
+    row_probs: List[np.ndarray],
+    row_scores: List[np.ndarray],
+    fallback_flags: np.ndarray,
+    graph_k: int,
+) -> Tuple[str, Dict[str, float]]:
+    os.makedirs(log_dir, exist_ok=True)
+    log_path = os.path.join(log_dir, "knn_graph_neighbors.jsonl")
+    degrees = np.asarray([len(neighbors) for neighbors in row_neighbors], dtype=np.float32)
+    fallback_count = int(fallback_flags.sum())
+    stats = {
+        "n_items": int(len(row_neighbors)),
+        "graph_k": int(graph_k),
+        "fallback_count": fallback_count,
+        "fallback_rate": float(fallback_count / max(1, len(row_neighbors))),
+        "avg_degree": float(degrees.mean()) if degrees.size else 0.0,
+        "min_degree": float(degrees.min()) if degrees.size else 0.0,
+        "max_degree": float(degrees.max()) if degrees.size else 0.0,
+    }
+
+    with open(log_path, "w", encoding="utf-8") as handle:
+        handle.write(json.dumps({"type": "summary", **stats}, sort_keys=True) + "\n")
+        for idx, (neighbors, probs, scores) in enumerate(zip(row_neighbors, row_probs, row_scores)):
+            handle.write(
+                json.dumps(
+                    {
+                        "type": "node",
+                        "idx": idx,
+                        "fallback_used": bool(fallback_flags[idx]),
+                        "neighbors": [int(value) for value in neighbors.tolist()],
+                        "transition_probs": [float(value) for value in probs.tolist()],
+                        "cosine_scores": [float(value) for value in scores.tolist()],
+                    },
+                    sort_keys=True,
+                )
+                + "\n"
+            )
+
+    print(
+        "HeatGeo kNN graph log saved: "
+        f"{log_path} | fallback={fallback_count}/{len(row_neighbors)} "
+        f"({stats['fallback_rate']:.2%}), avg_degree={stats['avg_degree']:.2f}"
+    )
+    if fallback_count:
+        fallback_examples = np.flatnonzero(fallback_flags)[:10].tolist()
+        print(f"HeatGeo fallback node examples: {fallback_examples}")
+    return log_path, stats
 
 
 def _diffuse_one(
@@ -222,6 +278,7 @@ def _metadata_matches(artifact: Dict, metadata: Dict) -> bool:
         "candidate_size",
         "spectral_dim",
         "use_spectral",
+        "graph_log_version",
     ]
     return all(old.get(key) == metadata.get(key) for key in keys)
 
@@ -229,6 +286,7 @@ def _metadata_matches(artifact: Dict, metadata: Dict) -> bool:
 def build_or_load_heatgeo_artifact(
     teacher_embeddings: torch.Tensor,
     cache_path: str,
+    log_dir: str,
     graph_k: int,
     graph_temp: float,
     diffusion_scales: Sequence[int],
@@ -253,25 +311,46 @@ def build_or_load_heatgeo_artifact(
         "candidate_size": int(candidate_size),
         "spectral_dim": int(spectral_dim),
         "use_spectral": bool(use_spectral),
+        "graph_log_version": 1,
     }
 
     artifact_path = Path(cache_path)
     if artifact_path.exists():
         artifact = torch.load(artifact_path, map_location="cpu")
         if _metadata_matches(artifact, metadata):
-            print(f"Loaded HeatGeo artifact from: {artifact_path}")
-            return artifact
-        print(f"HeatGeo artifact config mismatch, rebuilding: {artifact_path}")
+            graph_log_path = artifact.get("graph_log_path")
+            if graph_log_path and os.path.exists(graph_log_path):
+                print(f"Loaded HeatGeo artifact from: {artifact_path}")
+                graph_stats = artifact.get("graph_stats", {})
+                if graph_stats:
+                    print(
+                        "HeatGeo kNN graph summary: "
+                        f"fallback={graph_stats.get('fallback_count', 0)}/{graph_stats.get('n_items', 0)} "
+                        f"({float(graph_stats.get('fallback_rate', 0.0)):.2%}), "
+                        f"avg_degree={float(graph_stats.get('avg_degree', 0.0)):.2f}"
+                    )
+                return artifact
+            print(f"HeatGeo graph log missing, rebuilding artifact: {graph_log_path}")
+        else:
+            print(f"HeatGeo artifact config mismatch, rebuilding: {artifact_path}")
 
     if str(artifact_path.parent):
         os.makedirs(artifact_path.parent, exist_ok=True)
     topk_for_graph = max(graph_k, hard_neg_k + diffusion_topk, candidate_size)
     top_indices, top_scores = _compute_topk_cosine(teacher_embeddings, k=topk_for_graph)
-    row_neighbors, row_probs, transition = _build_transition(
+    row_neighbors, row_probs, row_scores, fallback_flags, transition = _build_transition(
         top_indices=top_indices,
         top_scores=top_scores,
         graph_k=graph_k,
         graph_temp=graph_temp,
+    )
+    graph_log_path, graph_stats = _write_knn_graph_log(
+        log_dir=log_dir,
+        row_neighbors=row_neighbors,
+        row_probs=row_probs,
+        row_scores=row_scores,
+        fallback_flags=fallback_flags,
+        graph_k=graph_k,
     )
     candidate_indices, teacher_probs = _build_diffusion_candidates(
         top_indices=top_indices,
@@ -290,6 +369,8 @@ def build_or_load_heatgeo_artifact(
         "candidate_indices": torch.from_numpy(candidate_indices).long(),
         "teacher_probs": torch.from_numpy(teacher_probs).float(),
         "spectral_coords": torch.from_numpy(spectral_coords).float(),
+        "graph_log_path": graph_log_path,
+        "graph_stats": graph_stats,
         "metadata": metadata,
     }
     torch.save(artifact, artifact_path)

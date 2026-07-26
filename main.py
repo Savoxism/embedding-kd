@@ -138,6 +138,30 @@ def parse_args():
         default=None,
         help='Number of dataloader workers'
     )
+    parser.add_argument(
+        '--no_wandb',
+        action='store_true',
+        help='Disable Weights & Biases logging'
+    )
+    parser.add_argument(
+        '--wandb_project',
+        type=str,
+        default=None,
+        help='Weights & Biases project name'
+    )
+    parser.add_argument(
+        '--wandb_run_name',
+        type=str,
+        default=None,
+        help='Weights & Biases run name'
+    )
+    parser.add_argument(
+        '--wandb_mode',
+        type=str,
+        default=None,
+        choices=['online', 'offline', 'disabled'],
+        help='Weights & Biases mode'
+    )
     
     return parser.parse_args()
 
@@ -201,6 +225,14 @@ def get_config(method: str, args):
         config.debug_align = True
     if args.num_workers is not None:
         config.num_workers = args.num_workers
+    if args.no_wandb:
+        config.use_wandb = False
+    if args.wandb_project is not None:
+        config.wandb_project = args.wandb_project
+    if args.wandb_run_name is not None:
+        config.wandb_run_name = args.wandb_run_name
+    if args.wandb_mode is not None:
+        config.wandb_mode = args.wandb_mode
     
     return config
 

@@ -29,6 +29,7 @@ fastdtw>=0.3.4
 tqdm>=4.65.0
 kagglehub>=0.1.0
 datasets>=2.14.0
+wandb>=0.17.0
 
 # Development Tools
 jupyter>=1.0.0

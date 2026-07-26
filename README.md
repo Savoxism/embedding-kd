@@ -1,356 +1,227 @@
-## Project Setup
+# HeatGeo Reproduction Guide
 
-### Files NOT Included in Repository (gitignored)
+This repository trains compact text embedding models with HeatGeo: a heat-diffusion manifold distillation method. The reproduction target here follows the first teacher-student pair in `docs/TALAS.pdf`:
 
-The following directories and files are excluded from version control and must be set up manually:
+```text
+Qwen3-Embedding-0.6B -> MiniLMv2 H384 22M
+```
 
-**Data directories:**
-- `data/` - Training and evaluation datasets
-- `model_hub/` - Local model files
-- `*.ipynb` - Jupyter notebook files
+The training corpus follows the TALAS paper setup: about 15K unlabeled sentences sampled from the three in-domain datasets EMOTION, WiC, and STS-B. In this repo, that corpus is:
 
-**Generated files:**
-- `checkpoints/` - Model checkpoints during/after training
-- `cache/` - Cached teacher embeddings
-- `*.pt`, `*.pth`, `*.ckpt` - PyTorch model weights
-- `logs/`, `*.log` - Training logs
+```text
+data/merged_3_data_5k_each.csv
+```
 
-**Python artifacts:**
-- `__pycache__/`, `*.pyc`, `*.pyo` - Python bytecode
-- `*.egg-info/`, `dist/`, `build/` - Package build files
+The benchmark CSV files under `data/multi-data/` are kept for evaluation.
 
-**Environment:**
-- `venv/`, `env/` - Virtual environment directories
-- `.env`, `.env.local` - Environment variables
+## Environment
 
-**IDE and temp files:**
-- `.vscode/`, `.idea/` - IDE configuration
-- `*.swp`, `*.tmp`, `*.bak` - Temporary files
-
-### Required Directory Setup
-
-Before running training, create these directories and add your data:
+Do not install packages into the global Python environment. Create and use a project virtual environment:
 
 ```bash
-# Create required directories
-mkdir -p data/multi-data
-mkdir -p model_hub
-mkdir -p scripts/checkpoints
-mkdir -p scripts/cache
-```
-
-**1. Training Data Setup:**
-
-Get model_hub from `https://github.com/microsoft/unilm/tree/master/minilm`
-
-Place your training CSV file in `data/` directory:
-- File format: CSV with columns `text` or `premise`, `hypothesis`
-- Example files: `merged_3_data_5k_each.csv`
-
-Update the `--train_data` parameter in training scripts:
-- **PowerShell**: Edit `scripts/train_*.ps1`
-- **Bash**: Edit `scripts/train_*.sh`
-
-```powershell
-# Example in train_talas.ps1
-$TRAIN_DATA = "data/your_training_file.csv"
-```
-
-**2. Evaluation Data Setup:**
-
-Download or prepare evaluation datasets and place in `data/multi-data/`:
-
-Required files:
-- `banking_train.csv`, `banking77_test.csv`, `banking77_validation.csv`
-- `emotion_train.csv`, `emotion_test.csv`, `emotion_validation.csv`
-- `tweet_train.csv`, `tweet_test.csv`, `tweet_validation.csv`
-- `sick_test.csv`, `sick_validation.csv`
-- `sts12_test.csv`, `sts12_validation.csv`
-- `stsb_test.csv`, `stsb_validation.csv`
-- `mrpc_test.csv`, `mrpc_validation.csv`
-- `scitail_test.csv`, `scitail_validation.csv`
-- `wic_test.csv`, `wic_validation.csv`
-- `qnli_test.csv`, `qnli_validation.csv`
-- `rte_test.csv`, `rte_validaion.csv`
-
-**3. Model Hub Setup (Optional):**
-
-If using local models instead of HuggingFace Hub, place model files in `model_hub/`:
-
-```
-model_hub/
-├── MiniLMv2-L6-H384-distilled-from-BERT-Base/
-│   └── MiniLM-L6-H384-distilled-from-BERT-Base/
-│       └── config.json
-├── MiniLMv2-L6-H768-distilled-from-BERT-Base/
-└── MiniLMv2-L6-H768-distilled-from-BERT-Large/
-```
-
-Update model paths in training scripts:
-```powershell
-$STUDENT_MODEL = "model_hub/MiniLM-L6-H384-distilled-from-BERT-Base"
-$TEACHER_MODEL = "Qwen/Qwen3-Embedding-0.6B"  # Or local path
-```
-
-## File Structure
-
-```
-TALAS/
-├── main.py                      # Main entry point for training
-├── distiller.py                 # Unified training engine for all KD methods
-├── requirements.txt             # Python dependencies
-├── README.md                    # This documentation
-├── .gitignore                   # Git ignore rules
-│
-├── config/                      # Configuration files for each method
-│   ├── __init__.py
-│   ├── base_config.py           # Base configuration class
-│   ├── talas_config.py          # TALAS method configuration
-│   ├── dskd_config.py           # DSKD method configuration
-│   ├── cdm_config.py            # CDM method configuration
-│   ├── emo_config.py            # EMO method configuration
-│   └── stella_config.py         # Stella method configuration
-│
-├── src/                         # Core source code modules
-│   ├── __init__.py
-│   ├── loss.py                  # Loss functions (InfoNCE, cosine, triplet)
-│   ├── pooling.py               # Pooling utilities (mean, CLS pooling)
-│   ├── cache_teacher.py         # Teacher embedding caching utilities
-│   │
-│   ├── data_utils/              # Dataset and data loading
-│   │   ├── __init__.py
-│   │   ├── dataset.py           # TextPairRaw dataset
-│   │   └── dataset_cache.py     # TextPairWithTeacher (for TALAS)
-│   │
-│   ├── criterions/              # Knowledge Distillation implementations
-│   │   ├── __init__.py
-│   │   ├── teacher_anchor_kd.py           # TALAS implementation
-│   │   ├── dual_space_kd.py               # DSKD implementation
-│   │   ├── contextual_dynamic_mapping.py  # CDM implementation
-│   │   ├── emo_embedding_distillation.py  # EMO implementation
-│   │   └── stella_distillation.py         # Stella implementation
-│   │
-│   └── evaluation/              # Evaluation metrics and tasks
-│       ├── __init__.py
-│       ├── evaluation_automodel.py        # AutoModel-based evaluation
-│       └── evaluation_model_define.py     # Custom model evaluation
-│
-├── scripts/                     # Training shell scripts
-│   ├── train_talas.ps1          # TALAS training (PowerShell)
-│   ├── train_talas.sh           # TALAS training (Bash)
-│   ├── train_dskd.ps1           # DSKD training (PowerShell)
-│   ├── train_dskd.sh            # DSKD training (Bash)
-│   ├── train_cdm.ps1            # CDM training (PowerShell)
-│   ├── train_cdm.sh             # CDM training (Bash)
-│   ├── train_emo.ps1            # EMO training (PowerShell)
-│   ├── train_emo.sh             # EMO training (Bash)
-│   ├── train_stella.ps1         # Stella training (PowerShell)
-│   ├── train_stella.sh          # Stella training (Bash)
-│   ├── checkpoints/             # Saved model checkpoints (gitignored)
-│   └── cache/                   # Cached embeddings (gitignored)
-│
-├── data/                        # Training and evaluation data (gitignored)
-│   ├── merged_3_data_5k_each.csv
-│   ├── test_debug.csv
-│   └── multi-data/              # Evaluation datasets
-│       ├── banking77_*.csv
-│       ├── emotion_*.csv
-│       ├── tweet_*.csv
-│       ├── sick_*.csv
-│       ├── sts12_*.csv
-│       ├── stsb_*.csv
-│       ├── mrpc_*.csv
-│       ├── scitail_*.csv
-│       └── wic_*.csv
-│
-└── model_hub/                   # Local model storage (gitignored)
-    ├── MiniLMv2-L6-H384-distilled-from-BERT-Base/
-    ├── MiniLMv2-L6-H768-distilled-from-BERT-Base/
-    └── MiniLMv2-L6-H768-distilled-from-BERT-Large/
-```
-
-## Installation
-
-
-### 1. Create Virtual Environment
-
-```bash
-# Windows
-python -m venv venv
-venv\Scripts\activate
-
-# Linux/Mac
-python -m venv venv
+cd /Users/savoxism/Documents/GitHub/ICLR-MDD
+python3 -m venv venv
 source venv/bin/activate
-```
-
-### 2. Install Dependencies
-
-```bash
 pip install -r requirements.txt
 ```
 
-## Dependencies
-
-- **Deep Learning**: PyTorch >= 2.0.0
-- **Transformers**: transformers, huggingface_hub, tokenizers, PEFT
-- **Data Processing**: pandas, numpy
-- **ML/Metrics**: scikit-learn, scipy
-- **String Matching**: Levenshtein, editdistance, fastdtw
-- **Utils**: tqdm, kagglehub, datasets
-
-## Supported Tasks
-
-### 1. Semantic Textual Similarity (STS)
-- SICK, STS12, STSb datasets
-- Metric: Spearman correlation
-
-### 2. Text Classification
-- Banking77, Emotion, Tweet datasets
-- Metric: Accuracy, F1-score (macro)
-
-### 3. Pair Classification
-- MRPC, SciTail, WiC datasets
-- Metric: Accuracy, F1, Precision, Recall, Average Precision
-
-## Usage
-
-### TMKD
-
-TMKD distills the teacher/student cosine kernel over a common refinement of
-their raw-text character offsets. It does not use a projection head, token
-matching, attention selection, or optimal transport.
-
-Requirements:
-
-- Both teacher and student must expose Hugging Face fast tokenizers.
-- Tokenizers must return offsets in the same raw-string indexing convention.
-- Padding, special tokens, zero-length offsets, uncovered whitespace, and
-  regions truncated by either tokenizer are excluded from the empirical
-  measure.
-- If a byte-fallback tokenizer emits overlapping offsets for multiple tokens
-  covering the same Unicode character, offsets are canonicalized with
-  deterministic first-token precedence; fully covered duplicate intervals
-  receive zero mass.
-
-Run the smoke configuration:
+For Weights & Biases logging:
 
 ```bash
-cd scripts
-chmod +x train_tmkd.sh
-./train_tmkd.sh
+wandb login
 ```
 
-Primary settings are `--lambda_tmkd 1`, `--tmkd_mode full`, and exact
-blockwise accumulation with `--tmkd_block_size 512`. The block size changes
-memory usage, not the objective. The within-text ablation is available via
-`--tmkd_mode within`.
-
-For a pair batch, both text members participate in the full kernel. When a
-legacy text-only CSV is converted to identical `(text, text)` pairs, the
-duplicate is omitted from the TMKD kernel while remaining available as the
-second stochastic view for InfoNCE.
-
-Training metrics, validation results, timing, and peak allocated GPU memory are
-written to `SAVE_DIR/metrics.jsonl`. Pair-classification thresholds are chosen
-on validation data and reused unchanged for the final test evaluation.
-
-Run the fixed-coefficient/within-vs-full grid:
+If you want a local/offline W&B run:
 
 ```bash
-cd scripts
-chmod +x run_tmkd_ablation.sh
-./run_tmkd_ablation.sh
+export WANDB_MODE=offline
 ```
 
-### Quick Start
+## Method
 
-#### 1. Prepare Data
+HeatGeo first caches teacher embeddings:
 
-Place training CSV file in `data/` directory:
-```csv
-# Format: CSV with 'text' column or 'premise', 'hypothesis' columns
-# Example: data/AllNLI.csv, data/merged_3_data_5k_each.csv
-```
+$$
+t_i = T(x_i)
+$$
 
-**Important:** Training scripts use `test_debug.csv` by default for quick testing. Change to your actual training data:
+Then it builds a teacher-induced kNN graph:
 
-**Edit training scripts before running:**
+$$
+\mathcal N_k(i)=\operatorname{TopK}_{j\neq i}\cos(t_i,t_j)
+$$
 
-For PowerShell (`.ps1` files):
-```powershell
-# In scripts/train_talas.ps1, change line:
-$TRAIN_DATA = "data/test_debug.csv"
-# To your actual data file:
-$TRAIN_DATA = "data/merged_3_data_5k_each.csv"
-```
+The graph uses mutual kNN edges:
 
-For Bash (`.sh` files):
+$$
+j\in\mathcal N_k(i)
+\quad\text{and}\quad
+i\in\mathcal N_k(j)
+$$
+
+If a node has no mutual neighbor, HeatGeo falls back to its ordinary top-k neighbors and logs the fallback.
+
+Each graph row becomes a transition distribution:
+
+$$
+P_{ij}
+=
+\frac{\exp(\cos(t_i,t_j)/\tau_g)}
+{\sum_{u\in\mathcal N(i)}\exp(\cos(t_i,t_u)/\tau_g)}
+$$
+
+Multi-scale diffusion targets are:
+
+$$
+q_{i,r}=e_i^\top P^r,
+\qquad
+r\in\{1,2,4\}
+$$
+
+During training, the student predicts a distribution over candidate neighbors:
+
+$$
+p_i^S(j)
+=
+\frac{\exp(\cos(s_i,s_j)/\tau_s)}
+{\sum_{u\in C_i}\exp(\cos(s_i,s_u)/\tau_s)}
+$$
+
+The main HeatGeo objective is:
+
+$$
+\mathcal L
+=
+w_{\mathrm{task}}\mathcal L_{\mathrm{InfoNCE}}
++
+\lambda_{\mathrm{diff}}\mathcal L_{\mathrm{diff}}
++
+\lambda_{\mathrm{spec}}\mathcal L_{\mathrm{spec}}
++
+\lambda_{\mathrm{anchor}}\mathcal L_{\mathrm{anchor}}
+$$
+
+The default config is in `config/heatgeo_config.py`.
+
+## Run HeatGeo
+
+From the repo root:
+
 ```bash
-# In scripts/train_talas.sh, change line:
-TRAIN_DATA="../data/test_debug.csv"
-# To your actual data file:
-TRAIN_DATA="../data/merged_3_data_5k_each.csv"
+source venv/bin/activate
+bash scripts/train_heatgeo.sh
 ```
 
+The script is Mac Apple Silicon friendly by default:
 
-#### 2. Run Training
-
-**Windows PowerShell:**
-```powershell
-# TALAS method (our method)
-cd scripts
-.\train_talas.ps1
-
-# Other methods
-.\train_dskd.ps1
-.\train_cdm.ps1
-.\train_emo.ps1
-.\train_stella.ps1
+```text
+PYTORCH_ENABLE_MPS_FALLBACK=1
+BATCH_SIZE=4
 ```
 
-**Linux/Mac:**
+You can override settings without editing the file:
+
 ```bash
-# Make scripts executable
-chmod +x scripts/*.sh
-
-# TALAS method
-cd scripts
-./train_talas.sh
-
-# Other methods
-./train_dskd.sh
-./train_cdm.sh
-./train_emo.sh
-./train_stella.sh
+BATCH_SIZE=2 EPOCHS=5 WANDB_MODE=online bash scripts/train_heatgeo.sh
 ```
 
-### TALAS training
+To disable W&B:
 
-If you change data, delete cache first to re-calculate cache teacher.
-
-### Baseline training
-
-When using Qwen3 as the teacher model, apply last-token pooling to obtain the sentence representation. For BGE-M3 as the teacher, use the CLS token for pooling.
-
-### Precision
-
-The training precision can be switched between float16 and float32 as required.
-
-### Hyperparameter Tuning
-
-You can access the corresponding config file (e.g., `config/talas_config.py`, `config/stella_config.py`) to adjust hyperparameters such as learning rate, batch size, epochs, loss weights, and other training configurations.
-
-
-## Evaluation
-
-```python
-# Evaluate STS tasks
-eval_sts_task(model, test_sts_tasks)
-
-# Evaluate classification tasks
-eval_classification_task(model, test_cls_tasks)
-
-# Evaluate pair classification tasks
-eval_pair_task(model, test_pair_tasks)
+```bash
+bash scripts/train_heatgeo.sh --no_wandb
 ```
+
+Or run the Python entry point directly:
+
+```bash
+python3 main.py \
+  --method heatgeo \
+  --train_data data/merged_3_data_5k_each.csv \
+  --student_model jim12345/MiniLMv2-L6-H384-distilled-from-BERT-Base \
+  --teacher_model Qwen/Qwen3-Embedding-0.6B \
+  --batch_size 4 \
+  --epochs 5 \
+  --lr 2e-5 \
+  --max_length 256 \
+  --save_dir models/heatgeo/qwen3_0_6b_to_minilmv2_h384
+```
+
+## Outputs
+
+Model checkpoints and weights are saved under:
+
+```text
+models/heatgeo/qwen3_0_6b_to_minilmv2_h384/
+```
+
+Training and benchmark metrics are written to:
+
+```text
+models/heatgeo/qwen3_0_6b_to_minilmv2_h384/metrics.jsonl
+```
+
+Teacher and graph caches are written to:
+
+```text
+cache/heatgeo/qwen3_0_6b_minilmv2_h384_teacher_train.pt
+cache/heatgeo/qwen3_0_6b_minilmv2_h384_graph.pt
+```
+
+kNN graph logs are written to:
+
+```text
+logs/heatgeo/knn_graph_neighbors.jsonl
+```
+
+Each graph-log node row contains:
+
+```json
+{
+  "idx": 0,
+  "fallback_used": false,
+  "neighbors": [12, 91, 7],
+  "transition_probs": [0.41, 0.33, 0.26],
+  "cosine_scores": [0.82, 0.80, 0.78]
+}
+```
+
+The first row is a summary with fallback counts, fallback rate, and degree statistics.
+
+## Rebuilding Caches
+
+If you change the training corpus, teacher model, or HeatGeo graph parameters, remove the old caches first:
+
+```bash
+rm cache/heatgeo/qwen3_0_6b_minilmv2_h384_teacher_train.pt
+rm cache/heatgeo/qwen3_0_6b_minilmv2_h384_graph.pt
+```
+
+Then rerun:
+
+```bash
+bash scripts/train_heatgeo.sh
+```
+
+## Benchmarks
+
+The training loop evaluates these benchmark groups:
+
+Classification:
+
+```text
+Banking77, Emotion, Tweet
+```
+
+Pair classification:
+
+```text
+MRPC, SciTail, WiC
+```
+
+Semantic textual similarity:
+
+```text
+SICK, STS12, STS-B
+```
+
+Validation runs after each epoch. Final test evaluation runs after training, reusing pair-classification thresholds selected on validation.
