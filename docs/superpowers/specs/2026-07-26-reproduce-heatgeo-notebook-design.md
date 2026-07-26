@@ -103,6 +103,20 @@ reflect the codebase's older 0.6B/MiniLM defaults from being reused with the
 Qwen3-4B/BERT-base pair. The uploaded ZIP and its source defaults are not patched
 at runtime.
 
+## Colab Command Output
+
+Short diagnostic subprocesses use a shared helper that captures and prints their
+output under explicit section labels. This applies to the pip version, HeatGeo
+configuration, `nvidia-smi`, and PyTorch device probes. Each diagnostic reports
+success or failure and exposes non-empty standard error.
+
+Potentially long commands, specifically requirements installation and HeatGeo
+training, stream output directly to the notebook rather than buffering it in
+memory. The notebook prints the selected models, dataset, batch size, epochs,
+log path, and output path before training. Every `subprocess.run()` result is
+assigned, so Jupyter does not display an unexplained `CompletedProcess(...)`
+object as a cell result.
+
 ## Failure Handling
 
 - Missing archive, repository, training dataset, HeatGeo script, virtual
@@ -129,9 +143,11 @@ Implementation verification will:
    replaced by HeatGeo equivalents;
 4. inspect the notebook to confirm that the 0.6B/MiniLM model IDs are absent and
    the Qwen3-4B/BERT-base IDs are passed to the training script;
-5. run the summary-table parser against representative synthetic
+5. inspect all subprocess calls to confirm short probes are labeled and captured,
+   while requirements installation and training remain streamed;
+6. run the summary-table parser against representative synthetic
    `metrics.jsonl` records using the project `.venv`;
-6. confirm the resulting CSV schema and family mean rows.
+7. confirm the resulting CSV schema and family mean rows.
 
 Full model training is not part of local verification because it requires model
 downloads and benchmark-scale compute. The notebook remains configured for a
