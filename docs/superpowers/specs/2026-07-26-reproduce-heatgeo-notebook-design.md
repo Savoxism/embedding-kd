@@ -26,6 +26,12 @@ Every notebook run will replace only the dedicated extraction workspace at
 `/content/ICLR_MDD_npa_test_1_workspace`. This guarantees that the training run
 cannot silently reuse an older extracted codebase.
 
+The reproduction model pair is fixed in the notebook, independently of the
+defaults stored in the uploaded ZIP:
+
+- student: `google-bert/bert-base-uncased`;
+- teacher: `Qwen/Qwen3-Embedding-4B`.
+
 ## Notebook Flow
 
 1. Mount Google Drive and define `DRIVE_DIR`, `ARCHIVE_PATH`, and `EXTRACT_DIR`
@@ -35,17 +41,19 @@ cannot silently reuse an older extracted codebase.
 3. Discover the repository root inside the extraction workspace by requiring
    both `main.py` and `scripts/train_heatgeo.sh`. This supports archives with or
    without a single enclosing root directory.
-4. Define the dataset, virtual environment, HeatGeo cache, output, log, and
-   metrics paths in one shared path cell and validate required inputs.
-5. Create `.venv` only when it is absent, install `requirements.txt` through
+4. Define the model IDs, dataset, virtual environment, HeatGeo cache, output,
+   log, and metrics paths in one shared path cell and validate required inputs.
+5. Remove any `.venv` accidentally included in the ZIP, create a clean
+   project-local `.venv`, install `requirements.txt` through
    `.venv/bin/python`, and print the active PyTorch device:
    - CUDA when `torch.cuda.is_available()` is true;
    - Apple MPS when CUDA is unavailable and MPS is available;
    - CPU otherwise.
 6. Remove only the HeatGeo cache and the selected run output directory so stale
    artifacts cannot contaminate a reproduction run.
-7. Run `scripts/train_heatgeo.sh` with the current HeatGeo defaults and explicit
-   experiment paths. The shell process will activate `.venv` first.
+7. Run `scripts/train_heatgeo.sh` with explicit model IDs and experiment paths.
+   The shell process will activate `.venv` first. Environment overrides allow
+   the existing uploaded ZIP to remain unchanged.
 8. Rely on `KnowledgeDistiller.train()` with `eval_every = 1` to run validation
    after every epoch. Pair-classification thresholds are selected on validation.
 9. Run test evaluation only once after the final epoch, reusing the final
@@ -86,6 +94,15 @@ For HeatGeo, the teacher is used to create or load cached embeddings and is then
 released. Student training and the HeatGeo criterion remain on the selected
 student device.
 
+## Model-Specific Artifacts
+
+The run directory is
+`models/heatgeo/qwen3_4b_to_bert_base`. The notebook removes all extracted
+`cache/heatgeo` contents before training. This prevents cache files whose names
+reflect the codebase's older 0.6B/MiniLM defaults from being reused with the
+Qwen3-4B/BERT-base pair. The uploaded ZIP and its source defaults are not patched
+at runtime.
+
 ## Failure Handling
 
 - Missing archive, repository, training dataset, HeatGeo script, virtual
@@ -110,9 +127,11 @@ Implementation verification will:
    syntax;
 3. inspect the notebook to confirm all TMKD-specific run paths and commands were
    replaced by HeatGeo equivalents;
-4. run the summary-table parser against representative synthetic
+4. inspect the notebook to confirm that the 0.6B/MiniLM model IDs are absent and
+   the Qwen3-4B/BERT-base IDs are passed to the training script;
+5. run the summary-table parser against representative synthetic
    `metrics.jsonl` records using the project `.venv`;
-5. confirm the resulting CSV schema and family mean rows.
+6. confirm the resulting CSV schema and family mean rows.
 
 Full model training is not part of local verification because it requires model
 downloads and benchmark-scale compute. The notebook remains configured for a
