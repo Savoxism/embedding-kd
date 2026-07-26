@@ -2,14 +2,15 @@
 
 ## Goal
 
-Update `reproduce_talas.ipynb` so that it reproduces the benchmark workflow with
+Update `test_mdd.ipynb` (renamed from `reproduce_talas.ipynb`) so that it
+reproduces the benchmark workflow with
 the current HeatGeo implementation, reports the actual PyTorch training device,
 evaluates all validation benchmarks after every epoch, evaluates test benchmarks
 only once after training, and produces a reusable evaluation summary table.
 
 ## Scope
 
-Only `reproduce_talas.ipynb` will be changed during implementation. The notebook
+Only `test_mdd.ipynb` will be changed during implementation. The notebook
 will call the existing HeatGeo training entry point and consume the existing
 `metrics.jsonl` output rather than duplicating the training loop from
 `KnowledgeDistiller`.
