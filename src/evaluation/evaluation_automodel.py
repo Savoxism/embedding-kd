@@ -8,11 +8,9 @@ import torch.nn.functional as F
 from scipy.stats import pearsonr, spearmanr
 from sklearn.metrics import accuracy_score, f1_score, precision_score, recall_score, average_precision_score
 from sklearn.linear_model import LogisticRegression
-from transformers import AutoTokenizer
 from pathlib import Path
 
 BASE_DIR = Path(__file__).resolve().parent.parent.parent
-tokenizer = AutoTokenizer.from_pretrained('google-bert/bert-base-uncased')
 
 class STSDataset(Dataset):
     def __init__(self, file_path):
@@ -63,7 +61,7 @@ def eval_sts(model, eval_loader):
     preds, labels = [], []
     device = model.device
     
-    with torch.amp.autocast('cuda', dtype=torch.float16):
+    with torch.amp.autocast('cuda', dtype=torch.float16, enabled=torch.cuda.is_available()):
         with torch.no_grad():
             for batch in tqdm(eval_loader):
                 input_ids1 = batch["input_ids1"].to(device)
@@ -97,9 +95,10 @@ def eval_sts(model, eval_loader):
     return spearman_corr
 
 
-def eval_sts_task(model, path_list):
+def eval_sts_task(model, path_list, tokenizer):
     model.eval()
     print(' eval_sts_task')
+    results = {}
     for path in path_list:
         print(path)
         eval_dataset = STSDataset(path)
@@ -109,8 +108,9 @@ def eval_sts_task(model, path_list):
             shuffle=False,
             collate_fn=lambda x: collate_fn(x, tokenizer)
         )
-        eval_sts(model, eval_loader)
+        results[path] = eval_sts(model, eval_loader)
     model.train()
+    return results
 
 from sklearn.metrics import accuracy_score, f1_score
 from sklearn.linear_model import LogisticRegression
@@ -122,7 +122,7 @@ def eval_cls(model, eval_loader):
     preds, labels = [], []
     device = model.device
     
-    with torch.amp.autocast('cuda', dtype=torch.float16):
+    with torch.amp.autocast('cuda', dtype=torch.float16, enabled=torch.cuda.is_available()):
         with torch.no_grad():
             for batch in tqdm(eval_loader):
                 input_ids1 = batch["input_ids1"].to(device)
@@ -175,10 +175,11 @@ def clf_collate_fn(batch, tokenizer, max_len=512):
     }
 
 
-def eval_classification_task(model, path_list):
+def eval_classification_task(model, path_list, tokenizer):
     model.eval()
     print(' eval classifier')
 
+    results = {}
     for train_path, dev_path in path_list:
         print(dev_path)
         eval_dataset = ClasssifyDataset(dev_path)
@@ -215,8 +216,10 @@ def eval_classification_task(model, path_list):
         f1 = f1_score(y_test, y_pred, average="macro")
         scores["f1"] = f1
         print(scores)
+        results[dev_path] = scores
         
     model.train()
+    return results
 
 
 class PairDataset(Dataset):
@@ -237,11 +240,11 @@ class PairDataset(Dataset):
         }
         
 
-def eval_pair(model, eval_loader):
+def eval_pair(model, eval_loader, threshold=None):
     preds, labels = [], []
     device = model.device
     
-    with torch.amp.autocast('cuda', dtype=torch.float16):
+    with torch.amp.autocast('cuda', dtype=torch.float16, enabled=torch.cuda.is_available()):
         with torch.no_grad():
             for batch in tqdm(eval_loader):
                 input_ids1 = batch["input_ids1"].to(device)
@@ -269,18 +272,24 @@ def eval_pair(model, eval_loader):
                 preds.extend(score.cpu().numpy())
                 labels.extend(label.numpy())
     
-    metric = get_metric_pair_classification(preds, labels)
+    metric = get_metric_pair_classification(preds, labels, threshold=threshold)
     print(metric)
 
     return metric
 
-def get_metric_pair_classification(scores, labels):
-    best_acc, best_thr = 0, 0
-    for thr in np.linspace(0, 1, 200):
-        preds = (scores >= thr).astype(int)
-        acc = accuracy_score(labels, preds)
-        if acc > best_acc:
-            best_acc, best_thr = acc, thr
+def get_metric_pair_classification(scores, labels, threshold=None):
+    scores = np.asarray(scores)
+    labels = np.asarray(labels)
+    if threshold is None:
+        best_acc, best_thr = 0, 0
+        for candidate in np.linspace(0, 1, 200):
+            predictions = (scores >= candidate).astype(int)
+            accuracy = accuracy_score(labels, predictions)
+            if accuracy > best_acc:
+                best_acc, best_thr = accuracy, float(candidate)
+    else:
+        best_thr = float(threshold)
+        best_acc = accuracy_score(labels, (scores >= best_thr).astype(int))
     preds = (scores >= best_thr).astype(int)
     return {
         "best_threshold": best_thr,
@@ -292,10 +301,12 @@ def get_metric_pair_classification(scores, labels):
     }
 
 
-def eval_pair_task(model, path_list):
+def eval_pair_task(model, path_list, tokenizer, thresholds=None):
     model.eval()
     print(' eval_pair_task')
-    for path in path_list:
+    results = {}
+    selected_thresholds = {}
+    for index, path in enumerate(path_list):
         print(path)
         eval_dataset = PairDataset(path)
         eval_loader = DataLoader(
@@ -304,8 +315,12 @@ def eval_pair_task(model, path_list):
             shuffle=False,
             collate_fn=lambda x: collate_fn(x, tokenizer)
         )
-        eval_pair(model, eval_loader)
+        threshold = None if thresholds is None else thresholds[index]
+        metric = eval_pair(model, eval_loader, threshold=threshold)
+        results[path] = metric
+        selected_thresholds[index] = metric["best_threshold"]
     model.train()
+    return results, selected_thresholds
 
 # Evaluation datasets - using local multi-data folder
 eval_cls_tasks = [('data/multi-data/banking_train.csv', 
@@ -337,4 +352,3 @@ test_sts_tasks = ['data/multi-data/sick_test.csv',
 test_pair_tasks = ['data/multi-data/mrpc_test.csv', 
                    'data/multi-data/scitail_test.csv', 
                    'data/multi-data/wic_test.csv']
-

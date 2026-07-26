@@ -9,9 +9,9 @@ $METHOD = "emo"
 $TRAIN_DATA = "..\data\test_debug.csv"
 $STUDENT_MODEL="..\model_hub\MiniLMv2-L6-H384-distilled-from-BERT-Base\MiniLM-L6-H384-distilled-from-BERT-Base"
 $TEACHER_MODEL = "Qwen/Qwen3-Embedding-0.6B"
-$BATCH_SIZE = 32
+$BATCH_SIZE = 4
 $EPOCHS = 5
-$LR = 2e-5
+$LR = 1e-5
 $MAX_LENGTH = 256
 $SAVE_DIR = "checkpoints/emo"
 

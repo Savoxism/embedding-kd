@@ -215,6 +215,50 @@ pip install -r requirements.txt
 
 ## Usage
 
+### TMKD
+
+TMKD distills the teacher/student cosine kernel over a common refinement of
+their raw-text character offsets. It does not use a projection head, token
+matching, attention selection, or optimal transport.
+
+Requirements:
+
+- Both teacher and student must expose Hugging Face fast tokenizers.
+- Tokenizers must return offsets in the same raw-string indexing convention.
+- Padding, special tokens, zero-length offsets, uncovered whitespace, and
+  regions truncated by either tokenizer are excluded from the empirical
+  measure.
+
+Run the smoke configuration:
+
+```bash
+cd scripts
+chmod +x train_tmkd.sh
+./train_tmkd.sh
+```
+
+Primary settings are `--lambda_tmkd 1`, `--tmkd_mode full`, and exact
+blockwise accumulation with `--tmkd_block_size 512`. The block size changes
+memory usage, not the objective. The within-text ablation is available via
+`--tmkd_mode within`.
+
+For a pair batch, both text members participate in the full kernel. When a
+legacy text-only CSV is converted to identical `(text, text)` pairs, the
+duplicate is omitted from the TMKD kernel while remaining available as the
+second stochastic view for InfoNCE.
+
+Training metrics, validation results, timing, and peak allocated GPU memory are
+written to `SAVE_DIR/metrics.jsonl`. Pair-classification thresholds are chosen
+on validation data and reused unchanged for the final test evaluation.
+
+Run the fixed-coefficient/within-vs-full grid:
+
+```bash
+cd scripts
+chmod +x run_tmkd_ablation.sh
+./run_tmkd_ablation.sh
+```
+
 ### Quick Start
 
 #### 1. Prepare Data
@@ -306,4 +350,3 @@ eval_classification_task(model, test_cls_tasks)
 # Evaluate pair classification tasks
 eval_pair_task(model, test_pair_tasks)
 ```
-

@@ -31,14 +31,12 @@ def build_reciprocal_mapping_from_token_lists(
     teacher_tokens, student_tokens,
     teacher_special="<s>", student_special="[CLS]"
 ):
-    teacher_to_student = align_tokens(teacher_tokens, student_tokens, teacher_special, student_special)
-    student_to_teacher = align_tokens(student_tokens, teacher_tokens, student_special, teacher_special)
-
-    reciprocal_mapping = {}
-    for t, s in teacher_to_student.items():
-        if s in student_to_teacher and student_to_teacher[s] == t:
-            reciprocal_mapping[t] = s
-    return reciprocal_mapping
+    return align_tokens(
+        teacher_tokens,
+        student_tokens,
+        teacher_special,
+        student_special,
+    )
 
 
 def build_reciprocal_mapping_from_token_lists_old(
@@ -106,44 +104,38 @@ def compute_token_importance(attention_weights, tokens):
     # Sum attention that each token receives: [seq_len]
     token_importance = avg_attention.sum(dim=0)
     
-    # Normalize importance scores (add small epsilon to avoid division by zero)
-    norm_importance = torch.softmax(token_importance, dim=0)
+    token_importance = token_importance.clamp_min(0)
+    total = token_importance.sum()
+    if total <= 1e-12:
+        norm_importance = torch.full_like(token_importance, 1.0 / max(seq_len, 1))
+    else:
+        norm_importance = token_importance / total
     
     return norm_importance
 
 
 def project_importance(teacher_importance, teacher_tokens, student_tokens, mapping):
     device = teacher_importance.device
-    student_importance = torch.zeros(len(student_tokens), device=device)
-    
-    # Get valid teacher tokens based on attention mask
-    valid_teacher_tokens = teacher_tokens[:teacher_importance.shape[0]]
-    
-    # Map valid tokens to importance scores
-    teacher_token_to_importance = {token: score.item() for token, score in zip(valid_teacher_tokens, teacher_importance)}
-    
-    # Keep track of mapped student indices
-    mapped_student_indices = set()
-    
-    # Project importance scores
-    for t_idx, t in enumerate(valid_teacher_tokens):
-        if t in mapping:
-            s = mapping[t]
-            # Find all occurrences of this student token
-            s_indices = [i for i, token in enumerate(student_tokens) if token == s]
-            for s_idx in s_indices:
-                if s_idx < len(student_importance):  # Ensure index is valid
-                    student_importance[s_idx] = teacher_importance[t_idx]
-                    mapped_student_indices.add(s_idx)
-    
-    # Find minimum importance score from teacher for unmapped tokens
-    min_importance = teacher_importance.min().item() if len(teacher_importance) > 0 else 0.0
-    for s_idx in range(len(student_tokens)):
-        if s_idx not in mapped_student_indices and s_idx < len(student_importance):
-            student_importance[s_idx] = min_importance
-    student_importance = torch.softmax(student_importance, dim=0)
-    
-    return student_importance
+    if len(student_tokens) == 0:
+        return torch.empty(0, device=device)
+    min_importance = (
+        teacher_importance.min()
+        if teacher_importance.numel() > 0
+        else torch.tensor(1.0, device=device)
+    )
+    student_importance = torch.full(
+        (len(student_tokens),),
+        float(min_importance.item()),
+        device=device,
+        dtype=teacher_importance.dtype,
+    )
+    for teacher_idx, student_idx in mapping.items():
+        if teacher_idx < teacher_importance.numel() and student_idx < len(student_tokens):
+            student_importance[student_idx] = teacher_importance[teacher_idx]
+    total = student_importance.sum()
+    if total <= 1e-12:
+        return torch.full_like(student_importance, 1.0 / len(student_tokens))
+    return student_importance / total
 
 
 def sinkhorn(
@@ -228,39 +220,74 @@ def pairwise_attention_distance(x, y, eps=1e-8):
     return dist_mt
 
 
-def align_tokens(teacher_tokens, student_tokens, teacher_special="<s>", student_special="[CLS]"):
-    # Create mapping dictionary
-    teacher_to_student = {}
-    
-    # Handle empty token lists
+def _normalize_alignment_token(token: str) -> str:
+    return token.replace("##", "").lstrip("Ġ▁").lower()
+
+
+def align_tokens(
+    teacher_tokens,
+    student_tokens,
+    teacher_special="<s>",
+    student_special="[CLS]",
+):
+    """Order-preserving one-to-one MinED alignment over token strings.
+
+    The returned mapping is index based, so repeated token strings remain
+    distinct and cannot overwrite each other.
+    """
+
     if not teacher_tokens or not student_tokens:
-        return teacher_to_student
-    if teacher_special in teacher_tokens and student_special in student_tokens:
-        teacher_to_student[teacher_special] = student_special
-    student_token_set = set(student_tokens)
-    
-    for t in teacher_tokens:
-        tmp_t = t.replace(teacher_special, student_special)
-        if tmp_t in student_token_set:
-            teacher_to_student[t] = tmp_t
-            continue
-        
-        best_s = None
-        best_dist = float('inf')
-        
-        for s in student_tokens:
-            if s == student_special:
-                continue
-                
-            # Calculate edit distance
-            d = editdistance.eval(tmp_t, s)
-            if d < best_dist:
-                best_s = s
-                best_dist = d
-        if best_s is not None:
-            teacher_to_student[t] = best_s
-    
-    return teacher_to_student
+        return {}
+    teacher_normalized = [_normalize_alignment_token(token) for token in teacher_tokens]
+    student_normalized = [_normalize_alignment_token(token) for token in student_tokens]
+    teacher_count = len(teacher_tokens)
+    student_count = len(student_tokens)
+    dp = [[0.0] * (student_count + 1) for _ in range(teacher_count + 1)]
+    backtrace = [[None] * (student_count + 1) for _ in range(teacher_count + 1)]
+    for teacher_idx in range(1, teacher_count + 1):
+        dp[teacher_idx][0] = float(teacher_idx)
+        backtrace[teacher_idx][0] = "delete"
+    for student_idx in range(1, student_count + 1):
+        dp[0][student_idx] = float(student_idx)
+        backtrace[0][student_idx] = "insert"
+
+    for teacher_idx in range(1, teacher_count + 1):
+        for student_idx in range(1, student_count + 1):
+            teacher_token = teacher_normalized[teacher_idx - 1]
+            student_token = student_normalized[student_idx - 1]
+            denominator = max(len(teacher_token), len(student_token), 1)
+            substitution_cost = (
+                editdistance.eval(teacher_token, student_token) / denominator
+            )
+            options = (
+                (dp[teacher_idx - 1][student_idx - 1] + substitution_cost, "match"),
+                (dp[teacher_idx - 1][student_idx] + 1.0, "delete"),
+                (dp[teacher_idx][student_idx - 1] + 1.0, "insert"),
+            )
+            dp[teacher_idx][student_idx], backtrace[teacher_idx][student_idx] = min(
+                options, key=lambda option: option[0]
+            )
+
+    mapping = {}
+    teacher_idx = teacher_count
+    student_idx = student_count
+    while teacher_idx > 0 or student_idx > 0:
+        operation = backtrace[teacher_idx][student_idx]
+        if operation == "match":
+            source_idx = teacher_idx - 1
+            target_idx = student_idx - 1
+            if (
+                teacher_tokens[source_idx] != teacher_special
+                and student_tokens[target_idx] != student_special
+            ):
+                mapping[source_idx] = target_idx
+            teacher_idx -= 1
+            student_idx -= 1
+        elif operation == "delete":
+            teacher_idx -= 1
+        else:
+            student_idx -= 1
+    return dict(sorted(mapping.items()))
 
 
 def compute_att_loss_2(
@@ -278,7 +305,8 @@ def compute_att_loss_2(
     student_special="[CLS]",
 ):
 
-    att_loss_total = 0.0
+    att_loss_total = student_atts[-1].sum() * 0.0
+    att_loss_terms = 0
     batch_size = input_ids_stu.size(0)
 
     teacher_layer_num = len(teacher_atts)
@@ -324,37 +352,15 @@ def compute_att_loss_2(
         n_map = len(reciprocal)
         k_top = max(1, n_map // 3)
 
-        token_scores = {}
-        for idx_t, tok_t in enumerate(teacher_tokens):
-            if tok_t in reciprocal:
-                score = teacher_importance[idx_t].item()
-                if tok_t not in token_scores or score > token_scores[tok_t]:
-                    token_scores[tok_t] = score
-
-        if len(token_scores) == 0:
-            continue
-
-        top_tokens = sorted(token_scores.items(), key=lambda x: x[1], reverse=True)[:k_top]
-        allowed_teacher_tokens = {t for t, _ in top_tokens}
-
-        aligned_teacher_indices = []
-        aligned_student_indices = []
-
-        for t_tok in allowed_teacher_tokens:
-            s_tok = reciprocal[t_tok]
-            # teacher index: lấy xuất hiện đầu tiên
-            try:
-                t_idx = teacher_tokens.index(t_tok)
-            except ValueError:
-                continue
-            # student index: xuất hiện đầu tiên
-            try:
-                s_idx = student_tokens.index(s_tok)
-            except ValueError:
-                continue
-            if t_idx < L_t_valid and s_idx < L_s_valid:
-                aligned_teacher_indices.append(t_idx)
-                aligned_student_indices.append(s_idx)
+        ranked_teacher_indices = sorted(
+            reciprocal,
+            key=lambda index: float(teacher_importance[index].item()),
+            reverse=True,
+        )[:k_top]
+        aligned_teacher_indices = ranked_teacher_indices
+        aligned_student_indices = [
+            reciprocal[teacher_idx] for teacher_idx in ranked_teacher_indices
+        ]
 
         N = len(aligned_teacher_indices)
         if N == 0:
@@ -383,19 +389,15 @@ def compute_att_loss_2(
                 stu_tok_att
             )
 
-            # 10) ép feature dim giống nhau để CKA không lỗi
-            d_s = stu_tok_att.size(1)
-            d_t = tea_tok_att.size(1)
-            d = min(d_s, d_t)
-            if d == 0:
+            if stu_tok_att.size(1) == 0 or tea_tok_att.size(1) == 0:
                 continue
 
-            SH = stu_tok_att[:, :d]  # [N, d]
-            TH = tea_tok_att[:, :d]  # [N, d]
+            att_loss_total = att_loss_total + cka(stu_tok_att, tea_tok_att)
+            att_loss_terms += 1
 
-            att_loss_total += cka(SH, TH)
-
-    return att_loss_total
+    if att_loss_terms == 0:
+        return att_loss_total
+    return att_loss_total / att_loss_terms
 
 
 def compute_ot_loss(
@@ -409,6 +411,8 @@ def compute_ot_loss(
     tok_teacher,
     tok_student,
     projector,              # proj_t2s: Linear(d_t -> d_s)
+    alpha: float = 0.1,
+    max_iter: int = 100,
     teacher_special="<s>",
     student_special="[CLS]",
 ):
@@ -464,7 +468,13 @@ def compute_ot_loss(
         cost_matrix = pairwise_attention_distance(student_seq_f, proj_teacher_seq_f)
         cost_matrix = cost_matrix.to(device=device, dtype=torch.float32)
 
-        ot_loss_b, _ = sinkhorn(cost_matrix, stu_mass, tea_mass)
+        ot_loss_b, _ = sinkhorn(
+            cost_matrix,
+            stu_mass,
+            tea_mass,
+            alpha=alpha,
+            max_iter=max_iter,
+        )
         total_loss += ot_loss_b
 
     avg_loss = total_loss / batch_size
@@ -477,7 +487,7 @@ class EMODistillation(nn.Module):
         self,
         d_teacher: int,
         d_student: int,
-        k_layers: int = 1,
+        k_layers: int = 2,
         alpha_ot: float = 0.1,
         max_iter: int = 100,
         teacher_special: str = "<s>",
@@ -503,7 +513,7 @@ class EMODistillation(nn.Module):
         attention_mask_stu: torch.Tensor,
         tok_teacher,
         tok_student,
-        att_loss_weight: float = 0.1,
+        att_loss_weight: float = 1.0,
         ot_loss_weight: float = 1.0
     ) -> Tuple[torch.Tensor, Dict[str, float]]:
         device = student_outputs.last_hidden_state.device
@@ -534,6 +544,8 @@ class EMODistillation(nn.Module):
             tok_teacher=tok_teacher,
             tok_student=tok_student,
             projector=self.proj_t2s,
+            alpha=self.alpha_ot,
+            max_iter=self.max_iter,
             teacher_special=self.teacher_special,
             student_special=self.student_special
         )

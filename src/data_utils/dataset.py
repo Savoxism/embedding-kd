@@ -1,97 +1,130 @@
+from __future__ import annotations
+
+from typing import List, Optional, Tuple
+
 import pandas as pd
 import torch
 from torch.utils.data import Dataset
-from typing import List, Tuple, Optional
+
 
 class TextPairRaw(Dataset):
+    """Canonical raw-text dataset used by online teacher/student methods."""
+
     def __init__(self, df: pd.DataFrame, task: str):
         self.task = task
         if task == "single_cls":
-            self.samples = [(t, None, int(y)) for t, y in zip(df["text"].astype(str), df["label"].astype(int))]
+            if "text" not in df.columns or "label" not in df.columns:
+                raise ValueError("single_cls data requires 'text' and 'label' columns")
+            self.samples = [
+                (text, None, int(label))
+                for text, label in zip(df["text"].astype(str), df["label"].astype(int))
+            ]
         elif task == "pair_cls":
-            self.samples = [(a, b) for a,b in zip(df["premise"].astype(str),
-                                                            df["hypothesis"].astype(str))]
-        else:  # pair_reg
-            self.samples = [(a, b) for a,b in zip(df["sentence1"].astype(str),
-                                                              df["sentence2"].astype(str))]
-    def __len__(self): return len(self.samples)
-    def __getitem__(self, idx): return self.samples[idx] 
-from typing import List, Tuple, Optional
+            if "premise" not in df.columns or "hypothesis" not in df.columns:
+                raise ValueError("pair_cls data requires 'premise' and 'hypothesis' columns")
+            labels = df["label"].astype(int).tolist() if "label" in df.columns else [None] * len(df)
+            self.samples = [
+                (premise, hypothesis, label)
+                for premise, hypothesis, label in zip(
+                    df["premise"].astype(str),
+                    df["hypothesis"].astype(str),
+                    labels,
+                )
+            ]
+        elif task == "pair_reg":
+            if "sentence1" not in df.columns or "sentence2" not in df.columns:
+                raise ValueError("pair_reg data requires 'sentence1' and 'sentence2' columns")
+            score_column = "score" if "score" in df.columns else "label"
+            if score_column not in df.columns:
+                raise ValueError("pair_reg data requires a 'score' or 'label' column")
+            self.samples = [
+                (sentence1, sentence2, float(score))
+                for sentence1, sentence2, score in zip(
+                    df["sentence1"].astype(str),
+                    df["sentence2"].astype(str),
+                    df[score_column].astype(float),
+                )
+            ]
+        else:
+            raise ValueError(f"Unsupported task type: {task}")
 
+    def __len__(self) -> int:
+        return len(self.samples)
+
+    def __getitem__(self, idx: int) -> Tuple[str, Optional[str], Optional[float]]:
+        return self.samples[idx]
 
 
 class DualTokenizerCollate:
-    def __init__(self, tok_student, tok_teacher, task: str, max_len: int):
+    def __init__(
+        self,
+        tok_student,
+        tok_teacher,
+        task: str,
+        max_len: int,
+        return_offsets: bool = False,
+    ):
         self.ts = tok_student
         self.tt = tok_teacher
         self.task = task
         self.max_len = max_len
+        self.return_offsets = return_offsets
+        if return_offsets:
+            if not getattr(tok_student, "is_fast", False):
+                raise ValueError("TMKD requires a fast student tokenizer with offset mappings")
+            if not getattr(tok_teacher, "is_fast", False):
+                raise ValueError("TMKD requires a fast teacher tokenizer with offset mappings")
 
-    def __call__(self, batch: List[Tuple[str, Optional[str], float]]):
-        s1s, s2s = zip(*batch)
+    def _encode(self, tokenizer, texts: List[str]):
+        return tokenizer(
+            texts,
+            max_length=self.max_len,
+            truncation=True,
+            padding=True,
+            return_tensors="pt",
+            return_special_tokens_mask=True,
+            return_offsets_mapping=self.return_offsets,
+        )
 
-        if self.task == "single_cls":
-            s_enc = self.ts(list(s1s), max_length=self.max_len, truncation=True,
-                            padding=True, return_tensors="pt",
-                            return_special_tokens_mask=True)
-            t_enc = self.tt(list(s1s), max_length=self.max_len, truncation=True,
-                            padding=True, return_tensors="pt",
-                            return_special_tokens_mask=True)
+    @staticmethod
+    def _add_encoding(out, encoding, side: int, model_suffix: str, include_offsets: bool):
+        key_suffix = f"{side}_{model_suffix}"
+        out[f"input_ids{key_suffix}"] = encoding["input_ids"]
+        out[f"attention_mask{key_suffix}"] = encoding["attention_mask"]
+        out[f"special_tokens_mask{key_suffix}"] = encoding["special_tokens_mask"]
+        if include_offsets:
+            out[f"offset_mapping{key_suffix}"] = encoding["offset_mapping"]
+        if "token_type_ids" in encoding:
+            out[f"token_type_ids{key_suffix}"] = encoding["token_type_ids"]
 
-            out = {
-                "input_ids_stu": s_enc["input_ids"],
-                "attention_mask_stu": s_enc["attention_mask"],
-                "special_tokens_mask_stu": s_enc["special_tokens_mask"],
-                "input_ids_tea": t_enc["input_ids"],
-                "attention_mask_tea": t_enc["attention_mask"],
-                "special_tokens_mask_tea": t_enc["special_tokens_mask"],
-                "labels": torch.tensor(ys, dtype=torch.long),
-            }
-            if "token_type_ids" in s_enc:
-                out["token_type_ids_stu"] = s_enc["token_type_ids"]
-            if "token_type_ids" in t_enc:
-                out["token_type_ids_tea"] = t_enc["token_type_ids"]
-            return out
+    def __call__(self, batch: List[Tuple[str, Optional[str], Optional[float]]]):
+        text1s = [sample[0] for sample in batch]
+        text2s = [sample[1] for sample in batch]
+        labels = [sample[2] for sample in batch]
 
-        # ------- pair (bi-encoder) -------
-        s1_enc = self.ts(list(s1s), max_length=self.max_len, truncation=True,
-                         padding=True, return_tensors="pt",
-                         return_special_tokens_mask=True)
-        s2_enc = self.ts(list(s2s), max_length=self.max_len, truncation=True,
-                         padding=True, return_tensors="pt",
-                         return_special_tokens_mask=True)
-
-        t1_enc = self.tt(list(s1s), max_length=self.max_len, truncation=True,
-                         padding=True, return_tensors="pt",
-                         return_special_tokens_mask=True)
-        t2_enc = self.tt(list(s2s), max_length=self.max_len, truncation=True,
-                         padding=True, return_tensors="pt",
-                         return_special_tokens_mask=True)
-
+        student1 = self._encode(self.ts, text1s)
+        teacher1 = self._encode(self.tt, text1s)
         out = {
-            # student
-            "input_ids1_stu": s1_enc["input_ids"],
-            "attention_mask1_stu": s1_enc["attention_mask"],
-            "special_tokens_mask1_stu": s1_enc["special_tokens_mask"],
-            "input_ids2_stu": s2_enc["input_ids"],
-            "attention_mask2_stu": s2_enc["attention_mask"],
-            "special_tokens_mask2_stu": s2_enc["special_tokens_mask"],
-            # teacher
-            "input_ids1_tea": t1_enc["input_ids"],
-            "attention_mask1_tea": t1_enc["attention_mask"],
-            "special_tokens_mask1_tea": t1_enc["special_tokens_mask"],
-            "input_ids2_tea": t2_enc["input_ids"],
-            "attention_mask2_tea": t2_enc["attention_mask"],
-            "special_tokens_mask2_tea": t2_enc["special_tokens_mask"],
+            "raw_texts1": text1s,
         }
-        # chỉ thêm token_type_ids nếu tồn tại
-        if "token_type_ids" in s1_enc:
-            out["token_type_ids1_stu"] = s1_enc["token_type_ids"]
-        if "token_type_ids" in s2_enc:
-            out["token_type_ids2_stu"] = s2_enc["token_type_ids"]
-        if "token_type_ids" in t1_enc:
-            out["token_type_ids1_tea"] = t1_enc["token_type_ids"]
-        if "token_type_ids" in t2_enc:
-            out["token_type_ids2_tea"] = t2_enc["token_type_ids"]
+        self._add_encoding(out, student1, 1, "stu", self.return_offsets)
+        self._add_encoding(out, teacher1, 1, "tea", self.return_offsets)
 
+        has_second_text = all(text is not None for text in text2s)
+        if any(text is not None for text in text2s) and not has_second_text:
+            raise ValueError("A batch cannot mix single-text and pair-text samples")
+        if has_second_text:
+            pair_texts = [str(text) for text in text2s]
+            student2 = self._encode(self.ts, pair_texts)
+            teacher2 = self._encode(self.tt, pair_texts)
+            out["raw_texts2"] = pair_texts
+            self._add_encoding(out, student2, 2, "stu", self.return_offsets)
+            self._add_encoding(out, teacher2, 2, "tea", self.return_offsets)
+
+        has_labels = all(label is not None for label in labels)
+        if any(label is not None for label in labels) and not has_labels:
+            raise ValueError("A batch cannot mix labeled and unlabeled samples")
+        if has_labels:
+            dtype = torch.float32 if self.task == "pair_reg" else torch.long
+            out["labels"] = torch.tensor(labels, dtype=dtype)
         return out

@@ -33,6 +33,7 @@ datasets>=2.14.0
 # Development Tools
 jupyter>=1.0.0
 ipykernel>=6.25.0
+pytest>=8.0.0
 
 # Optional: for LLM2Vec variant
 # llm2vec>=0.1.0

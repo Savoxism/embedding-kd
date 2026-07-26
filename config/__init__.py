@@ -5,6 +5,7 @@ from .emo_config import EMOConfig
 from .stella_config import StellaConfig
 from .talas_config import TALASConfig
 from .heatgeo_config import HeatGeoConfig
+from .tmkd_config import TMKDConfig
 
 __all__ = [
     'BaseConfig',
@@ -13,5 +14,6 @@ __all__ = [
     'EMOConfig',
     'StellaConfig',
     'TALASConfig',
-    'HeatGeoConfig'
+    'HeatGeoConfig',
+    'TMKDConfig'
 ]

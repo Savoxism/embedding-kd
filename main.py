@@ -1,6 +1,15 @@
 import argparse
 import sys
-from config import CDMConfig, DSKDConfig, EMOConfig, StellaConfig, TALASConfig, HeatGeoConfig, BaseConfig
+from config import (
+    BaseConfig,
+    CDMConfig,
+    DSKDConfig,
+    EMOConfig,
+    HeatGeoConfig,
+    StellaConfig,
+    TALASConfig,
+    TMKDConfig,
+)
 from distiller import KnowledgeDistiller
 
 
@@ -13,7 +22,7 @@ def parse_args():
         '--method',
         type=str,
         default='cdm',
-        choices=['cdm', 'dskd', 'emo', 'stella', 'talas', 'heatgeo'],
+        choices=['cdm', 'dskd', 'emo', 'stella', 'talas', 'heatgeo', 'tmkd'],
         help='Distillation method to use'
     )
     
@@ -80,6 +89,30 @@ def parse_args():
         default=None,
         help='DTW KD loss weight'
     )
+    parser.add_argument(
+        '--lambda_tmkd',
+        type=float,
+        default=None,
+        help='TMKD loss coefficient (primary setting: 1.0)'
+    )
+    parser.add_argument(
+        '--tmkd_block_size',
+        type=int,
+        default=None,
+        help='Exact TMKD kernel accumulation block size'
+    )
+    parser.add_argument(
+        '--tmkd_mode',
+        choices=['full', 'within'],
+        default=None,
+        help='Use the full cross-text kernel or within-text ablation'
+    )
+    parser.add_argument(
+        '--task_type',
+        choices=['single_cls', 'pair_cls', 'pair_reg'],
+        default=None,
+        help='Training task contract'
+    )
     
     parser.add_argument(
         '--save_dir',
@@ -122,6 +155,8 @@ def get_config(method: str, args):
         config = TALASConfig()
     elif method == 'heatgeo':
         config = HeatGeoConfig()
+    elif method == 'tmkd':
+        config = TMKDConfig()
     else:
         config = BaseConfig()
     
@@ -148,6 +183,14 @@ def get_config(method: str, args):
         config.w_task = args.w_task
     if args.alpha_dtw is not None:
         config.alpha_dtw = args.alpha_dtw
+    if args.lambda_tmkd is not None:
+        config.lambda_tmkd = args.lambda_tmkd
+    if args.tmkd_block_size is not None:
+        config.tmkd_block_size = args.tmkd_block_size
+    if args.tmkd_mode is not None:
+        config.tmkd_mode = args.tmkd_mode
+    if args.task_type is not None:
+        config.task_type = args.task_type
     
     if args.save_dir is not None:
         config.save_dir = args.save_dir

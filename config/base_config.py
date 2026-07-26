@@ -32,14 +32,27 @@ class BaseConfig:
     save_best = True
     
     debug_align = False
+    evaluate_test_each_epoch = False
+    eval_every = 1
     
     seed = 42
     
     def __repr__(self):
-        attrs = [f"{k}={v}" for k, v in self.__dict__.items() 
-                if not k.startswith('_')]
+        attrs = [f"{k}={v}" for k, v in self.to_dict().items()]
         return f"{self.__class__.__name__}({', '.join(attrs)})"
     
     def to_dict(self):
-        return {k: v for k, v in self.__dict__.items() 
-                if not k.startswith('_')}
+        values = {}
+        for cls in reversed(type(self).mro()):
+            for key, value in vars(cls).items():
+                if key.startswith("_") or callable(value):
+                    continue
+                values[key] = value
+        values.update(
+            {
+                key: value
+                for key, value in self.__dict__.items()
+                if not key.startswith("_")
+            }
+        )
+        return values
