@@ -63,6 +63,27 @@ def test_special_padding_gaps_and_unshared_truncation_are_excluded():
     )
 
 
+def test_overlapping_byte_fallback_offsets_are_canonicalized():
+    teacher_offsets = torch.tensor([[[0, 6], [6, 7], [6, 7], [7, 9]]])
+    student_offsets = torch.tensor([[[0, 3], [3, 7], [7, 9]]])
+    teacher_attention, teacher_special = _masks(4)
+    student_attention, student_special = _masks(3)
+
+    refinement = build_common_refinement(
+        teacher_offsets,
+        student_offsets,
+        teacher_attention,
+        student_attention,
+        teacher_special,
+        student_special,
+    )
+
+    # The duplicate teacher interval at token index 2 has zero character mass.
+    assert 2 not in refinement.teacher_token.tolist()
+    assert refinement.teacher_token.tolist() == [0, 0, 1, 3]
+    assert torch.isclose(refinement.within_sentence_mass.sum(), torch.tensor(1.0))
+
+
 def test_explicit_and_blockwise_losses_and_gradients_match():
     generator = torch.Generator().manual_seed(7)
     teacher = torch.nn.functional.normalize(torch.randn(9, 7, generator=generator), dim=-1)

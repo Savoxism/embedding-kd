@@ -2,7 +2,7 @@ import os
 import torch
 import torch.nn.functional as F
 from torch.utils.data import DataLoader
-from torch.cuda.amp import autocast
+from torch.amp import autocast
 from tqdm import tqdm
 from typing import Optional, Dict, Any
 from transformers import AutoModel, AutoTokenizer
@@ -41,7 +41,10 @@ def cache_teacher_embeddings(
                 if k.endswith("_tea"):
                     batch_t[k] = v.to(device, non_blocking=True)
             
-            with autocast(enabled=use_amp and torch.cuda.is_available()):
+            with autocast(
+                "cuda",
+                enabled=use_amp and torch.cuda.is_available(),
+            ):
                 t_out1 = model_teacher(
                     input_ids=batch_t["input_ids1_tea"],
                     attention_mask=batch_t["attention_mask1_tea"],

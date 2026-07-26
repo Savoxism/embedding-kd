@@ -9,8 +9,7 @@ import torch.optim as optim
 import torch.nn.functional as F
 import numpy as np
 from pathlib import Path
-from torch.cuda.amp import autocast
-from torch.amp import GradScaler
+from torch.amp import GradScaler, autocast
 from torch.utils.data import DataLoader
 from transformers import AutoTokenizer, AutoModel, get_scheduler
 from collections import deque
@@ -490,7 +489,7 @@ class KnowledgeDistiller:
             include_second_in_kernel = has_second and not duplicate_pair
             self.optimizer.zero_grad(set_to_none=True)
 
-            with autocast(enabled=torch.cuda.is_available()):
+            with autocast("cuda", enabled=torch.cuda.is_available()):
                 with torch.inference_mode():
                     teacher_out1 = self.model_teacher(
                         input_ids=batch_t["input_ids1_tea"],
@@ -605,7 +604,7 @@ class KnowledgeDistiller:
 
             self.optimizer.zero_grad(set_to_none=True)
 
-            with autocast(enabled=torch.cuda.is_available()):
+            with autocast("cuda", enabled=torch.cuda.is_available()):
                 s_out1 = self.model_student(
                     input_ids=batch_s["input_ids1_stu"],
                     attention_mask=batch_s["attention_mask1_stu"],
@@ -663,7 +662,7 @@ class KnowledgeDistiller:
                     batch_s[k] = v.to(self.device_s, non_blocking=True)
             
             # ========== FIRST PASS ==========
-            with autocast(enabled=torch.cuda.is_available()):
+            with autocast("cuda", enabled=torch.cuda.is_available()):
                 teacher_cls = batch_s["teacher_cls"]
                 
                 s_out1 = self.model_student(
@@ -766,7 +765,7 @@ class KnowledgeDistiller:
             self.optimizer.first_step(zero_grad=True)
             
             # ========== SECOND PASS ==========
-            with autocast(enabled=torch.cuda.is_available()):
+            with autocast("cuda", enabled=torch.cuda.is_available()):
                 s_out1_2 = self.model_student(
                     input_ids=batch_s["input_ids1_stu"],
                     attention_mask=batch_s["attention_mask1_stu"],
@@ -840,7 +839,7 @@ class KnowledgeDistiller:
         
         self.optimizer.zero_grad(set_to_none=True)
         
-        with autocast(enabled=torch.cuda.is_available()):
+        with autocast("cuda", enabled=torch.cuda.is_available()):
             need_atts = (method == 'emo')
             with torch.inference_mode():
                 t_out1 = self.model_teacher(

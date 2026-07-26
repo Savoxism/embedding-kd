@@ -228,6 +228,10 @@ Requirements:
 - Padding, special tokens, zero-length offsets, uncovered whitespace, and
   regions truncated by either tokenizer are excluded from the empirical
   measure.
+- If a byte-fallback tokenizer emits overlapping offsets for multiple tokens
+  covering the same Unicode character, offsets are canonicalized with
+  deterministic first-token precedence; fully covered duplicate intervals
+  receive zero mass.
 
 Run the smoke configuration:
 

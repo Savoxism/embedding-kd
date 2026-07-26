@@ -43,15 +43,21 @@ def _valid_intervals(
         intervals.append((start, end, token_idx))
 
     intervals.sort(key=lambda item: (item[0], item[1], item[2]))
+
+    # Some fast tokenizers emit multiple byte-fallback tokens with the same
+    # Unicode-character offset. Convert those offset covers into a deterministic
+    # partition: the earliest token owns the already-covered region and later
+    # intervals retain only a non-overlapping suffix. Fully covered duplicates
+    # receive zero raw-text mass and are omitted.
+    canonical: list[Tuple[int, int, int]] = []
     previous_end = -1
-    for start, end, _ in intervals:
-        if start < previous_end:
-            raise ValueError(
-                "TMKD requires non-overlapping tokenizer offsets within each text; "
-                f"found interval [{start}, {end}) after an interval ending at {previous_end}."
-            )
+    for start, end, token_idx in intervals:
+        start = max(start, previous_end)
+        if end <= start:
+            continue
+        canonical.append((start, end, token_idx))
         previous_end = end
-    return intervals
+    return canonical
 
 
 def build_common_refinement(
