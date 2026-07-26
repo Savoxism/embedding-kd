@@ -18,26 +18,39 @@ The notebook will preserve the Colab and Google Drive workflow. It will use a
 project-local `.venv` for dependency installation and training, and it will not
 install packages into the global Python environment.
 
+The source archive is fixed to:
+
+`/content/drive/MyDrive/[ICLR] Embedding KD/ICLR_MDD_npa_test_1.zip`
+
+Every notebook run will replace only the dedicated extraction workspace at
+`/content/ICLR_MDD_npa_test_1_workspace`. This guarantees that the training run
+cannot silently reuse an older extracted codebase.
+
 ## Notebook Flow
 
-1. Inspect NVIDIA GPU availability with `nvidia-smi` when present.
-2. Mount Google Drive and locate the extracted repository by checking for
-   `main.py` and `scripts/train_heatgeo.sh`.
-3. Change into the detected project directory.
-4. Create `.venv` only when it is absent, install `requirements.txt` through
+1. Mount Google Drive and define `DRIVE_DIR`, `ARCHIVE_PATH`, and `EXTRACT_DIR`
+   in one path-configuration cell.
+2. Assert that `ICLR_MDD_npa_test_1.zip` exists, safely remove the dedicated
+   extraction workspace, and extract the archive from scratch.
+3. Discover the repository root inside the extraction workspace by requiring
+   both `main.py` and `scripts/train_heatgeo.sh`. This supports archives with or
+   without a single enclosing root directory.
+4. Define the dataset, virtual environment, HeatGeo cache, output, log, and
+   metrics paths in one shared path cell and validate required inputs.
+5. Create `.venv` only when it is absent, install `requirements.txt` through
    `.venv/bin/python`, and print the active PyTorch device:
    - CUDA when `torch.cuda.is_available()` is true;
    - Apple MPS when CUDA is unavailable and MPS is available;
    - CPU otherwise.
-5. Remove only the HeatGeo cache and the selected run output directory so stale
+6. Remove only the HeatGeo cache and the selected run output directory so stale
    artifacts cannot contaminate a reproduction run.
-6. Run `scripts/train_heatgeo.sh` with the current HeatGeo defaults and explicit
+7. Run `scripts/train_heatgeo.sh` with the current HeatGeo defaults and explicit
    experiment paths. The shell process will activate `.venv` first.
-7. Rely on `KnowledgeDistiller.train()` with `eval_every = 1` to run validation
+8. Rely on `KnowledgeDistiller.train()` with `eval_every = 1` to run validation
    after every epoch. Pair-classification thresholds are selected on validation.
-8. Run test evaluation only once after the final epoch, reusing the final
+9. Run test evaluation only once after the final epoch, reusing the final
    validation thresholds.
-9. Read the run's `metrics.jsonl`, normalize every validation result into a
+10. Read the run's `metrics.jsonl`, normalize every validation result into a
    single long-form table, append a `MEAN` row for each benchmark family and
    epoch, display the table, and save it as `evaluation_by_epoch.csv`.
 
@@ -78,6 +91,10 @@ student device.
 - Missing archive, repository, training dataset, HeatGeo script, virtual
   environment interpreter, training metrics, or epoch validation records will
   fail with a descriptive assertion.
+- Archive members are checked to ensure they remain inside the dedicated
+  extraction workspace before extraction.
+- Cleanup targets are resolved and checked before deletion. No Google Drive
+  directory or arbitrary `/content` directory is removed.
 - A missing `nvidia-smi` command will be reported without stopping the notebook.
 - The training shell uses `set -o pipefail`, so failures are not hidden by
   logging through `tee`.
