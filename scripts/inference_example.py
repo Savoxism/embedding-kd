@@ -36,16 +36,22 @@ def calculate_similarity(text1, text2, tokenizer, model):
     sim = F.cosine_similarity(emb1, emb2).item()
     return sim
 
+import argparse
+
 def main():
-    # Update these paths if your checkpoint is saved elsewhere
-    checkpoint_path = "./twmd_checkpoints/best_model.pt"
-    model_name = "google-bert/bert-base-uncased"
+    parser = argparse.ArgumentParser(description="Test TWMD Student Model Inference")
+    parser.add_argument("--checkpoint", type=str, default="./twmd_checkpoints/student_epoch_3.pt", help="Path to the saved checkpoint (.pt file)")
+    parser.add_argument("--model", type=str, default="google-bert/bert-base-uncased", help="Base model name")
+    args = parser.parse_args()
+    
+    checkpoint_path = args.checkpoint
+    model_name = args.model
     
     try:
         tokenizer, model = load_student_model(model_name, checkpoint_path)
     except FileNotFoundError:
         print(f"Error: Checkpoint not found at {checkpoint_path}")
-        print("Please train the model first or update the checkpoint path.")
+        print("Please train the model first or update the --checkpoint argument.")
         return
 
     print("\n" + "="*50)
