@@ -8,13 +8,13 @@ Update only the HeatGeo training path and its Colab reproduction notebook:
 2. Rename the expected archive and extraction workspace from
    `ICLR_MDD_npa_test_1` to `ICLR_MDD_pkc_test_1`.
 3. Replace the four-term HeatGeo objective with an alpha-weighted task and
-   diffusion objective using `alpha = 0.8`.
+   diffusion objective using `alpha = 1.0`.
 
 Other distillation methods are out of scope.
 
 ## Loss Configuration
 
-`HeatGeoConfig` will expose `alpha = 0.8` as the source of truth. Spectral and
+`HeatGeoConfig` will expose `alpha = 1.0` as the source of truth. Spectral and
 anchor weights will be set to zero.
 
 The HeatGeo criterion will compute:
@@ -31,14 +31,12 @@ The HeatGeo criterion will compute:
 0\mathcal{L}_{\mathrm{anchor}}.
 \]
 
-For `alpha = 0.8`, this is:
+For `alpha = 1.0`, this is:
 
 \[
 \mathcal{L}_{\mathrm{HeatGeo}}
 =
-0.2\mathcal{L}_{\mathrm{task}}
-+
-0.8\mathcal{L}_{\mathrm{diff}}.
+\mathcal{L}_{\mathrm{diff}}.
 \]
 
 The existing loss metrics remain available so training logs retain their
@@ -52,7 +50,7 @@ current schema.
   `/content/drive/MyDrive/[ICLR] Embedding KD/ICLR_MDD_pkc_test_1.zip`;
 - extract into `/content/ICLR_MDD_pkc_test_1_workspace`;
 - keep `BATCH_SIZE` equal to `16`;
-- verify `alpha == 0.8`, `lambda_spec == 0`, and `lambda_anchor == 0` before
+- verify `alpha == 1.0`, `lambda_spec == 0`, and `lambda_anchor == 0` before
   starting the expensive model-loading and training stages.
 
 ## Documentation
@@ -68,8 +66,8 @@ Implementation is complete when:
 
 1. The notebook contains no `ICLR_MDD_npa_test_1` references and still sets
    batch size to 16.
-2. A default `HeatGeoConfig` reports `alpha = 0.8`,
+2. A default `HeatGeoConfig` reports `alpha = 1.0`,
    `lambda_spec = 0`, and `lambda_anchor = 0`.
 3. A synthetic HeatGeo forward pass numerically equals
-   `0.2 * loss_task + 0.8 * loss_diff`.
+   `loss_diff`.
 4. HeatGeo imports and the notebook JSON structure remain valid.
