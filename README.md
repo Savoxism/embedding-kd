@@ -1,18 +1,20 @@
 # HeatGeo Reproduction Guide
 
-This repository trains compact text embedding models with HeatGeo: a heat-diffusion manifold distillation method. The reproduction target here follows the first teacher-student pair in `docs/TALAS.pdf`:
+This repository trains compact text embedding models with HeatGeo: a heat-diffusion manifold distillation method. The reproduction target follows the Qwen3-4B to BERT-base pair in `docs/TALAS.pdf`:
 
 ```text
-Qwen3-Embedding-0.6B -> MiniLMv2 H384 22M
+Qwen3-Embedding-4B -> BERT-base 109M
 ```
 
 The training corpus follows the TALAS paper setup: about 15K unlabeled sentences sampled from the three in-domain datasets EMOTION, WiC, and STS-B. In this repo, that corpus is:
 
 ```text
-data/merged_3_data_5k_each.csv
+data/train_set/merged_3_data_5k_each.csv
 ```
 
-The benchmark CSV files under `data/multi-data/` are kept for evaluation.
+Benchmark CSV files are separated under `data/train_set/`, `data/val_set/`,
+and `data/test_set/`. Classification probe train and validation files are
+checked for normalized-text leakage before evaluation.
 
 ## Environment
 
@@ -131,19 +133,26 @@ To disable W&B:
 bash scripts/train_heatgeo.sh --no_wandb
 ```
 
+To persist student weights after every epoch, provide a durable directory:
+
+```bash
+WEIGHTS_DIR="/content/drive/MyDrive/[ICLR] Embedding KD/weights/qwen3_4b_to_bert_base" \
+  bash scripts/train_heatgeo.sh --no_wandb
+```
+
 Or run the Python entry point directly:
 
 ```bash
 python3 main.py \
   --method heatgeo \
-  --train_data data/merged_3_data_5k_each.csv \
-  --student_model jim12345/MiniLMv2-L6-H384-distilled-from-BERT-Base \
-  --teacher_model Qwen/Qwen3-Embedding-0.6B \
+  --train_data data/train_set/merged_3_data_5k_each.csv \
+  --student_model google-bert/bert-base-uncased \
+  --teacher_model Qwen/Qwen3-Embedding-4B \
   --batch_size 4 \
   --epochs 5 \
   --lr 2e-5 \
   --max_length 256 \
-  --save_dir models/heatgeo/qwen3_0_6b_to_minilmv2_h384
+  --save_dir models/heatgeo/qwen3_4b_to_bert_base
 ```
 
 ## Outputs
@@ -151,20 +160,29 @@ python3 main.py \
 Model checkpoints and weights are saved under:
 
 ```text
-models/heatgeo/qwen3_0_6b_to_minilmv2_h384/
+models/heatgeo/qwen3_4b_to_bert_base/
 ```
 
 Training and benchmark metrics are written to:
 
 ```text
-models/heatgeo/qwen3_0_6b_to_minilmv2_h384/metrics.jsonl
+models/heatgeo/qwen3_4b_to_bert_base/metrics.jsonl
+```
+
+Validation is evaluated and printed after every epoch. Test is evaluated and
+printed once after training. The Colab notebook exports the two splits
+separately:
+
+```text
+models/heatgeo/qwen3_4b_to_bert_base/validation_by_epoch.csv
+models/heatgeo/qwen3_4b_to_bert_base/final_test_results.csv
 ```
 
 Teacher and graph caches are written to:
 
 ```text
-cache/heatgeo/qwen3_0_6b_minilmv2_h384_teacher_train.pt
-cache/heatgeo/qwen3_0_6b_minilmv2_h384_graph.pt
+cache/heatgeo/qwen3_4b_bert_base_teacher_train.pt
+cache/heatgeo/qwen3_4b_bert_base_graph.pt
 ```
 
 kNN graph logs are written to:

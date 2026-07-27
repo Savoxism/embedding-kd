@@ -21,13 +21,14 @@ class BaseConfig:
     student_special_token = "##"
     teacher_special_token = "_"
     
-    train_data_path = "data/merged_3_data_5k_each.csv"
+    train_data_path = "data/train_set/merged_3_data_5k_each.csv"
     eval_data_path = None
     num_workers = 2
     
     distill_method = "cdm"
     
     save_dir = "checkpoints"
+    weights_dir = None
     save_every = 1
     save_best = True
     

@@ -196,8 +196,7 @@ def eval_classification_task(model, path_list):
 
         clf = LogisticRegression(
             random_state=42,
-            n_jobs=1,
-            max_iter=200,
+            max_iter=1000,
             verbose=0,
         )
         clf.fit(X_train, y_train)
@@ -298,34 +297,39 @@ def eval_pair_task(model, path_list):
         eval_pair(model, eval_loader)
     model.train()
 
-# Evaluation datasets - using local multi-data folder
-eval_cls_tasks = [('data/multi-data/banking_train.csv', 
-                   'data/multi-data/banking77_validation.csv'),
-                  ('data/multi-data/emotion_train.csv', 
-                   'data/multi-data/emotion_validation.csv'), 
-                  ('data/multi-data/tweet_train.csv', 
-                   'data/multi-data/tweet_validation.csv')]
+# Evaluation datasets grouped by physical split.
+eval_cls_tasks = [
+    ('data/train_set/banking77_train.csv', 'data/val_set/banking77_validation.csv'),
+    ('data/train_set/emotion_train.csv', 'data/val_set/emotion_validation.csv'),
+    ('data/train_set/tweet_train.csv', 'data/val_set/tweet_validation.csv'),
+]
 
-eval_sts_tasks = ['data/multi-data/sick_validation.csv', 
-                  'data/multi-data/sts12_validation.csv', 
-                  'data/multi-data/stsb_validation.csv']
+eval_sts_tasks = [
+    'data/val_set/sick_validation.csv',
+    'data/val_set/sts12_validation.csv',
+    'data/val_set/stsb_validation.csv',
+]
 
-eval_pair_tasks = ['data/multi-data/mrpc_validation.csv', 
-                   'data/multi-data/scitail_validation.csv', 
-                   'data/multi-data/wic_validation.csv']
+eval_pair_tasks = [
+    'data/val_set/mrpc_validation.csv',
+    'data/val_set/scitail_validation.csv',
+    'data/val_set/wic_validation.csv',
+]
 
-test_cls_tasks = [('data/multi-data/banking_train.csv', 
-                   'data/multi-data/banking77_test.csv'),
-                  ('data/multi-data/emotion_train.csv', 
-                   'data/multi-data/emotion_test.csv'), 
-                  ('data/multi-data/tweet_train.csv', 
-                   'data/multi-data/tweet_test.csv')]
+test_cls_tasks = [
+    ('data/train_set/banking77_train.csv', 'data/test_set/banking77_test.csv'),
+    ('data/train_set/emotion_train.csv', 'data/test_set/emotion_test.csv'),
+    ('data/train_set/tweet_train.csv', 'data/test_set/tweet_test.csv'),
+]
 
-test_sts_tasks = ['data/multi-data/sick_test.csv', 
-                  'data/multi-data/sts12_test.csv', 
-                  'data/multi-data/stsb_test.csv']
+test_sts_tasks = [
+    'data/test_set/sick_test.csv',
+    'data/test_set/sts12_test.csv',
+    'data/test_set/stsb_test.csv',
+]
 
-test_pair_tasks = ['data/multi-data/mrpc_test.csv', 
-                   'data/multi-data/scitail_test.csv', 
-                   'data/multi-data/wic_test.csv']
-
+test_pair_tasks = [
+    'data/test_set/mrpc_test.csv',
+    'data/test_set/scitail_test.csv',
+    'data/test_set/wic_test.csv',
+]

@@ -3,6 +3,8 @@ import json
 import time
 import math
 import random
+import shutil
+import tempfile
 import torch
 import torch.nn as nn
 import torch.optim as optim
@@ -46,7 +48,6 @@ from src.criterions.stella_distillation import StellaModel
 from src.criterions.stella_distillation import stella_stage1_loss, stella_stage2_loss
 from src.criterions.teacher_anchor_kd import TeacherAnchorKD
 from src.criterions.heatgeo_distillation import HeatGeoDistillation
-from src.criterions.tmkd_distillation import TMKDDistillation
                 
 # Use evaluation_automodel for AutoModel (not evaluation_model_define which is for Stella)
 from src.evaluation.evaluation_automodel import (
@@ -111,6 +112,7 @@ class KnowledgeDistiller:
         self.config = config
         self.wandb_run = None
         self.global_step = 0
+        self._saved_checkpoint_epochs = set()
         self.setup_seed(config.seed)
         self.setup_devices()
         self.setup_models()
@@ -162,14 +164,6 @@ class KnowledgeDistiller:
             })
             self.scheduler = self._build_scheduler()
             print("EMO criterion initialized and added to optimizer")
-        elif config.distill_method == 'tmkd':
-            self.criterion = TMKDDistillation(
-                lambda_tmkd=getattr(config, "lambda_tmkd", 1.0),
-                block_size=getattr(config, "tmkd_block_size", 512),
-                mode=getattr(config, "tmkd_mode", "full"),
-                eps_norm=getattr(config, "eps_norm", 1e-8),
-            ).to(self.device_s)
-            print("TMKD criterion initialized")
         elif config.distill_method == 'heatgeo':
             spectral_dim = int(self.heatgeo_artifact["spectral_coords"].shape[-1])
             self.criterion = HeatGeoDistillation(
@@ -279,12 +273,6 @@ class KnowledgeDistiller:
             trust_remote_code=True,
             **tokenizer_kwargs,
         )
-        if cfg.distill_method == "tmkd":
-            if not getattr(self.tok_student, "is_fast", False):
-                raise ValueError("TMKD requires a fast student tokenizer")
-            if not getattr(self.tok_teacher, "is_fast", False):
-                raise ValueError("TMKD requires a fast teacher tokenizer")
-        
         if cfg.distill_method == 'stella':
             print(f"Loading Stella student model: {cfg.student_model_name}")
             self.model_student = StellaModel(
@@ -367,7 +355,7 @@ class KnowledgeDistiller:
                 df["hypothesis"] = df["text"] if "text" in df.columns else df.iloc[:, 0]
 
         self.task_head = None
-        if cfg.distill_method in ("emo", "tmkd"):
+        if cfg.distill_method == "emo":
             hidden_size = self.model_student.config.hidden_size
             if cfg.task_type == "single_cls" and "label" in df.columns:
                 num_labels = int(df["label"].nunique())
@@ -479,7 +467,6 @@ class KnowledgeDistiller:
                 self.tok_teacher,
                 cfg.task_type,
                 cfg.max_length,
-                return_offsets=cfg.distill_method == "tmkd",
             )
         
         self.train_loader = DataLoader(
@@ -582,120 +569,6 @@ class KnowledgeDistiller:
         cfg = self.config
         method = cfg.distill_method
 
-        if method == "tmkd":
-            batch_s, batch_t = {}, {}
-            for key, value in batch.items():
-                if not torch.is_tensor(value):
-                    continue
-                if key.endswith("_stu") or key == "labels":
-                    batch_s[key] = value.to(self.device_s, non_blocking=True)
-                if key.endswith("_tea"):
-                    batch_t[key] = value.to(self.device_t, non_blocking=True)
-
-            has_second = "input_ids2_stu" in batch_s
-            duplicate_pair = (
-                has_second
-                and batch.get("raw_texts1") == batch.get("raw_texts2")
-                and getattr(cfg, "tmkd_deduplicate_identical_pairs", True)
-            )
-            include_second_in_kernel = has_second and not duplicate_pair
-            self.optimizer.zero_grad(set_to_none=True)
-
-            with autocast("cuda", enabled=torch.cuda.is_available()):
-                with torch.inference_mode():
-                    teacher_out1 = self.model_teacher(
-                        input_ids=batch_t["input_ids1_tea"],
-                        attention_mask=batch_t["attention_mask1_tea"],
-                        return_dict=True,
-                    )
-                    teacher_hidden = [
-                        teacher_out1.last_hidden_state.to(self.device_s, non_blocking=True)
-                    ]
-                    if include_second_in_kernel:
-                        teacher_out2 = self.model_teacher(
-                            input_ids=batch_t["input_ids2_tea"],
-                            attention_mask=batch_t["attention_mask2_tea"],
-                            return_dict=True,
-                        )
-                        teacher_hidden.append(
-                            teacher_out2.last_hidden_state.to(self.device_s, non_blocking=True)
-                        )
-
-                student_out1 = self.model_student(
-                    input_ids=batch_s["input_ids1_stu"],
-                    attention_mask=batch_s["attention_mask1_stu"],
-                    return_dict=True,
-                )
-                student_out2 = None
-                if has_second:
-                    student_out2 = self.model_student(
-                        input_ids=batch_s["input_ids2_stu"],
-                        attention_mask=batch_s["attention_mask2_stu"],
-                        return_dict=True,
-                    )
-
-                student_cls1 = student_out1.last_hidden_state[:, 0, :]
-                student_cls2 = (
-                    None
-                    if student_out2 is None
-                    else student_out2.last_hidden_state[:, 0, :]
-                )
-                task_loss, task_metrics = self._compute_task_loss(
-                    student_cls1,
-                    student_cls2,
-                    batch_s,
-                )
-
-                student_hidden = [student_out1.last_hidden_state]
-                teacher_offsets = [batch["offset_mapping1_tea"]]
-                student_offsets = [batch["offset_mapping1_stu"]]
-                teacher_attention = [batch["attention_mask1_tea"]]
-                student_attention = [batch["attention_mask1_stu"]]
-                teacher_special = [batch["special_tokens_mask1_tea"]]
-                student_special = [batch["special_tokens_mask1_stu"]]
-                if include_second_in_kernel:
-                    student_hidden.append(student_out2.last_hidden_state)
-                    teacher_offsets.append(batch["offset_mapping2_tea"])
-                    student_offsets.append(batch["offset_mapping2_stu"])
-                    teacher_attention.append(batch["attention_mask2_tea"])
-                    student_attention.append(batch["attention_mask2_stu"])
-                    teacher_special.append(batch["special_tokens_mask2_tea"])
-                    student_special.append(batch["special_tokens_mask2_stu"])
-
-                weighted_tmkd, tmkd_metrics = self.criterion(
-                    teacher_hidden_states=teacher_hidden,
-                    student_hidden_states=student_hidden,
-                    teacher_offsets=teacher_offsets,
-                    student_offsets=student_offsets,
-                    teacher_attention_masks=teacher_attention,
-                    student_attention_masks=student_attention,
-                    teacher_special_masks=teacher_special,
-                    student_special_masks=student_special,
-                )
-                loss = (cfg.w_task * task_loss + weighted_tmkd).float()
-
-            if not is_finite(loss):
-                raise RuntimeError(
-                    f"TMKD loss NaN/Inf at epoch={self.current_epoch} step={self.current_step}"
-                )
-            self.scaler.scale(loss).backward()
-            self.scaler.unscale_(self.optimizer)
-            if not grads_are_finite(self.optimizer):
-                self.optimizer.zero_grad(set_to_none=True)
-                self.scaler.update()
-                return loss, {**tmkd_metrics, "skip": "grad_inf"}
-            self.scaler.step(self.optimizer)
-            self.scaler.update()
-            self.scheduler.step()
-
-            metrics = {
-                "loss_total": float(loss.detach().item()),
-                "loss_task": float(task_loss.detach().item()),
-                **task_metrics,
-                **tmkd_metrics,
-            }
-            return loss, metrics
-        
         if method == 'heatgeo':
             batch_s = {}
             for k, v in batch.items():
@@ -1305,6 +1178,10 @@ class KnowledgeDistiller:
         cfg = self.config
         if not cfg.save_dir:
             return
+        if epoch in self._saved_checkpoint_epochs:
+            print(f"Checkpoint for epoch {epoch + 1} already saved; skipping duplicate.")
+            return
+        os.makedirs(cfg.save_dir, exist_ok=True)
         
         checkpoint = {
             'epoch': epoch,
@@ -1337,6 +1214,138 @@ class KnowledgeDistiller:
                 torch.save(checkpoint, best_path)
                 print(f"Best model saved: {best_path}")
 
+        self.save_student_weights(epoch)
+        self._saved_checkpoint_epochs.add(epoch)
+
+    def save_student_weights(self, epoch: int):
+        weights_dir = getattr(self.config, "weights_dir", None)
+        if not weights_dir:
+            return
+
+        destination_dir = Path(weights_dir)
+        destination_dir.mkdir(parents=True, exist_ok=True)
+        destination = destination_dir / f"student_epoch_{epoch + 1}.pt"
+        destination_tmp = destination.with_suffix(".pt.tmp")
+        payload = {
+            "epoch": epoch + 1,
+            "student_model_name": self.config.student_model_name,
+            "teacher_model_name": self.config.teacher_model_name,
+            "model_state_dict": self.model_student.state_dict(),
+        }
+
+        local_dir = Path(self.config.save_dir)
+        local_dir.mkdir(parents=True, exist_ok=True)
+        file_descriptor, local_tmp_name = tempfile.mkstemp(
+            prefix=f".student_epoch_{epoch + 1}_",
+            suffix=".pt",
+            dir=local_dir,
+        )
+        os.close(file_descriptor)
+        local_tmp = Path(local_tmp_name)
+
+        try:
+            torch.save(payload, local_tmp)
+            shutil.copy2(local_tmp, destination_tmp)
+            os.replace(destination_tmp, destination)
+            if not destination.is_file() or destination.stat().st_size == 0:
+                raise IOError(f"Saved student weights are missing or empty: {destination}")
+        finally:
+            local_tmp.unlink(missing_ok=True)
+            destination_tmp.unlink(missing_ok=True)
+
+        print(f"Student weights saved: {destination}")
+
+    @staticmethod
+    def _benchmark_name(path: str, split: str) -> str:
+        name = Path(path).stem
+        suffix = f"_{split}"
+        return name[:-len(suffix)] if name.endswith(suffix) else name
+
+    @staticmethod
+    def _metric_details(values: Dict[str, Any]) -> str:
+        labels = {
+            "accuracy": "Acc",
+            "f1": "F1",
+            "precision": "P",
+            "recall": "R",
+            "average_precision": "AP",
+            "spearman": "Spearman",
+        }
+        details = []
+        for key, label in labels.items():
+            value = values.get(key)
+            if isinstance(value, (int, float)):
+                details.append(f"{label}={100.0 * float(value):.2f}")
+        return " ".join(details)
+
+    def print_evaluation_table(
+        self,
+        split: str,
+        results: Dict[str, Any],
+    ) -> None:
+        primary_metrics = {
+            "classification": "f1",
+            "pair": "average_precision",
+            "sts": "spearman",
+        }
+        rows = []
+        for family in ("classification", "pair", "sts"):
+            family_scores = []
+            for path, raw_values in results.get(family, {}).items():
+                values = (
+                    {"spearman": raw_values}
+                    if family == "sts"
+                    else dict(raw_values)
+                )
+                metric_name = primary_metrics[family]
+                score = float(values[metric_name])
+                family_scores.append(score)
+                rows.append(
+                    (
+                        family,
+                        self._benchmark_name(path, split),
+                        metric_name,
+                        f"{100.0 * score:.2f}",
+                        self._metric_details(values),
+                    )
+                )
+            if family_scores:
+                rows.append(
+                    (
+                        family,
+                        "MEAN",
+                        primary_metrics[family],
+                        f"{100.0 * sum(family_scores) / len(family_scores):.2f}",
+                        "",
+                    )
+                )
+
+        title = (
+            f"VALIDATION - EPOCH {self.current_epoch + 1}"
+            if split == "validation"
+            else "FINAL TEST"
+        )
+        headers = ("Family", "Benchmark", "Primary metric", "Score", "Details")
+        widths = [
+            max([len(headers[index]), *(len(row[index]) for row in rows)])
+            for index in range(len(headers))
+        ]
+        separator = "-+-".join("-" * width for width in widths)
+
+        print("\n" + "=" * len(separator))
+        print(title)
+        print("=" * len(separator))
+        print(
+            " | ".join(
+                headers[index].ljust(widths[index])
+                for index in range(len(headers))
+            )
+        )
+        print(separator)
+        for row in rows:
+            print(" | ".join(row[index].ljust(widths[index]) for index in range(len(row))))
+        print("=" * len(separator) + "\n")
+
     def evaluate(self, split: str = "validation"):
         if split not in {"validation", "test"}:
             raise ValueError("split must be 'validation' or 'test'")
@@ -1367,11 +1376,13 @@ class KnowledgeDistiller:
         sts = eval_sts_task(self.model_student, sts_tasks, self.tok_student)
         if split == "validation":
             self.pair_validation_thresholds = selected_thresholds
-        return {
+        results = {
             "classification": classification,
             "pair": pair,
             "sts": sts,
         }
+        self.print_evaluation_table(split, results)
+        return results
 
     def log_experiment_record(self, record: Dict[str, Any]):
         if not self.config.save_dir:
@@ -1545,6 +1556,10 @@ class KnowledgeDistiller:
                     try:
                         self.save_checkpoint(epoch, {'loss': avg_loss})
                     except Exception as e:
+                        if getattr(cfg, "weights_dir", None):
+                            raise RuntimeError(
+                                f"Required epoch {epoch + 1} weights could not be saved"
+                            ) from e
                         print(f"Warning: Saving checkpoint failed with error: {e}")
                         print("Continuing training...")
             

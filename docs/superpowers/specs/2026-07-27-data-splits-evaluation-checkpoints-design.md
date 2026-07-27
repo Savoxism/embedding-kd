@@ -98,8 +98,11 @@ Expected result:
 
 The current 26,732-row `tweet_train.csv` contains every row of the current
 23,732-row `tweet_validation.csv`. The current validation file is therefore
-treated as the intended training subset. The new validation split is the rows
-from the current full train file that are not present in that subset.
+treated as the intended training subset. The new validation split starts with
+the rows from the current full train file that are not present in that subset.
+Six rows in the intended training subset normalize to the same text as three
+new validation rows, so those six rows are also moved to validation. This keeps
+every original ID while making normalized train and validation text disjoint.
 
 Tweet identity is determined by `id` when it is present and non-null, with
 normalized text as a defensive cross-check. Any duplicate identity with
@@ -107,8 +110,8 @@ conflicting labels is a hard error.
 
 Expected result:
 
-- train: 23,732 rows;
-- validation: 3,000 rows;
+- train: 23,726 rows;
+- validation: 3,006 rows;
 - train-validation ID and normalized-text overlap: zero;
 - the union of the repaired train and validation IDs equals the original full
   train IDs.
@@ -126,10 +129,11 @@ validation examples are disjoint. For normalized text keys:
 \varnothing
 \]
 
-A non-empty intersection raises a descriptive error naming the benchmark and
-overlap count. Test data is also checked against the repaired train and
-validation splits for exact identity overlap, and any detected overlap is
-reported as a hard error rather than silently evaluated.
+A non-empty train-validation intersection raises a descriptive error naming
+the benchmark and overlap count. Test data is also checked against the repaired
+train and validation splits for exact identity overlap. Because the published
+Banking77 split contains a small number of repeated utterances, test overlap is
+reported as an explicit warning with counts rather than blocking evaluation.
 
 ## Evaluation Protocol
 
@@ -283,7 +287,7 @@ same reproduction target.
 The workflow fails early for:
 
 - missing split directories or required CSV files;
-- classification train-validation or test identity overlap;
+- classification train-validation identity overlap;
 - conflicting labels for the same identity;
 - incomplete Tweet split reconstruction;
 - missing Google Drive mount or weights directory creation failure;
@@ -292,6 +296,8 @@ The workflow fails early for:
 - a missing final test record.
 
 Validation failures do not silently fall back to test data.
+Classification test identity overlap is printed as a warning with the affected
+benchmark and count.
 
 ## Verification
 

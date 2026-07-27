@@ -6,9 +6,9 @@ $env:CUDA_VISIBLE_DEVICES = "0,1"
 $env:TOKENIZERS_PARALLELISM = "false"
 
 $METHOD = "heatgeo"
-$TRAIN_DATA = "../data/test_debug.csv"
-$STUDENT_MODEL = "jim12345/MiniLMv2-L6-H384-distilled-from-BERT-Base"
-$TEACHER_MODEL = "Qwen/Qwen3-Embedding-0.6B"
+$TRAIN_DATA = "../data/train_set/merged_3_data_5k_each.csv"
+$STUDENT_MODEL = "google-bert/bert-base-uncased"
+$TEACHER_MODEL = "Qwen/Qwen3-Embedding-4B"
 $BATCH_SIZE = 16
 $EPOCHS = 5
 $LR = 2e-5

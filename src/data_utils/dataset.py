@@ -62,18 +62,11 @@ class DualTokenizerCollate:
         tok_teacher,
         task: str,
         max_len: int,
-        return_offsets: bool = False,
     ):
         self.ts = tok_student
         self.tt = tok_teacher
         self.task = task
         self.max_len = max_len
-        self.return_offsets = return_offsets
-        if return_offsets:
-            if not getattr(tok_student, "is_fast", False):
-                raise ValueError("TMKD requires a fast student tokenizer with offset mappings")
-            if not getattr(tok_teacher, "is_fast", False):
-                raise ValueError("TMKD requires a fast teacher tokenizer with offset mappings")
 
     def _encode(self, tokenizer, texts: List[str]):
         return tokenizer(
@@ -83,17 +76,14 @@ class DualTokenizerCollate:
             padding=True,
             return_tensors="pt",
             return_special_tokens_mask=True,
-            return_offsets_mapping=self.return_offsets,
         )
 
     @staticmethod
-    def _add_encoding(out, encoding, side: int, model_suffix: str, include_offsets: bool):
+    def _add_encoding(out, encoding, side: int, model_suffix: str):
         key_suffix = f"{side}_{model_suffix}"
         out[f"input_ids{key_suffix}"] = encoding["input_ids"]
         out[f"attention_mask{key_suffix}"] = encoding["attention_mask"]
         out[f"special_tokens_mask{key_suffix}"] = encoding["special_tokens_mask"]
-        if include_offsets:
-            out[f"offset_mapping{key_suffix}"] = encoding["offset_mapping"]
         if "token_type_ids" in encoding:
             out[f"token_type_ids{key_suffix}"] = encoding["token_type_ids"]
 
@@ -104,11 +94,9 @@ class DualTokenizerCollate:
 
         student1 = self._encode(self.ts, text1s)
         teacher1 = self._encode(self.tt, text1s)
-        out = {
-            "raw_texts1": text1s,
-        }
-        self._add_encoding(out, student1, 1, "stu", self.return_offsets)
-        self._add_encoding(out, teacher1, 1, "tea", self.return_offsets)
+        out = {}
+        self._add_encoding(out, student1, 1, "stu")
+        self._add_encoding(out, teacher1, 1, "tea")
 
         has_second_text = all(text is not None for text in text2s)
         if any(text is not None for text in text2s) and not has_second_text:
@@ -117,9 +105,8 @@ class DualTokenizerCollate:
             pair_texts = [str(text) for text in text2s]
             student2 = self._encode(self.ts, pair_texts)
             teacher2 = self._encode(self.tt, pair_texts)
-            out["raw_texts2"] = pair_texts
-            self._add_encoding(out, student2, 2, "stu", self.return_offsets)
-            self._add_encoding(out, teacher2, 2, "tea", self.return_offsets)
+            self._add_encoding(out, student2, 2, "stu")
+            self._add_encoding(out, teacher2, 2, "tea")
 
         has_labels = all(label is not None for label in labels)
         if any(label is not None for label in labels) and not has_labels:

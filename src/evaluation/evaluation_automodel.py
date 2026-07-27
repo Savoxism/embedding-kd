@@ -1,4 +1,5 @@
 import os
+import warnings
 import torch
 import numpy as np
 import pandas as pd
@@ -156,6 +157,49 @@ class ClasssifyDataset(Dataset):
             "label": torch.tensor(self.dataset.iloc[idx]['label'], dtype=torch.long),
         }
 
+
+def _normalized_text_keys(dataset):
+    return {
+        " ".join(str(text).strip().casefold().split())
+        for text in dataset["text"]
+    }
+
+
+def _validate_classification_pair(train_path, eval_path):
+    train_file = BASE_DIR / train_path
+    eval_file = BASE_DIR / eval_path
+    train_frame = pd.read_csv(train_file)
+    eval_frame = pd.read_csv(eval_file)
+    overlap = _normalized_text_keys(train_frame) & _normalized_text_keys(eval_frame)
+
+    if "val_set" in Path(eval_path).parts:
+        if overlap:
+            raise ValueError(
+                f"Classification train-validation leakage for {eval_file.stem}: "
+                f"{len(overlap)} normalized texts overlap"
+            )
+        return
+
+    dataset_name = eval_file.stem.removesuffix("_test")
+    validation_file = BASE_DIR / "data" / "val_set" / (
+        f"{dataset_name}_validation.csv"
+    )
+    validation_overlap = set()
+    if validation_file.is_file():
+        validation_frame = pd.read_csv(validation_file)
+        validation_overlap = (
+            _normalized_text_keys(validation_frame)
+            & _normalized_text_keys(eval_frame)
+        )
+
+    if overlap or validation_overlap:
+        warnings.warn(
+            f"Published test split {eval_file.stem} has normalized-text "
+            f"overlap: train={len(overlap)}, validation={len(validation_overlap)}.",
+            RuntimeWarning,
+            stacklevel=2,
+        )
+
 def clf_collate_fn(batch, tokenizer, max_len=512):
     s1_list = [item["text"] for item in batch]
     labels = torch.stack([item["label"] for item in batch])
@@ -182,6 +226,7 @@ def eval_classification_task(model, path_list, tokenizer):
     results = {}
     for train_path, dev_path in path_list:
         print(dev_path)
+        _validate_classification_pair(train_path, dev_path)
         eval_dataset = ClasssifyDataset(dev_path)
         eval_loader = DataLoader(
             eval_dataset,
@@ -203,8 +248,7 @@ def eval_classification_task(model, path_list, tokenizer):
 
         clf = LogisticRegression(
             random_state=42,
-            n_jobs=1,
-            max_iter=200,
+            max_iter=1000,
             verbose=0,
         )
         clf.fit(X_train, y_train)
@@ -322,33 +366,57 @@ def eval_pair_task(model, path_list, tokenizer, thresholds=None):
     model.train()
     return results, selected_thresholds
 
-# Evaluation datasets - using local multi-data folder
-eval_cls_tasks = [('data/multi-data/banking_train.csv', 
-                   'data/multi-data/banking77_validation.csv'),
-                  ('data/multi-data/emotion_train.csv', 
-                   'data/multi-data/emotion_validation.csv'), 
-                  ('data/multi-data/tweet_train.csv', 
-                   'data/multi-data/tweet_validation.csv')]
+# Evaluation datasets grouped by physical split.
+eval_cls_tasks = [
+    (
+        'data/train_set/banking77_train.csv',
+        'data/val_set/banking77_validation.csv',
+    ),
+    (
+        'data/train_set/emotion_train.csv',
+        'data/val_set/emotion_validation.csv',
+    ),
+    (
+        'data/train_set/tweet_train.csv',
+        'data/val_set/tweet_validation.csv',
+    ),
+]
 
-eval_sts_tasks = ['data/multi-data/sick_validation.csv', 
-                  'data/multi-data/sts12_validation.csv', 
-                  'data/multi-data/stsb_validation.csv']
+eval_sts_tasks = [
+    'data/val_set/sick_validation.csv',
+    'data/val_set/sts12_validation.csv',
+    'data/val_set/stsb_validation.csv',
+]
 
-eval_pair_tasks = ['data/multi-data/mrpc_validation.csv', 
-                   'data/multi-data/scitail_validation.csv', 
-                   'data/multi-data/wic_validation.csv']
+eval_pair_tasks = [
+    'data/val_set/mrpc_validation.csv',
+    'data/val_set/scitail_validation.csv',
+    'data/val_set/wic_validation.csv',
+]
 
-test_cls_tasks = [('data/multi-data/banking_train.csv', 
-                   'data/multi-data/banking77_test.csv'),
-                  ('data/multi-data/emotion_train.csv', 
-                   'data/multi-data/emotion_test.csv'), 
-                  ('data/multi-data/tweet_train.csv', 
-                   'data/multi-data/tweet_test.csv')]
+test_cls_tasks = [
+    (
+        'data/train_set/banking77_train.csv',
+        'data/test_set/banking77_test.csv',
+    ),
+    (
+        'data/train_set/emotion_train.csv',
+        'data/test_set/emotion_test.csv',
+    ),
+    (
+        'data/train_set/tweet_train.csv',
+        'data/test_set/tweet_test.csv',
+    ),
+]
 
-test_sts_tasks = ['data/multi-data/sick_test.csv', 
-                  'data/multi-data/sts12_test.csv', 
-                  'data/multi-data/stsb_test.csv']
+test_sts_tasks = [
+    'data/test_set/sick_test.csv',
+    'data/test_set/sts12_test.csv',
+    'data/test_set/stsb_test.csv',
+]
 
-test_pair_tasks = ['data/multi-data/mrpc_test.csv', 
-                   'data/multi-data/scitail_test.csv', 
-                   'data/multi-data/wic_test.csv']
+test_pair_tasks = [
+    'data/test_set/mrpc_test.csv',
+    'data/test_set/scitail_test.csv',
+    'data/test_set/wic_test.csv',
+]
