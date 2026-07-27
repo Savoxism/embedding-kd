@@ -15,6 +15,8 @@ def load_student_model(model_name="google-bert/bert-base-uncased", checkpoint_pa
     # Load the student state dict
     if "student_state_dict" in checkpoint:
         model.load_state_dict(checkpoint["student_state_dict"])
+    elif "model_state_dict" in checkpoint:
+        model.load_state_dict(checkpoint["model_state_dict"])
     else:
         model.load_state_dict(checkpoint)
         
