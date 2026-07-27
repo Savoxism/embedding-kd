@@ -47,10 +47,14 @@ class HeatGeoConfig(BaseConfig):
     cache_dtype = "float32"
     
     save_dir = "models/heatgeo/qwen3_4b_to_bert_base"
-    use_wandb = True
+    use_wandb = False
     wandb_project = "iclr-mdd-heatgeo"
     wandb_run_name = "heatgeo_qwen3_4b_to_bert_base"
     wandb_mode = "online"
+
+    # SAM Optimizer Settings
+    use_sam = True
+    rho = 0.05
     
     def __init__(self, **kwargs):
         for k, v in kwargs.items():
