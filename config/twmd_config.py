@@ -15,10 +15,16 @@ class TWMDConfig(BaseConfig):
     task_type = "pair_cls"
     
     w_task = 0.001
-    lambda_rw_path = 1.0
+    # TWMD Spec
+    lambda_rw_path = 0.5
     lambda_diff = 1.0
-    lambda_spec = 0.01
-    lambda_anchor = 0.01
+    lambda_spec = 0.2
+    lambda_anchor = 0.5
+    
+    # VICReg Spec
+    lambda_vicreg_var = 1.0
+    lambda_vicreg_cov = 1.0
+    vicreg_gamma = 1.001
     
     temperature = 0.1
     student_temp = 0.07

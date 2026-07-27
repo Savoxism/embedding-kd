@@ -15,6 +15,9 @@ class TWMDDistillation(nn.Module):
         lambda_diff: float = 1.0,
         lambda_spec: float = 0.1,
         lambda_anchor: float = 0.05,
+        lambda_vicreg_var: float = 1.0,
+        lambda_vicreg_cov: float = 1.0,
+        vicreg_gamma: float = 1.0,
         student_temp: float = 0.07,
         eps_norm: float = 1e-8,
         tau_rw: float = 0.05,
@@ -27,6 +30,9 @@ class TWMDDistillation(nn.Module):
         self.lambda_diff = lambda_diff
         self.lambda_spec = lambda_spec
         self.lambda_anchor = lambda_anchor
+        self.lambda_vicreg_var = lambda_vicreg_var
+        self.lambda_vicreg_cov = lambda_vicreg_cov
+        self.vicreg_gamma = vicreg_gamma
         self.student_temp = student_temp
         self.eps_norm = eps_norm
         self.tau_rw = tau_rw
@@ -77,6 +83,24 @@ class TWMDDistillation(nn.Module):
         
         return F.cross_entropy(logits, labels)
 
+    def vicreg_loss(self, student_emb: torch.Tensor, gamma: float = 1.0, eps: float = 1e-4) -> Tuple[torch.Tensor, torch.Tensor]:
+        # student_emb: [batch_size, dim]
+        # 1. Variance Loss
+        std = torch.sqrt(student_emb.var(dim=0) + eps)
+        loss_var = torch.mean(F.relu(gamma - std))
+        
+        # 2. Covariance Loss
+        batch_size = student_emb.size(0)
+        if batch_size > 1:
+            x = student_emb - student_emb.mean(dim=0)
+            cov = (x.T @ x) / (batch_size - 1)
+            # mask out the diagonal
+            mask = ~torch.eye(cov.size(0), dtype=torch.bool, device=cov.device)
+            loss_cov = (cov[mask] ** 2).sum() / student_emb.size(-1)
+        else:
+            loss_cov = torch.tensor(0.0, device=student_emb.device, dtype=student_emb.dtype)
+            
+        return loss_var, loss_cov
     def forward(
         self,
         anchor_embeddings: torch.Tensor,
@@ -148,11 +172,16 @@ class TWMDDistillation(nn.Module):
         else:
             loss_spec = torch.tensor(0.0, device=anchor_embeddings.device, dtype=anchor_embeddings.dtype)
 
+        # --- VICReg Loss ---
+        loss_var, loss_cov = self.vicreg_loss(anchor_embeddings, gamma=self.vicreg_gamma)
+        
         total_loss = (
             self.lambda_rw_path * loss_rw_path
             + self.lambda_diff * loss_diff
             + self.lambda_spec * loss_spec
             + self.lambda_anchor * loss_anchor
+            + self.lambda_vicreg_var * loss_var
+            + self.lambda_vicreg_cov * loss_cov
         )
         
         metrics = {
@@ -161,6 +190,8 @@ class TWMDDistillation(nn.Module):
             "loss_diff": float(loss_diff.detach()),
             "loss_spec": float(loss_spec.detach()),
             "loss_anchor": float(loss_anchor.detach()),
+            "loss_var": float(loss_var.detach()),
+            "loss_cov": float(loss_cov.detach()),
             "active_scales": float(active_scales),
         }
         return total_loss, metrics
