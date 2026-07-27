@@ -32,20 +32,24 @@ where $\tau_g$ controls graph sharpness. Let $D^T$ be the diagonal degree matrix
 \end{equation}
 Each row $P_i^T$ defines a one-step semantic random-walk distribution from anchor $x_i$.
 
+The graph temperature $\tau_g$ is not a cosmetic hyperparameter. A mutual $k$NN graph has degree of order $k$, and teacher cosine similarities among the top-$k$ neighbors of an anchor occupy a narrow band. If $\tau_g$ is large relative to that band, every row of $P^T$ is close to uniform over its support, and the diffusion targets below degrade into binary neighbor/non-neighbor labels that carry no ranking information. We therefore report $D_{\mathrm{KL}}(p_{i,r}^T\|\mathcal{U}_{\mathrm{supp}})$, the divergence of each target from the uniform distribution on its own support, as a build-time diagnostic and select $\tau_g$ so that this quantity stays well above zero.
+
 \subsection{Multi-Scale Heat Diffusion Targets}
 
-A one-step transition captures direct neighbors, but embedding spaces also contain higher-order semantic structure. HeatGeo therefore uses multiple diffusion scales:
+A one-step transition captures direct neighbors, but embedding spaces also contain higher-order semantic structure. HeatGeo therefore uses multiple diffusion scales of a \emph{lazy} random walk,
 \begin{equation}
-    P_r^T = (P^T)^r,
+    Q^T = \tfrac{1}{2}\left(I + P^T\right),
+    \qquad
+    P_r^T = (Q^T)^r,
     \qquad r \in \mathcal{R},
 \end{equation}
-where $\mathcal{R}$ is typically $\{1,2,4\}$. Small $r$ preserves sharp local neighborhoods, while larger $r$ captures semantic regions and multi-hop communities. In implementation, diffusion is approximated sparsely by propagating probability mass through graph neighbor lists and retaining top candidates.
+where $\mathcal{R}$ is typically $\{1,2,4\}$. Small $r$ preserves sharp local neighborhoods, while larger $r$ captures semantic regions and multi-hop communities. Laziness is what makes $\mathcal{R}$ a graded family: a plain walk on a mutual $k$NN graph mixes within its local component in about two steps, so $(P^T)^2$ and $(P^T)^4$ collapse onto nearly the same distribution and the additional scales contribute duplicated terms rather than new structure. The lazy walk retains mass at intermediate step counts and yields scales that remain distinguishable. In implementation, diffusion is approximated sparsely by propagating probability mass through graph neighbor lists and retaining top candidates, with a single walk snapshotted at each scale in $\mathcal{R}$.
 
 For each anchor $x_i$, HeatGeo builds a candidate set
 \begin{equation}
     C_i = C_i^{+} \cup C_i^{h} \cup C_i^{r},
 \end{equation}
-where $C_i^{+}$ contains high-probability diffusion neighbors, $C_i^{h}$ contains teacher hard negatives, and $C_i^{r}$ contains random negatives. The teacher diffusion target at scale $r$ is the diffusion mass restricted and renormalized over $C_i$:
+where $C_i^{+}$ contains high-probability diffusion neighbors, $C_i^{h}$ contains teacher hard negatives, and $C_i^{r}$ contains random negatives, each filling a fixed slot quota. Diffusion positives are drawn round-robin across the scales in $\mathcal{R}$, so that every scale contributes candidates on which it can be scored; filling the quota scale by scale instead lets the sharpest scale exhaust the budget and leaves the broader scales without support. The teacher diffusion target at scale $r$ is the diffusion mass restricted and renormalized over $C_i$:
 \begin{equation}
     p_{i,r}^{T}(j)
     =
@@ -71,38 +75,25 @@ where $\tau_s$ is a student temperature. The main diffusion distillation loss is
     =
     \frac{1}{|B|}
     \sum_{i\in B}
-    \sum_{r\in\mathcal{R}_{e}}
+    \sum_{r\in\mathcal{R}}
     \omega_r
     D_{\mathrm{KL}}
     \left(
         p_{i,r}^{T} \| p_i^{S}
     \right),
 \end{equation}
-where $B$ is a mini-batch, $\omega_r$ is the scale weight, and $\mathcal{R}_{e}$ is the set of active scales at epoch $e$.
+where $B$ is a mini-batch and $\omega_r$ is the scale weight.
 
-\subsection{Spectral Manifold Anchoring}
+\subsection{Why No Separate Spectral Term}
+\label{sec:no-spectral}
 
-Diffusion matching transfers local and multi-hop neighborhoods, but a student can still fit local candidates while distorting broader community structure. HeatGeo therefore computes spectral coordinates from the teacher graph. Let the symmetric normalized graph Laplacian be
+A natural addition would be a spectral term that regresses student embeddings onto the leading eigenvectors of the graph Laplacian $L^T = I - (D^T)^{-1/2}W^T(D^T)^{-1/2}$, on the grounds that diffusion matching is local while eigenvectors describe global topology. We deliberately omit such a term, because it distills information that $\mathcal{L}_{\mathrm{diff}}$ already carries. The heat kernel admits the spectral expansion
 \begin{equation}
-    L^T = I - (D^T)^{-1/2}W^T(D^T)^{-1/2}.
+    e^{-tL^T} = \sum_{\ell} e^{-t\lambda_\ell}\, u_\ell u_\ell^{\top},
 \end{equation}
-Let $U^T\in\mathbb{R}^{N\times m}$ contain the first $m$ non-trivial eigenvectors of $L^T$, and let $u_i^T$ be the row corresponding to $x_i$. A learnable projection maps student embeddings to this spectral space:
-\begin{equation}
-    z_i^S = W_{\mathrm{spec}}s_i.
-\end{equation}
-The spectral objective is
-\begin{equation}
-    \mathcal{L}_{\mathrm{spec}}
-    =
-    \frac{1}{|B|}
-    \sum_{i\in B}
-    \left\|
-    z_i^S-u_i^T
-    \right\|_2^2.
-\end{equation}
-This term encourages the student to retain global teacher topology without requiring hidden states or teacher forward passes during student training.
+so matching diffusion at several scales is matching the graph spectrum under a low-pass filter whose bandwidth is set by $t$. A truncated eigenvector-regression term is a strictly weaker version of the large-scale member of $\mathcal{R}$, and adding it distills the same structure twice. Omitting it also removes the only global eigendecomposition from the pipeline, leaving a method whose precomputation is a $k$NN search followed by sparse propagation. Section~\ref{sec:experiments} reports the ablation that adds the term back.
 
-\subsection{Training Objective and Curriculum}
+\subsection{Training Objective}
 
 HeatGeo includes a lightweight pointwise anchor for stability:
 \begin{equation}
@@ -112,24 +103,19 @@ HeatGeo includes a lightweight pointwise anchor for stability:
     \sum_{i\in B}
     \left(1-\cos(W_a s_i,t_i)\right),
 \end{equation}
-where $W_a$ maps student embeddings to the teacher dimension. When paired views are available, we also use a contrastive task loss $\mathcal{L}_{\mathrm{task}}$ implemented as InfoNCE over two student encodings of each example pair.
+where $W_a$ maps student embeddings to the teacher dimension. This term supplies the pointwise component that a purely relational objective leaves unconstrained, and it is the only auxiliary HeatGeo uses.
 
-The final objective is
+The final objective is therefore two terms with a single balancing weight:
 \begin{equation}
-\begin{aligned}
     \mathcal{L}_{\mathrm{HeatGeo}}
-    ={}&
-    \lambda_{\mathrm{diff}}\mathcal{L}_{\mathrm{diff}}
+    =
+    \mathcal{L}_{\mathrm{diff}}
     +
-    \lambda_{\mathrm{spec}}\mathcal{L}_{\mathrm{spec}}
-    \\
-    &+
-    \lambda_{\mathrm{anchor}}\mathcal{L}_{\mathrm{anchor}}
-    +
-    \lambda_{\mathrm{task}}\mathcal{L}_{\mathrm{task}}.
-\end{aligned}
+    \lambda_{\mathrm{anchor}}\mathcal{L}_{\mathrm{anchor}}.
 \end{equation}
-We use a diffusion-scale curriculum: the first epoch uses one-step diffusion, the second epoch adds two-step diffusion, and later epochs add the full scale set and spectral anchoring. This avoids forcing long-range, smoother structure before the student has learned reliable local neighborhoods.
+All scales in $\mathcal{R}$ are active from the first step. We also evaluated a curriculum that introduces scales one epoch at a time; because the scale weights are renormalized over the active set, such a curriculum monotonically shifts weight away from the sharpest local scale as training proceeds, and we found no benefit from it (Section~\ref{sec:experiments}).
+
+Since the loss value alone cannot distinguish a student that has learned the teacher's neighborhood ranking from one whose embeddings have collapsed toward a uniform candidate distribution, we log the entropy of $p_i^S$ relative to $\log|C_i|$ and the student probability mass falling on the teacher's top-ranked candidates.
 
 \begin{algorithm}[t]
 \caption{HeatGeo Training}
@@ -138,15 +124,13 @@ We use a diffusion-scale curriculum: the first epoch uses one-step diffusion, th
 \REQUIRE Corpus $\mathcal{D}$, teacher $T$, student $S_{\theta}$, graph size $k$, diffusion scales $\mathcal{R}$
 \STATE Cache teacher embeddings $t_i=T(x_i)$ for all $x_i\in\mathcal{D}$
 \STATE Build a mutual $k$NN teacher graph $W^T$
-\STATE Compute transition matrix $P^T=(D^T)^{-1}W^T$
-\STATE Precompute sparse diffusion candidates and targets $p_{i,r}^T$
-\STATE Compute spectral coordinates $u_i^T$ from the graph Laplacian
+\STATE Compute transition matrix $P^T=(D^T)^{-1}W^T$ and lazy walk $Q^T=\frac{1}{2}(I+P^T)$
+\STATE Precompute sparse diffusion candidates and targets $p_{i,r}^T$ from one walk snapshotted at each $r\in\mathcal{R}$
 \FOR{each training epoch}
-    \STATE Activate diffusion scales according to the curriculum
     \FOR{each mini-batch $B$}
         \STATE Encode anchors and candidate texts with $S_{\theta}$
         \STATE Compute student candidate distributions $p_i^S$
-        \STATE Compute $\mathcal{L}_{\mathrm{diff}}$, $\mathcal{L}_{\mathrm{spec}}$, $\mathcal{L}_{\mathrm{anchor}}$, and $\mathcal{L}_{\mathrm{task}}$
+        \STATE Compute $\mathcal{L}_{\mathrm{diff}}$ and $\mathcal{L}_{\mathrm{anchor}}$
         \STATE Update $\theta$ by minimizing $\mathcal{L}_{\mathrm{HeatGeo}}$
     \ENDFOR
 \ENDFOR

@@ -13,25 +13,24 @@ class HeatGeoConfig(BaseConfig):
     student_special_token = "##"
     teacher_special_token = "G"
     
-    temperature = 0.1
     student_temp = 0.07
-    
-    w_task = 0.001
-    lambda_diff = 1.0
-    lambda_spec = 0.1
+
+    # L = L_diff + lambda_anchor * L_anchor
     lambda_anchor = 0.05
-    
+
     graph_k = 50
-    graph_temp = 0.1
+    # graph_temp sets how much ranking information the diffusion targets carry. At 0.1
+    # the target was within 0.03 nats of uniform on its support, i.e. a binary
+    # neighbour/non-neighbour label. Check target_kl_uniform_r* in the build log after
+    # changing the teacher or the corpus; below ~0.05 nats, lower this value.
+    graph_temp = 0.05
     diffusion_scales = (1, 2, 4)
     scale_weights = (1.0, 0.5, 0.25)
     diffusion_topk = 32
     hard_neg_k = 16
     random_neg_k = 16
     candidate_size = 64
-    spectral_dim = 16
-    use_spectral = True
-    
+
     batch_size = 8
     epochs = 5
     learning_rate = 2e-5

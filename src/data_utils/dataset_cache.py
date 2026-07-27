@@ -94,7 +94,6 @@ class TextPairWithTeacherAndHeatGeo(Dataset):
         self.teacher_cls = teacher_cls
         self.candidate_indices = heatgeo_artifact["candidate_indices"]
         self.teacher_probs = heatgeo_artifact["teacher_probs"]
-        self.spectral_coords = heatgeo_artifact["spectral_coords"]
 
         if task == "single_cls":
             self.samples = [(t, int(y)) for t, y in zip(df["text"].astype(str),
@@ -124,7 +123,6 @@ class TextPairWithTeacherAndHeatGeo(Dataset):
             "candidate_idx": candidate_idx,
             "candidate_texts": candidate_samples,
             "teacher_probs": self.teacher_probs[:, idx, :],
-            "spectral_target": self.spectral_coords[idx],
         }
 
 
@@ -140,23 +138,19 @@ class HeatGeoCollate:
         idx = torch.tensor([item["idx"] for item in batch], dtype=torch.long)
         candidate_idx = torch.stack([item["candidate_idx"] for item in batch], dim=0).long()
         teacher_probs = torch.stack([item["teacher_probs"] for item in batch], dim=0).float()
-        spectral_target = torch.stack([item["spectral_target"] for item in batch], dim=0).float()
         candidate_texts_nested = [item["candidate_texts"] for item in batch]
         candidate_texts = [text for texts in candidate_texts_nested for text in texts]
 
+        # Only the anchor text is encoded: the objective scores anchor-vs-candidates,
+        # so the second view of the pair has no consumer.
+        ys = None
         if self.task == "single_cls":
             s1s = [sample[0] for sample in samples]
             ys = [sample[1] for sample in samples]
-            s2s = s1s
         else:
-            s1s, s2s = zip(*samples)
-            s1s = list(s1s)
-            s2s = list(s2s)
+            s1s = [sample[0] for sample in samples]
 
         s1_enc = self.ts(s1s, max_length=self.max_len, truncation=True,
-                         padding=True, return_tensors="pt",
-                         return_special_tokens_mask=True)
-        s2_enc = self.ts(s2s, max_length=self.max_len, truncation=True,
                          padding=True, return_tensors="pt",
                          return_special_tokens_mask=True)
         cand_enc = self.ts(candidate_texts, max_length=self.max_len, truncation=True,
@@ -169,23 +163,17 @@ class HeatGeoCollate:
             "input_ids1_stu": s1_enc["input_ids"],
             "attention_mask1_stu": s1_enc["attention_mask"],
             "special_tokens_mask1_stu": s1_enc["special_tokens_mask"],
-            "input_ids2_stu": s2_enc["input_ids"],
-            "attention_mask2_stu": s2_enc["attention_mask"],
-            "special_tokens_mask2_stu": s2_enc["special_tokens_mask"],
             "candidate_input_ids_stu": cand_enc["input_ids"],
             "candidate_attention_mask_stu": cand_enc["attention_mask"],
             "candidate_special_tokens_mask_stu": cand_enc["special_tokens_mask"],
             "teacher_cls": teacher_cls,
             "teacher_probs": teacher_probs,
-            "spectral_target": spectral_target,
         }
 
-        if self.task == "single_cls":
+        if ys is not None:
             out["labels"] = torch.tensor(ys, dtype=torch.long)
         if "token_type_ids" in s1_enc:
             out["token_type_ids1_stu"] = s1_enc["token_type_ids"]
-        if "token_type_ids" in s2_enc:
-            out["token_type_ids2_stu"] = s2_enc["token_type_ids"]
         if "token_type_ids" in cand_enc:
             out["candidate_token_type_ids_stu"] = cand_enc["token_type_ids"]
 

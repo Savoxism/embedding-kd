@@ -1,4 +1,4 @@
-PWD /home/duncan-nguyen/research/AAAI-TALAS/latex
+PWD /home/duncan-nguyen/research/AAAI-TALAS/mdd_HeatGeo
 INPUT /etc/texmf/web2c/texmf.cnf
 INPUT /usr/share/texmf/web2c/texmf.cnf
 INPUT /usr/share/texlive/texmf-dist/web2c/texmf.cnf
@@ -163,11 +163,14 @@ INPUT /usr/share/texlive/texmf-dist/fonts/tfm/adobe/times/ptmr7t.tfm
 INPUT /usr/share/texlive/texmf-dist/fonts/tfm/adobe/times/ptmb7t.tfm
 INPUT /usr/share/texlive/texmf-dist/fonts/vf/adobe/times/ptmb7t.vf
 INPUT /usr/share/texlive/texmf-dist/fonts/tfm/adobe/times/ptmb8r.tfm
+INPUT /usr/share/texlive/texmf-dist/fonts/tfm/adobe/times/ptmri7t.tfm
 INPUT ./sections/05_experiments.tex
 INPUT ./sections/05_experiments.tex
 INPUT ./sections/05_experiments.tex
 INPUT ./sections/05_experiments.tex
 INPUT sections/05_experiments.tex
+INPUT /usr/share/texlive/texmf-dist/fonts/vf/adobe/times/ptmri7t.vf
+INPUT /usr/share/texlive/texmf-dist/fonts/tfm/adobe/times/ptmri8r.tfm
 INPUT ./tables/main_results.tex
 INPUT ./tables/main_results.tex
 INPUT ./tables/main_results.tex
@@ -193,9 +196,6 @@ INPUT sections/07_conclusion.tex
 INPUT ./main.bbl
 INPUT ./main.bbl
 INPUT main.bbl
-INPUT /usr/share/texlive/texmf-dist/fonts/tfm/adobe/times/ptmri7t.tfm
-INPUT /usr/share/texlive/texmf-dist/fonts/vf/adobe/times/ptmri7t.vf
-INPUT /usr/share/texlive/texmf-dist/fonts/tfm/adobe/times/ptmri8r.tfm
 INPUT /usr/share/texlive/texmf-dist/fonts/vf/adobe/times/ptmb7t.vf
 INPUT /usr/share/texlive/texmf-dist/fonts/tfm/adobe/times/ptmb8r.tfm
 INPUT /usr/share/texlive/texmf-dist/fonts/vf/adobe/times/ptmr7t.vf

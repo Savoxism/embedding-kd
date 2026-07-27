@@ -1,21 +1,21 @@
-import os
 import json
+import os
+from collections.abc import Sequence
 from pathlib import Path
-from typing import Dict, List, Sequence, Tuple
 
 import numpy as np
 import torch
 import torch.nn.functional as F
-from scipy import sparse
-from scipy.sparse.linalg import eigsh
 from tqdm import tqdm
 
 
-def _as_tuple(values: Sequence[int]) -> Tuple[int, ...]:
-    return tuple(int(v) for v in values)
+def _as_tuple(values: Sequence[int]) -> tuple[int, ...]:
+    return tuple(sorted({int(v) for v in values}))
 
 
-def _compute_topk_cosine(embeddings: torch.Tensor, k: int, chunk_size: int = 1024) -> Tuple[np.ndarray, np.ndarray]:
+def _compute_topk_cosine(
+    embeddings: torch.Tensor, k: int, chunk_size: int = 1024
+) -> tuple[np.ndarray, np.ndarray]:
     embeddings = F.normalize(embeddings.float(), p=2, dim=-1).cpu()
     n_items = embeddings.size(0)
     k_eff = min(k + 1, n_items)
@@ -39,16 +39,13 @@ def _build_transition(
     top_scores: np.ndarray,
     graph_k: int,
     graph_temp: float,
-) -> Tuple[List[np.ndarray], List[np.ndarray], List[np.ndarray], np.ndarray, sparse.csr_matrix]:
+) -> tuple[list[np.ndarray], list[np.ndarray], list[np.ndarray], np.ndarray]:
     n_items = top_indices.shape[0]
     top_sets = [set(top_indices[i, :graph_k].tolist()) for i in range(n_items)]
-    row_neighbors: List[np.ndarray] = []
-    row_probs: List[np.ndarray] = []
-    row_scores: List[np.ndarray] = []
+    row_neighbors: list[np.ndarray] = []
+    row_probs: list[np.ndarray] = []
+    row_scores: list[np.ndarray] = []
     fallback_flags = np.zeros(n_items, dtype=bool)
-    rows = []
-    cols = []
-    vals = []
 
     for i in tqdm(range(n_items), desc="HeatGeo mutual kNN graph"):
         neighbors = []
@@ -65,36 +62,36 @@ def _build_transition(
             neighbors = [int(j) for j in top_indices[i, :fallback_k]]
             scores = [float(s) for s in top_scores[i, :fallback_k]]
 
-        weights = np.exp(np.asarray(scores, dtype=np.float64) / max(graph_temp, 1e-6))
+        # Softmax over neighbour cosines: sharpness is controlled by graph_temp, and it
+        # directly sets how much ranking information the diffusion targets can carry.
+        centered = np.asarray(scores, dtype=np.float64)
+        centered = centered - centered.max()
+        weights = np.exp(centered / max(graph_temp, 1e-6))
         weights = weights / max(float(weights.sum()), 1e-12)
-        neighbor_arr = np.asarray(neighbors, dtype=np.int64)
-        prob_arr = weights.astype(np.float32)
 
-        row_neighbors.append(neighbor_arr)
-        row_probs.append(prob_arr)
+        row_neighbors.append(np.asarray(neighbors, dtype=np.int64))
+        row_probs.append(weights.astype(np.float32))
         row_scores.append(np.asarray(scores, dtype=np.float32))
-        rows.extend([i] * len(neighbor_arr))
-        cols.extend(neighbor_arr.tolist())
-        vals.extend(prob_arr.tolist())
 
-    transition = sparse.csr_matrix((vals, (rows, cols)), shape=(n_items, n_items), dtype=np.float32)
-    return row_neighbors, row_probs, row_scores, fallback_flags, transition
+    return row_neighbors, row_probs, row_scores, fallback_flags
 
 
 def _write_knn_graph_log(
     log_dir: str,
-    row_neighbors: List[np.ndarray],
-    row_probs: List[np.ndarray],
-    row_scores: List[np.ndarray],
+    row_neighbors: list[np.ndarray],
+    row_probs: list[np.ndarray],
+    row_scores: list[np.ndarray],
     fallback_flags: np.ndarray,
     graph_k: int,
-) -> Tuple[str, Dict[str, float]]:
+) -> tuple[str, dict[str, float]]:
     os.makedirs(log_dir, exist_ok=True)
     log_path = os.path.join(log_dir, "knn_graph_neighbors.jsonl")
-    degrees = np.asarray([len(neighbors) for neighbors in row_neighbors], dtype=np.float32)
+    degrees = np.asarray(
+        [len(neighbors) for neighbors in row_neighbors], dtype=np.float32
+    )
     fallback_count = int(fallback_flags.sum())
     stats = {
-        "n_items": int(len(row_neighbors)),
+        "n_items": len(row_neighbors),
         "graph_k": int(graph_k),
         "fallback_count": fallback_count,
         "fallback_rate": float(fallback_count / max(1, len(row_neighbors))),
@@ -105,21 +102,23 @@ def _write_knn_graph_log(
 
     with open(log_path, "w", encoding="utf-8") as handle:
         handle.write(json.dumps({"type": "summary", **stats}, sort_keys=True) + "\n")
-        for idx, (neighbors, probs, scores) in enumerate(zip(row_neighbors, row_probs, row_scores)):
-            handle.write(
-                json.dumps(
-                    {
-                        "type": "node",
-                        "idx": idx,
-                        "fallback_used": bool(fallback_flags[idx]),
-                        "neighbors": [int(value) for value in neighbors.tolist()],
-                        "transition_probs": [float(value) for value in probs.tolist()],
-                        "cosine_scores": [float(value) for value in scores.tolist()],
-                    },
-                    sort_keys=True,
-                )
-                + "\n"
+        handle.writelines(
+            json.dumps(
+                {
+                    "type": "node",
+                    "idx": idx,
+                    "fallback_used": bool(fallback_flags[idx]),
+                    "neighbors": [int(value) for value in neighbors.tolist()],
+                    "transition_probs": [float(value) for value in probs.tolist()],
+                    "cosine_scores": [float(value) for value in scores.tolist()],
+                },
+                sort_keys=True,
             )
+            + "\n"
+            for idx, (neighbors, probs, scores) in enumerate(
+                zip(row_neighbors, row_probs, row_scores)
+            )
+        )
 
     print(
         "HeatGeo kNN graph log saved: "
@@ -132,41 +131,60 @@ def _write_knn_graph_log(
     return log_path, stats
 
 
-def _diffuse_one(
+def _diffuse_snapshots(
     start_idx: int,
-    steps: int,
-    row_neighbors: List[np.ndarray],
-    row_probs: List[np.ndarray],
+    scales: tuple[int, ...],
+    row_neighbors: list[np.ndarray],
+    row_probs: list[np.ndarray],
     keep_topk: int,
-) -> Dict[int, float]:
-    dist = {start_idx: 1.0}
+) -> list[dict[int, float]]:
+    """Lazy random walk x <- (x + xP)/2, snapshotted at each scale.
 
-    for _ in range(steps):
-        next_dist: Dict[int, float] = {}
+    The lazy walk is what makes the scales a graded family: a plain walk on a mutual
+    kNN graph mixes within two steps, so (P)^2 and (P)^4 collapse onto the same
+    distribution and the multi-scale objective degenerates into a duplicated term.
+    """
+    snapshots: dict[int, dict[int, float]] = {}
+    dist: dict[int, float] = {start_idx: 1.0}
+    max_scale = max(scales)
+
+    for step in range(1, max_scale + 1):
+        next_dist: dict[int, float] = {}
         for node, mass in dist.items():
             for nbr, prob in zip(row_neighbors[node], row_probs[node]):
-                next_dist[int(nbr)] = next_dist.get(int(nbr), 0.0) + float(mass) * float(prob)
+                next_dist[int(nbr)] = next_dist.get(int(nbr), 0.0) + float(
+                    mass
+                ) * float(prob)
+        for node, mass in dist.items():
+            next_dist[node] = next_dist.get(node, 0.0) + float(mass)
+        next_dist = {node: mass * 0.5 for node, mass in next_dist.items()}
 
         if len(next_dist) > keep_topk:
-            top_items = sorted(next_dist.items(), key=lambda item: item[1], reverse=True)[:keep_topk]
+            top_items = sorted(
+                next_dist.items(), key=lambda item: item[1], reverse=True
+            )[:keep_topk]
             next_dist = dict(top_items)
         dist = next_dist
 
-    dist.pop(start_idx, None)
-    return dist
+        if step in scales:
+            snapshot = dict(dist)
+            snapshot.pop(start_idx, None)
+            snapshots[step] = snapshot
+
+    return [snapshots[scale] for scale in scales]
 
 
 def _build_diffusion_candidates(
     top_indices: np.ndarray,
-    scales: Tuple[int, ...],
-    row_neighbors: List[np.ndarray],
-    row_probs: List[np.ndarray],
+    scales: tuple[int, ...],
+    row_neighbors: list[np.ndarray],
+    row_probs: list[np.ndarray],
     diffusion_topk: int,
     hard_neg_k: int,
     random_neg_k: int,
     candidate_size: int,
     seed: int,
-) -> Tuple[np.ndarray, np.ndarray]:
+) -> tuple[np.ndarray, np.ndarray, dict[str, float]]:
     n_items = top_indices.shape[0]
     n_scales = len(scales)
     candidate_indices = np.zeros((n_items, candidate_size), dtype=np.int64)
@@ -174,98 +192,150 @@ def _build_diffusion_candidates(
     rng = np.random.default_rng(seed)
     keep_topk = max(candidate_size * 4, diffusion_topk * 4, 64)
 
+    # Explicit slot quotas. The previous implementation appended greedily and checked
+    # its break conditions after appending, so hard_neg_k / random_neg_k were never
+    # honoured -- the actual composition was whatever the diffusion supports left over.
+    diffusion_quota = max(0, candidate_size - hard_neg_k - random_neg_k)
+    source_counts = {"diffusion": 0, "hard": 0, "random": 0, "pad": 0}
+    uniform_fallback = np.zeros(n_scales, dtype=np.int64)
+
     for i in tqdm(range(n_items), desc="HeatGeo diffusion candidates"):
-        scale_dists = [
-            _diffuse_one(i, scale, row_neighbors, row_probs, keep_topk=keep_topk)
-            for scale in scales
+        scale_dists = _diffuse_snapshots(i, scales, row_neighbors, row_probs, keep_topk)
+        ranked_per_scale = [
+            [
+                node
+                for node, _ in sorted(
+                    dist.items(), key=lambda item: item[1], reverse=True
+                )[:diffusion_topk]
+            ]
+            for dist in scale_dists
         ]
 
-        candidates = []
+        candidates: list[int] = []
         seen = {i}
-        for dist in scale_dists:
-            for node, _ in sorted(dist.items(), key=lambda item: item[1], reverse=True)[:diffusion_topk]:
-                if node not in seen:
-                    candidates.append(node)
-                    seen.add(node)
-                if len(candidates) >= candidate_size:
-                    break
 
-        for node in top_indices[i, : max(hard_neg_k * 4, hard_neg_k)]:
+        # Round-robin across scales so every scale contributes candidates. Taking the
+        # scales in order instead lets the sharpest scale exhaust the budget, which
+        # leaves the broader scales with no support to be scored on.
+        cursors = [0] * n_scales
+        while len(candidates) < diffusion_quota and any(
+            cursors[s] < len(ranked_per_scale[s]) for s in range(n_scales)
+        ):
+            for s in range(n_scales):
+                while cursors[s] < len(ranked_per_scale[s]):
+                    node = int(ranked_per_scale[s][cursors[s]])
+                    cursors[s] += 1
+                    if node not in seen:
+                        candidates.append(node)
+                        seen.add(node)
+                        break
+                if len(candidates) >= diffusion_quota:
+                    break
+        source_counts["diffusion"] += len(candidates)
+
+        hard_start = len(candidates)
+        hard_target = hard_start + hard_neg_k
+        for node in top_indices[i]:
+            if len(candidates) >= hard_target:
+                break
             node = int(node)
             if node not in seen:
                 candidates.append(node)
                 seen.add(node)
-            if len(candidates) >= candidate_size - random_neg_k:
-                break
+        source_counts["hard"] += len(candidates) - hard_start
 
-        random_budget = max(0, candidate_size - len(candidates))
-        random_budget = min(random_budget, random_neg_k if random_neg_k > 0 else random_budget)
-        random_added = 0
-        while random_added < random_budget and len(seen) < n_items:
+        random_target = min(candidate_size, len(candidates) + random_neg_k)
+        random_start = len(candidates)
+        attempts = 0
+        while (
+            len(candidates) < random_target
+            and len(seen) < n_items
+            and attempts < 20 * n_items
+        ):
+            attempts += 1
             node = int(rng.integers(0, n_items))
             if node in seen:
                 continue
             candidates.append(node)
             seen.add(node)
-            random_added += 1
+        source_counts["random"] += len(candidates) - random_start
 
+        pad_start = len(candidates)
         for node in top_indices[i]:
-            node = int(node)
             if len(candidates) >= candidate_size:
                 break
+            node = int(node)
             if node not in seen:
                 candidates.append(node)
                 seen.add(node)
-
         while len(candidates) < candidate_size:
             node = int(rng.integers(0, n_items))
             if node != i:
                 candidates.append(node)
+        source_counts["pad"] += len(candidates) - pad_start
 
         candidate_arr = np.asarray(candidates[:candidate_size], dtype=np.int64)
         candidate_indices[i] = candidate_arr
 
         for scale_idx, dist in enumerate(scale_dists):
-            probs = np.asarray([dist.get(int(node), 0.0) for node in candidate_arr], dtype=np.float32)
+            probs = np.asarray(
+                [dist.get(int(node), 0.0) for node in candidate_arr], dtype=np.float32
+            )
             prob_sum = float(probs.sum())
             if prob_sum <= 0.0:
+                uniform_fallback[scale_idx] += 1
                 probs[:] = 1.0 / candidate_size
             else:
                 probs /= prob_sum
             teacher_probs[scale_idx, i] = probs
 
-    return candidate_indices, teacher_probs
+    stats = {
+        f"candidate_src_{key}": float(value / max(1, n_items))
+        for key, value in source_counts.items()
+    }
+    for scale_idx, scale in enumerate(scales):
+        stats[f"uniform_fallback_r{scale}"] = float(
+            uniform_fallback[scale_idx] / max(1, n_items)
+        )
+    return candidate_indices, teacher_probs, stats
 
 
-def _compute_spectral_coords(
-    transition: sparse.csr_matrix,
-    spectral_dim: int,
-) -> np.ndarray:
-    n_items = transition.shape[0]
-    if spectral_dim <= 0:
-        return np.zeros((n_items, 0), dtype=np.float32)
-    if n_items <= spectral_dim + 2:
-        return np.zeros((n_items, spectral_dim), dtype=np.float32)
+def _target_sharpness_stats(
+    teacher_probs: np.ndarray, scales: tuple[int, ...]
+) -> dict[str, float]:
+    """Is the target actually informative, and are the scales actually different?
 
-    adjacency = transition.maximum(transition.T).tocsr()
-    degrees = np.asarray(adjacency.sum(axis=1)).reshape(-1)
-    inv_sqrt = np.zeros_like(degrees, dtype=np.float32)
-    nonzero = degrees > 0
-    inv_sqrt[nonzero] = 1.0 / np.sqrt(degrees[nonzero])
-    norm_adj = sparse.diags(inv_sqrt) @ adjacency @ sparse.diags(inv_sqrt)
-    laplacian = sparse.eye(n_items, format="csr", dtype=np.float32) - norm_adj
+    KL(p || uniform-on-support) near zero means the target degenerates into a binary
+    neighbour/non-neighbour label and carries no ranking signal; cross-scale KL near
+    zero means an extra scale adds a duplicated term rather than new structure.
+    """
+    stats: dict[str, float] = {}
+    probs = np.clip(teacher_probs.astype(np.float64), 0.0, None)
+    support = probs > 0
 
-    try:
-        _, eigvecs = eigsh(laplacian, k=spectral_dim + 1, which="SM", tol=1e-3)
-        coords = eigvecs[:, 1 : spectral_dim + 1].astype(np.float32)
-    except Exception as exc:
-        print(f"Warning: HeatGeo spectral decomposition failed: {exc}")
-        coords = np.zeros((n_items, spectral_dim), dtype=np.float32)
+    for scale_idx, scale in enumerate(scales):
+        p = probs[scale_idx]
+        mask = support[scale_idx]
+        supp_size = mask.sum(axis=-1).astype(np.float64)
+        safe = np.where(mask, p, 1.0)
+        entropy = -(np.where(mask, p * np.log(safe), 0.0)).sum(axis=-1)
+        kl_uniform = np.log(np.maximum(supp_size, 1.0)) - entropy
+        stats[f"target_support_r{scale}"] = float(supp_size.mean())
+        stats[f"target_kl_uniform_r{scale}"] = float(kl_uniform.mean())
+        stats[f"target_top1_r{scale}"] = float(p.max(axis=-1).mean())
 
-    return coords
+    clamped = np.clip(probs, 1e-12, None)
+    clamped = clamped / clamped.sum(axis=-1, keepdims=True)
+    for scale_idx in range(len(scales) - 1):
+        a, b = clamped[scale_idx], clamped[scale_idx + 1]
+        cross = (a * (np.log(a) - np.log(b))).sum(axis=-1)
+        stats[f"target_cross_kl_r{scales[scale_idx]}_r{scales[scale_idx + 1]}"] = float(
+            cross.mean()
+        )
+    return stats
 
 
-def _metadata_matches(artifact: Dict, metadata: Dict) -> bool:
+def _metadata_matches(artifact: dict, metadata: dict) -> bool:
     old = artifact.get("metadata", {})
     keys = [
         "n_items",
@@ -276,8 +346,7 @@ def _metadata_matches(artifact: Dict, metadata: Dict) -> bool:
         "hard_neg_k",
         "random_neg_k",
         "candidate_size",
-        "spectral_dim",
-        "use_spectral",
+        "lazy_walk",
         "graph_log_version",
     ]
     return all(old.get(key) == metadata.get(key) for key in keys)
@@ -294,10 +363,8 @@ def build_or_load_heatgeo_artifact(
     hard_neg_k: int,
     random_neg_k: int,
     candidate_size: int,
-    spectral_dim: int,
-    use_spectral: bool,
     seed: int,
-) -> Dict[str, torch.Tensor]:
+) -> dict[str, torch.Tensor]:
     n_items = int(teacher_embeddings.size(0))
     scales = _as_tuple(diffusion_scales)
     metadata = {
@@ -309,9 +376,8 @@ def build_or_load_heatgeo_artifact(
         "hard_neg_k": int(hard_neg_k),
         "random_neg_k": int(random_neg_k),
         "candidate_size": int(candidate_size),
-        "spectral_dim": int(spectral_dim),
-        "use_spectral": bool(use_spectral),
-        "graph_log_version": 1,
+        "lazy_walk": True,
+        "graph_log_version": 2,
     }
 
     artifact_path = Path(cache_path)
@@ -321,14 +387,7 @@ def build_or_load_heatgeo_artifact(
             graph_log_path = artifact.get("graph_log_path")
             if graph_log_path and os.path.exists(graph_log_path):
                 print(f"Loaded HeatGeo artifact from: {artifact_path}")
-                graph_stats = artifact.get("graph_stats", {})
-                if graph_stats:
-                    print(
-                        "HeatGeo kNN graph summary: "
-                        f"fallback={graph_stats.get('fallback_count', 0)}/{graph_stats.get('n_items', 0)} "
-                        f"({float(graph_stats.get('fallback_rate', 0.0)):.2%}), "
-                        f"avg_degree={float(graph_stats.get('avg_degree', 0.0)):.2f}"
-                    )
+                _print_graph_summary(artifact.get("graph_stats", {}), scales)
                 return artifact
             print(f"HeatGeo graph log missing, rebuilding artifact: {graph_log_path}")
         else:
@@ -338,7 +397,7 @@ def build_or_load_heatgeo_artifact(
         os.makedirs(artifact_path.parent, exist_ok=True)
     topk_for_graph = max(graph_k, hard_neg_k + diffusion_topk, candidate_size)
     top_indices, top_scores = _compute_topk_cosine(teacher_embeddings, k=topk_for_graph)
-    row_neighbors, row_probs, row_scores, fallback_flags, transition = _build_transition(
+    row_neighbors, row_probs, row_scores, fallback_flags = _build_transition(
         top_indices=top_indices,
         top_scores=top_scores,
         graph_k=graph_k,
@@ -352,7 +411,7 @@ def build_or_load_heatgeo_artifact(
         fallback_flags=fallback_flags,
         graph_k=graph_k,
     )
-    candidate_indices, teacher_probs = _build_diffusion_candidates(
+    candidate_indices, teacher_probs, candidate_stats = _build_diffusion_candidates(
         top_indices=top_indices,
         scales=scales,
         row_neighbors=row_neighbors,
@@ -363,16 +422,56 @@ def build_or_load_heatgeo_artifact(
         candidate_size=candidate_size,
         seed=seed,
     )
-    spectral_coords = _compute_spectral_coords(transition, spectral_dim if use_spectral else 0)
+    graph_stats.update(candidate_stats)
+    graph_stats.update(_target_sharpness_stats(teacher_probs, scales))
 
     artifact = {
         "candidate_indices": torch.from_numpy(candidate_indices).long(),
         "teacher_probs": torch.from_numpy(teacher_probs).float(),
-        "spectral_coords": torch.from_numpy(spectral_coords).float(),
         "graph_log_path": graph_log_path,
         "graph_stats": graph_stats,
         "metadata": metadata,
     }
     torch.save(artifact, artifact_path)
     print(f"Saved HeatGeo artifact to: {artifact_path}")
+    _print_graph_summary(graph_stats, scales)
     return artifact
+
+
+def _print_graph_summary(
+    graph_stats: dict[str, float], scales: tuple[int, ...]
+) -> None:
+    if not graph_stats:
+        return
+    print(
+        "HeatGeo kNN graph summary: "
+        f"fallback={graph_stats.get('fallback_count', 0)}/{graph_stats.get('n_items', 0)} "
+        f"({float(graph_stats.get('fallback_rate', 0.0)):.2%}), "
+        f"avg_degree={float(graph_stats.get('avg_degree', 0.0)):.2f}"
+    )
+    if "candidate_src_diffusion" in graph_stats:
+        print(
+            "HeatGeo candidate slots (avg): "
+            f"diffusion={graph_stats['candidate_src_diffusion']:.2f}, "
+            f"hard={graph_stats['candidate_src_hard']:.2f}, "
+            f"random={graph_stats['candidate_src_random']:.2f}, "
+            f"pad={graph_stats['candidate_src_pad']:.2f}"
+        )
+    for scale in scales:
+        key = f"target_kl_uniform_r{scale}"
+        if key in graph_stats:
+            print(
+                f"HeatGeo target r={scale}: support={graph_stats[f'target_support_r{scale}']:.1f}, "
+                f"KL(p||uniform_on_support)={graph_stats[key]:.4f}, "
+                f"top1={graph_stats[f'target_top1_r{scale}']:.4f}"
+            )
+    cross_keys = [key for key in graph_stats if key.startswith("target_cross_kl_")]
+    for key in sorted(cross_keys):
+        print(f"HeatGeo {key}={graph_stats[key]:.4f}")
+    low = [s for s in scales if graph_stats.get(f"target_kl_uniform_r{s}", 1.0) < 0.05]
+    if low:
+        print(
+            f"WARNING: HeatGeo targets at scales {low} are close to uniform on their support "
+            f"(KL < 0.05 nats) -- lower graph_temp, otherwise L_diff degenerates into a "
+            f"binary neighbour/non-neighbour objective."
+        )

@@ -1,13 +1,13 @@
 # Fdb version 4
-["bibtex main"] 1781705659.57114 "main.aux" "main.bbl" "main" 1781706655.29517 0
-  "./aaai2026.bib" 1781677510.92438 35340 8f5627b51eb4ffc2895dd22cf70453e3 ""
-  "./aaai2026.bst" 1781675577.49304 30207 6eaa2a4f2eed92c930f9e98d689c010a ""
-  "main.aux" 1781706655.0816 4405 cb79a49e28780eb08ef911fec527ea26 "pdflatex"
+["bibtex main"] 1785134525.00306 "main.aux" "main.bbl" "main" 1785134525.69093 0
+  "./aaai2026.bib" 1785129882.6163 35340 8f5627b51eb4ffc2895dd22cf70453e3 ""
+  "./aaai2026.bst" 1785129882.6163 30207 6eaa2a4f2eed92c930f9e98d689c010a ""
+  "main.aux" 1785134525.48347 4485 4ee3c0251bd595092fcd5e413589df44 "pdflatex"
   (generated)
   "main.bbl"
   "main.blg"
   (rewritten before read)
-["pdflatex"] 1781706654.69497 "main.tex" "main.pdf" "main" 1781706655.29532 0
+["pdflatex"] 1785134525.10767 "main.tex" "main.pdf" "main" 1785134525.69109 0
   "/etc/texmf/web2c/texmf.cnf" 1773138757.194 475 c0e671620eb5563b2130f56340a5fde8 ""
   "/usr/share/texlive/texmf-dist/fonts/enc/dvips/base/8r.enc" 1165713224 4850 80dc9bab7f31fb78a000ccfed0e27cab ""
   "/usr/share/texlive/texmf-dist/fonts/map/fontname/texfonts.map" 1577235249 3524 cb3e574dea2d1052e39280babc910dc8 ""
@@ -88,20 +88,20 @@
   "/usr/share/texmf/web2c/texmf.cnf" 1707919699 40399 f2c302f7d2af602abb742093540a5834 ""
   "/var/lib/texmf/fonts/map/pdftex/updmap/pdftex.map" 1773138781.56912 5472669 54eaf61a88b6b7896ebd0dac973cb29c ""
   "/var/lib/texmf/web2c/pdftex/pdflatex.fmt" 1773138815 8213355 5c73132d1f44e382582447bfc6ff5c5e ""
-  "aaai2026.sty" 1781675577.29304 11802 ebafcca046fa76cd12a651daf05aa669 ""
-  "main.aux" 1781706655.0816 4405 cb79a49e28780eb08ef911fec527ea26 "pdflatex"
-  "main.bbl" 1781705659.65714 11566 886d1384cd583c3105a4f920138bee6c "bibtex main"
-  "main.tex" 1781705646.4012 1368 a0aba76624fd8f131692cbfd6ae1bd16 ""
-  "sections/00_abstract.tex" 1781705646.75249 1635 374a3214282523cb726f0af7bc59e33d ""
-  "sections/01_introduction.tex" 1781705647.02666 4946 007b46ef807110c783db6521f9e92bea ""
-  "sections/02_related_work.tex" 1781705647.30941 6918 0ca787c0ae60cc7cb58f44466b7e322e ""
-  "sections/03_problem_setup.tex" 1781705647.60072 1338 3a5dac7289b6c1ad1ebb515c4ce96aac ""
-  "sections/04_heatgeo.tex" 1781700946.11571 6386 4e85826c4004873799266f7b1b812c23 ""
-  "sections/05_experiments.tex" 1781705647.88347 3151 ea51507a4fd0ba00b7a637ab30ff2bfc ""
-  "sections/06_discussion.tex" 1781705648.1962 1230 28c017d7437a9cecdb6c15466100b367 ""
-  "sections/07_conclusion.tex" 1781705648.46609 639 c71591ce0da241f55efface2b0d961f2 ""
-  "tables/ablations.tex" 1781700945.73649 508 a62afe8bdec1344e4ca3c64b368f5942 ""
-  "tables/main_results.tex" 1781706648.34412 3969 b1234d8887da485b4a24e9139f40f4b7 ""
+  "aaai2026.sty" 1785129882.6163 11802 ebafcca046fa76cd12a651daf05aa669 ""
+  "main.aux" 1785134525.48347 4485 4ee3c0251bd595092fcd5e413589df44 "pdflatex"
+  "main.bbl" 1785134525.10238 11566 886d1384cd583c3105a4f920138bee6c "bibtex main"
+  "main.tex" 1785129882.62497 1368 a0aba76624fd8f131692cbfd6ae1bd16 ""
+  "sections/00_abstract.tex" 1785134386.57238 1917 c6920ffc675cefcd8d515467d171467b ""
+  "sections/01_introduction.tex" 1785134404.56148 5764 37c2355c41614514510531aee6426e35 ""
+  "sections/02_related_work.tex" 1785134465.09412 7039 ba49b478b8a1fdd919c01b2644f87bdf ""
+  "sections/03_problem_setup.tex" 1785129882.6293 1338 3a5dac7289b6c1ad1ebb515c4ce96aac ""
+  "sections/04_heatgeo.tex" 1785134376.6216 8097 e0fcac19cbe566b7846043922ebbc0a6 ""
+  "sections/05_experiments.tex" 1785134439.27265 3955 6843551470c5d9b4093c5462b838df8b ""
+  "sections/06_discussion.tex" 1785129882.6293 1230 28c017d7437a9cecdb6c15466100b367 ""
+  "sections/07_conclusion.tex" 1785134455.41037 853 2593d3d01c0b6a6575719f59cc758ec1 ""
+  "tables/ablations.tex" 1785134449.74489 939 e0eda5696f8fe897e91bee6a25dbbd6a ""
+  "tables/main_results.tex" 1785129882.6293 3969 b1234d8887da485b4a24e9139f40f4b7 ""
   (generated)
   "main.aux"
   "main.log"

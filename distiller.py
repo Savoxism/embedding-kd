@@ -165,17 +165,12 @@ class KnowledgeDistiller:
             self.scheduler = self._build_scheduler()
             print("EMO criterion initialized and added to optimizer")
         elif config.distill_method == 'heatgeo':
-            spectral_dim = int(self.heatgeo_artifact["spectral_coords"].shape[-1])
             self.criterion = HeatGeoDistillation(
                 student_dim=self.model_student.config.hidden_size,
                 teacher_dim=self.teacher_cls_all.shape[-1],
-                spectral_dim=spectral_dim,
-                scale_weights=getattr(config, "scale_weights", (1.0, 0.1, 0.02)),
-                w_task=config.w_task,
-                lambda_diff=getattr(config, "lambda_diff", 1.0),
-                lambda_spec=getattr(config, "lambda_spec", 0.01),
-                lambda_anchor=getattr(config, "lambda_anchor", 0.01),
-                student_temp=getattr(config, "student_temp", 0.07),
+                scale_weights=config.scale_weights,
+                lambda_anchor=config.lambda_anchor,
+                student_temp=config.student_temp,
                 eps_norm=getattr(config, "eps_norm", 1e-8),
             ).to(self.device_s)
             self.optimizer.add_param_group({
@@ -427,8 +422,6 @@ class KnowledgeDistiller:
                     hard_neg_k=getattr(cfg, 'hard_neg_k', 16),
                     random_neg_k=getattr(cfg, 'random_neg_k', 16),
                     candidate_size=getattr(cfg, 'candidate_size', 64),
-                    spectral_dim=getattr(cfg, 'spectral_dim', 16),
-                    use_spectral=getattr(cfg, 'use_spectral', True),
                     seed=cfg.seed,
                 )
             
@@ -582,7 +575,6 @@ class KnowledgeDistiller:
                         "candidate_idx",
                         "teacher_cls",
                         "teacher_probs",
-                        "spectral_target",
                     }
                 ):
                     batch_s[k] = v.to(self.device_s, non_blocking=True)
@@ -595,11 +587,6 @@ class KnowledgeDistiller:
                     attention_mask=batch_s["attention_mask1_stu"],
                     return_dict=True
                 )
-                s_out2 = self.model_student(
-                    input_ids=batch_s["input_ids2_stu"],
-                    attention_mask=batch_s["attention_mask2_stu"],
-                    return_dict=True
-                )
                 s_out_candidates = self.model_student(
                     input_ids=batch_s["candidate_input_ids_stu"],
                     attention_mask=batch_s["candidate_attention_mask_stu"],
@@ -607,18 +594,13 @@ class KnowledgeDistiller:
                 )
 
                 S_cls1 = s_out1.last_hidden_state[:, 0, :]
-                S_cls2 = s_out2.last_hidden_state[:, 0, :]
                 S_candidates = s_out_candidates.last_hidden_state[:, 0, :]
-                loss_task, _ = info_nce(S_cls1, S_cls2, temperature=cfg.temperature)
 
                 loss, metrics = self.criterion(
                     anchor_embeddings=S_cls1,
                     candidate_embeddings=S_candidates,
                     teacher_probs=batch_s["teacher_probs"],
                     teacher_cls=batch_s["teacher_cls"],
-                    spectral_target=batch_s["spectral_target"],
-                    task_loss=loss_task,
-                    epoch=self.current_epoch,
                 )
                 loss = loss.float()
 
