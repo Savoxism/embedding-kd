@@ -15,9 +15,10 @@ class TWMDDistillation(nn.Module):
         lambda_diff: float = 1.0,
         lambda_spec: float = 0.1,
         lambda_anchor: float = 0.05,
-        lambda_vicreg_var: float = 1.0,
+        lambda_vicreg_var: float = 25.0,
         lambda_vicreg_cov: float = 1.0,
         vicreg_gamma: float = 1.0,
+        vicreg_proj_dim: int = 2048,
         student_temp: float = 0.07,
         eps_norm: float = 1e-8,
         tau_rw: float = 0.05,
@@ -36,6 +37,17 @@ class TWMDDistillation(nn.Module):
         self.student_temp = student_temp
         self.eps_norm = eps_norm
         self.tau_rw = tau_rw
+
+        # VICReg Expander (Projector) Network (3 layers)
+        self.vicreg_projector = nn.Sequential(
+            nn.Linear(student_dim, vicreg_proj_dim, bias=False),
+            nn.BatchNorm1d(vicreg_proj_dim),
+            nn.ReLU(inplace=True),
+            nn.Linear(vicreg_proj_dim, vicreg_proj_dim, bias=False),
+            nn.BatchNorm1d(vicreg_proj_dim),
+            nn.ReLU(inplace=True),
+            nn.Linear(vicreg_proj_dim, vicreg_proj_dim, bias=True)
+        )
 
         self.anchor_proj = nn.Linear(student_dim, teacher_dim, bias=False)
         if spectral_dim > 0:
@@ -173,7 +185,8 @@ class TWMDDistillation(nn.Module):
             loss_spec = torch.tensor(0.0, device=anchor_embeddings.device, dtype=anchor_embeddings.dtype)
 
         # --- VICReg Loss ---
-        loss_var, loss_cov = self.vicreg_loss(anchor_embeddings, gamma=self.vicreg_gamma)
+        projected_emb = self.vicreg_projector(anchor_embeddings)
+        loss_var, loss_cov = self.vicreg_loss(projected_emb, gamma=self.vicreg_gamma)
         
         total_loss = (
             self.lambda_rw_path * loss_rw_path

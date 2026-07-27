@@ -22,9 +22,10 @@ class TWMDConfig(BaseConfig):
     lambda_anchor = 0.5
     
     # VICReg Spec
-    lambda_vicreg_var = 1.0
+    lambda_vicreg_var = 25.0
     lambda_vicreg_cov = 1.0
-    vicreg_gamma = 1.001
+    vicreg_gamma = 1.0
+    vicreg_proj_dim = 2048
     
     temperature = 0.1
     student_temp = 0.07
@@ -68,7 +69,7 @@ class TWMDConfig(BaseConfig):
     wandb_mode = "online"
 
     # SAM Optimizer Settings
-    use_sam = True
+    use_sam = False
     rho = 0.05
     
     def __init__(self, **kwargs):
