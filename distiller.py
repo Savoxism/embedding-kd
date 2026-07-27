@@ -180,12 +180,32 @@ class KnowledgeDistiller:
                 student_temp=getattr(config, "student_temp", 0.07),
                 eps_norm=getattr(config, "eps_norm", 1e-8),
             ).to(self.device_s)
-            self.optimizer.add_param_group({
-                "params": self.criterion.parameters(),
-                "lr": config.learning_rate * 5
-            })
+            if getattr(config, 'use_sam', False):
+                if not SAM_AVAILABLE:
+                    raise RuntimeError("SAM optimizer not available. Install pytorch_optimizer.")
+                optimizer_parameters = list(self.model_student.parameters())
+                if self.task_head is not None:
+                    optimizer_parameters.extend(self.task_head.parameters())
+                
+                base_optimizer = optim.AdamW
+                self.optimizer = SAM(
+                    [
+                        {"params": optimizer_parameters, "lr": config.learning_rate},
+                        {"params": self.criterion.parameters(), "lr": config.learning_rate * 5},
+                    ],
+                    base_optimizer,
+                    rho=getattr(config, 'rho', 0.05),
+                    adaptive=True
+                )
+                print(f"HeatGeo initialized with SAM optimizer (rho={getattr(config, 'rho', 0.05)})")
+            else:
+                self.optimizer.add_param_group({
+                    "params": self.criterion.parameters(),
+                    "lr": config.learning_rate * 5
+                })
+                print("HeatGeo criterion initialized and added to optimizer")
+            
             self.scheduler = self._build_scheduler()
-            print("HeatGeo criterion initialized and added to optimizer")
         elif config.distill_method in ['twmd', 'mdd']:
             spectral_dim = int(self.heatgeo_artifact["spectral_coords"].shape[-1])
             self.criterion = TWMDDistillation(
@@ -201,12 +221,32 @@ class KnowledgeDistiller:
                 eps_norm=getattr(config, "eps_norm", 1e-8),
                 tau_rw=getattr(config, "tau_rw", 0.05),
             ).to(self.device_s)
-            self.optimizer.add_param_group({
-                "params": self.criterion.parameters(),
-                "lr": config.learning_rate * 5
-            })
+            if getattr(config, 'use_sam', False):
+                if not SAM_AVAILABLE:
+                    raise RuntimeError("SAM optimizer not available. Install pytorch_optimizer.")
+                optimizer_parameters = list(self.model_student.parameters())
+                if self.task_head is not None:
+                    optimizer_parameters.extend(self.task_head.parameters())
+                
+                base_optimizer = optim.AdamW
+                self.optimizer = SAM(
+                    [
+                        {"params": optimizer_parameters, "lr": config.learning_rate},
+                        {"params": self.criterion.parameters(), "lr": config.learning_rate * 5},
+                    ],
+                    base_optimizer,
+                    rho=getattr(config, 'rho', 0.05),
+                    adaptive=True
+                )
+                print(f"TWMD initialized with SAM optimizer (rho={getattr(config, 'rho', 0.05)})")
+            else:
+                self.optimizer.add_param_group({
+                    "params": self.criterion.parameters(),
+                    "lr": config.learning_rate * 5
+                })
+                print("TWMD criterion initialized and added to optimizer")
+            
             self.scheduler = self._build_scheduler()
-            print("TWMD criterion initialized and added to optimizer")
         else:
             self.criterion = None
         
@@ -663,21 +703,93 @@ class KnowledgeDistiller:
             if not is_finite(loss):
                 raise RuntimeError(f"HeatGeo loss NaN/Inf at epoch={self.current_epoch} step={self.current_step}")
 
-            self.scaler.scale(loss).backward()
-            self.scaler.unscale_(self.optimizer)
-            if not grads_are_finite(self.optimizer):
-                self.optimizer.zero_grad(set_to_none=True)
-                self.scaler.update()
-                return loss, {**metrics, 'skip': 'grad_inf'}
+            if getattr(cfg, 'use_sam', False) and hasattr(self.optimizer, 'first_step'):
+                # SAM Flow
+                self.scaler.scale(loss).backward()
+                self.scaler.unscale_(self.optimizer)
+                if not grads_are_finite(self.optimizer):
+                    self.optimizer.zero_grad(set_to_none=True)
+                    self.scaler.update()
+                    return loss, {**metrics, 'skip': 'grad_inf_p1'}
+                
+                self.optimizer.first_step(zero_grad=True)
+                
+                # Second Forward Pass
+                with autocast("cuda", enabled=torch.cuda.is_available()):
+                    s_out1_2 = self.model_student(
+                        input_ids=batch_s["input_ids1_stu"],
+                        attention_mask=batch_s["attention_mask1_stu"],
+                        return_dict=True
+                    )
+                    s_out2_2 = self.model_student(
+                        input_ids=batch_s["input_ids2_stu"],
+                        attention_mask=batch_s["attention_mask2_stu"],
+                        return_dict=True
+                    )
+                    s_out_candidates_2 = self.model_student(
+                        input_ids=batch_s["candidate_input_ids_stu"],
+                        attention_mask=batch_s["candidate_attention_mask_stu"],
+                        return_dict=True
+                    )
 
-            self.scaler.step(self.optimizer)
-            self.scaler.update()
-            assert_module_parameters_finite(
-                self.model_student,
-                f"HeatGeo student after optimizer step "
-                f"(epoch={self.current_epoch}, step={self.current_step})",
-            )
-            self.scheduler.step()
+                    S_cls1_2 = s_out1_2.last_hidden_state[:, 0, :]
+                    S_cls2_2 = s_out2_2.last_hidden_state[:, 0, :]
+                    S_candidates_2 = s_out_candidates_2.last_hidden_state[:, 0, :]
+                    loss_task_2, _ = info_nce(S_cls1_2, S_cls2_2, temperature=cfg.temperature)
+
+                    if method in ('twmd', 'mdd'):
+                        loss_2, _ = self.criterion(
+                            anchor_embeddings=S_cls1_2,
+                            candidate_embeddings=S_candidates_2,
+                            walk_indices=batch_s.get("walk_indices"),
+                            hard_neg_indices=batch_s.get("hard_neg_indices"),
+                            teacher_probs=batch_s["teacher_probs"],
+                            teacher_cls=batch_s["teacher_cls"],
+                            spectral_target=batch_s["spectral_target"],
+                            epoch=self.current_epoch,
+                        )
+                    else:
+                        loss_2, _ = self.criterion(
+                            anchor_embeddings=S_cls1_2,
+                            candidate_embeddings=S_candidates_2,
+                            teacher_probs=batch_s["teacher_probs"],
+                            teacher_cls=batch_s["teacher_cls"],
+                            spectral_target=batch_s["spectral_target"],
+                            task_loss=loss_task_2,
+                            epoch=self.current_epoch,
+                        )
+                    loss_2 = loss_2.float()
+                
+                if not is_finite(loss_2):
+                    raise RuntimeError(f"loss_2 NaN/Inf at epoch={self.current_epoch}")
+                
+                loss_2.backward()
+                
+                if not grads_are_finite(self.optimizer):
+                    self.optimizer.zero_grad(set_to_none=True)
+                    self.scaler.update()
+                    return loss, {**metrics, 'skip': 'grad_inf_p2'}
+                
+                self.optimizer.second_step(zero_grad=True)
+                self.scaler.update()
+                self.scheduler.step()
+                
+            else:
+                self.scaler.scale(loss).backward()
+                self.scaler.unscale_(self.optimizer)
+                if not grads_are_finite(self.optimizer):
+                    self.optimizer.zero_grad(set_to_none=True)
+                    self.scaler.update()
+                    return loss, {**metrics, 'skip': 'grad_inf'}
+    
+                self.scaler.step(self.optimizer)
+                self.scaler.update()
+                assert_module_parameters_finite(
+                    self.model_student,
+                    f"student after optimizer step "
+                    f"(epoch={self.current_epoch}, step={self.current_step})",
+                )
+                self.scheduler.step()
 
             return loss, metrics
 

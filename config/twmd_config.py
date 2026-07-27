@@ -56,10 +56,14 @@ class TWMDConfig(BaseConfig):
     cache_dtype = "float16"
     
     save_dir = "./twmd_checkpoints"
-    use_wandb = True
+    use_wandb = False
     wandb_project = "iclr-mdd-twmd"
     wandb_run_name = "twmd_qwen3_4b_to_bert_base"
     wandb_mode = "online"
+
+    # SAM Optimizer Settings
+    use_sam = True
+    rho = 0.05
     
     def __init__(self, **kwargs):
         for k, v in kwargs.items():
