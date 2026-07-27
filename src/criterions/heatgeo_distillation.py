@@ -36,8 +36,7 @@ class HeatGeoDistillation(nn.Module):
         teacher_dim: int,
         spectral_dim: int,
         scale_weights: Sequence[float],
-        w_task: float = 0.001,
-        lambda_diff: float = 1.0,
+        alpha: float = 1.0,
         lambda_spec: float = 0.1,
         lambda_anchor: float = 0.05,
         student_temp: float = 0.07,
@@ -47,8 +46,9 @@ class HeatGeoDistillation(nn.Module):
         self.student_dim = student_dim
         self.teacher_dim = teacher_dim
         self.spectral_dim = spectral_dim
-        self.w_task = w_task
-        self.lambda_diff = lambda_diff
+        if not 0.0 <= alpha <= 1.0:
+            raise ValueError(f"alpha must be in [0, 1], got {alpha}")
+        self.alpha = alpha
         self.lambda_spec = lambda_spec
         self.lambda_anchor = lambda_anchor
         self.student_temp = student_temp
@@ -141,8 +141,8 @@ class HeatGeoDistillation(nn.Module):
             loss_spec = torch.tensor(0.0, device=anchor_embeddings.device, dtype=anchor_embeddings.dtype)
 
         total_loss = (
-            self.w_task * task_loss
-            + self.lambda_diff * loss_diff
+            (1.0 - self.alpha) * task_loss
+            + self.alpha * loss_diff
             + self.lambda_spec * loss_spec
             + self.lambda_anchor * loss_anchor
         )
@@ -161,8 +161,8 @@ class HeatGeoDistillation(nn.Module):
             "loss_diff": float(loss_diff.detach()),
             "loss_spec": float(loss_spec.detach()),
             "loss_anchor": float(loss_anchor.detach()),
-            "weighted_task": float((self.w_task * task_loss).detach()),
-            "weighted_diff": float((self.lambda_diff * loss_diff).detach()),
+            "weighted_task": float(((1.0 - self.alpha) * task_loss).detach()),
+            "weighted_diff": float((self.alpha * loss_diff).detach()),
             "weighted_spec": float((self.lambda_spec * loss_spec).detach()),
             "weighted_anchor": float((self.lambda_anchor * loss_anchor).detach()),
             "active_scales": float(active_scales),

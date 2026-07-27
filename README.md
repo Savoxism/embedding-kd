@@ -94,14 +94,14 @@ The main HeatGeo objective is:
 $$
 \mathcal L
 =
-w_{\mathrm{task}}\mathcal L_{\mathrm{InfoNCE}}
+(1-\alpha)\mathcal L_{\mathrm{InfoNCE}}
 +
-\lambda_{\mathrm{diff}}\mathcal L_{\mathrm{diff}}
-+
-\lambda_{\mathrm{spec}}\mathcal L_{\mathrm{spec}}
-+
-\lambda_{\mathrm{anchor}}\mathcal L_{\mathrm{anchor}}
+\alpha\mathcal L_{\mathrm{diff}}
 $$
+
+The default reproduction uses $\alpha=1$, so
+$\mathcal L=\mathcal L_{\mathrm{diff}}$. Spectral and anchor loss weights are
+both zero.
 
 The default config is in `config/heatgeo_config.py`.
 
