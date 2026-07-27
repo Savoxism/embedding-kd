@@ -8,6 +8,7 @@ from config import (
     HeatGeoConfig,
     StellaConfig,
     TALASConfig,
+    TWMDConfig,
 )
 from distiller import KnowledgeDistiller
 
@@ -21,7 +22,7 @@ def parse_args():
         '--method',
         type=str,
         default='cdm',
-        choices=['cdm', 'dskd', 'emo', 'stella', 'talas', 'heatgeo'],
+        choices=['cdm', 'dskd', 'emo', 'stella', 'talas', 'heatgeo', 'mdd', 'twmd'],
         help='Distillation method to use'
     )
     
@@ -166,6 +167,8 @@ def get_config(method: str, args):
         config = TALASConfig()
     elif method == 'heatgeo':
         config = HeatGeoConfig()
+    elif method in ['mdd', 'twmd']:
+        config = TWMDConfig()
     else:
         config = BaseConfig()
     

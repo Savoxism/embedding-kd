@@ -1,7 +1,6 @@
 import os
-import json
 from pathlib import Path
-from typing import Dict, List, Sequence, Tuple
+from typing import Dict, List, Sequence, Tuple, Optional
 
 import numpy as np
 import torch
@@ -13,6 +12,32 @@ from tqdm import tqdm
 
 def _as_tuple(values: Sequence[int]) -> Tuple[int, ...]:
     return tuple(int(v) for v in values)
+
+
+def _generate_random_walks(
+    row_neighbors: List[np.ndarray],
+    row_probs: List[np.ndarray],
+    num_walks: int,
+    walk_length: int,
+    seed: int,
+) -> np.ndarray:
+    n_items = len(row_neighbors)
+    walk_indices = np.zeros((n_items, num_walks, walk_length), dtype=np.int64)
+    rng = np.random.default_rng(seed + 100)
+    
+    for i in tqdm(range(n_items), desc="TWMD random walks"):
+        for w in range(num_walks):
+            curr = i
+            for step in range(walk_length):
+                neighbors = row_neighbors[curr]
+                probs = row_probs[curr]
+                if len(neighbors) == 0:
+                    walk_indices[i, w, step] = curr
+                else:
+                    curr = rng.choice(neighbors, p=probs)
+                    walk_indices[i, w, step] = curr
+    return walk_indices
+
 
 
 def _compute_topk_cosine(embeddings: torch.Tensor, k: int, chunk_size: int = 1024) -> Tuple[np.ndarray, np.ndarray]:
@@ -39,13 +64,11 @@ def _build_transition(
     top_scores: np.ndarray,
     graph_k: int,
     graph_temp: float,
-) -> Tuple[List[np.ndarray], List[np.ndarray], List[np.ndarray], np.ndarray, sparse.csr_matrix]:
+) -> Tuple[List[np.ndarray], List[np.ndarray], sparse.csr_matrix]:
     n_items = top_indices.shape[0]
     top_sets = [set(top_indices[i, :graph_k].tolist()) for i in range(n_items)]
     row_neighbors: List[np.ndarray] = []
     row_probs: List[np.ndarray] = []
-    row_scores: List[np.ndarray] = []
-    fallback_flags = np.zeros(n_items, dtype=bool)
     rows = []
     cols = []
     vals = []
@@ -60,7 +83,6 @@ def _build_transition(
                 scores.append(float(top_scores[i, pos]))
 
         if not neighbors:
-            fallback_flags[i] = True
             fallback_k = min(graph_k, top_indices.shape[1])
             neighbors = [int(j) for j in top_indices[i, :fallback_k]]
             scores = [float(s) for s in top_scores[i, :fallback_k]]
@@ -72,64 +94,12 @@ def _build_transition(
 
         row_neighbors.append(neighbor_arr)
         row_probs.append(prob_arr)
-        row_scores.append(np.asarray(scores, dtype=np.float32))
         rows.extend([i] * len(neighbor_arr))
         cols.extend(neighbor_arr.tolist())
         vals.extend(prob_arr.tolist())
 
     transition = sparse.csr_matrix((vals, (rows, cols)), shape=(n_items, n_items), dtype=np.float32)
-    return row_neighbors, row_probs, row_scores, fallback_flags, transition
-
-
-def _write_knn_graph_log(
-    log_dir: str,
-    row_neighbors: List[np.ndarray],
-    row_probs: List[np.ndarray],
-    row_scores: List[np.ndarray],
-    fallback_flags: np.ndarray,
-    graph_k: int,
-) -> Tuple[str, Dict[str, float]]:
-    os.makedirs(log_dir, exist_ok=True)
-    log_path = os.path.join(log_dir, "knn_graph_neighbors.jsonl")
-    degrees = np.asarray([len(neighbors) for neighbors in row_neighbors], dtype=np.float32)
-    fallback_count = int(fallback_flags.sum())
-    stats = {
-        "n_items": int(len(row_neighbors)),
-        "graph_k": int(graph_k),
-        "fallback_count": fallback_count,
-        "fallback_rate": float(fallback_count / max(1, len(row_neighbors))),
-        "avg_degree": float(degrees.mean()) if degrees.size else 0.0,
-        "min_degree": float(degrees.min()) if degrees.size else 0.0,
-        "max_degree": float(degrees.max()) if degrees.size else 0.0,
-    }
-
-    with open(log_path, "w", encoding="utf-8") as handle:
-        handle.write(json.dumps({"type": "summary", **stats}, sort_keys=True) + "\n")
-        for idx, (neighbors, probs, scores) in enumerate(zip(row_neighbors, row_probs, row_scores)):
-            handle.write(
-                json.dumps(
-                    {
-                        "type": "node",
-                        "idx": idx,
-                        "fallback_used": bool(fallback_flags[idx]),
-                        "neighbors": [int(value) for value in neighbors.tolist()],
-                        "transition_probs": [float(value) for value in probs.tolist()],
-                        "cosine_scores": [float(value) for value in scores.tolist()],
-                    },
-                    sort_keys=True,
-                )
-                + "\n"
-            )
-
-    print(
-        "HeatGeo kNN graph log saved: "
-        f"{log_path} | fallback={fallback_count}/{len(row_neighbors)} "
-        f"({stats['fallback_rate']:.2%}), avg_degree={stats['avg_degree']:.2f}"
-    )
-    if fallback_count:
-        fallback_examples = np.flatnonzero(fallback_flags)[:10].tolist()
-        print(f"HeatGeo fallback node examples: {fallback_examples}")
-    return log_path, stats
+    return row_neighbors, row_probs, transition
 
 
 def _diffuse_one(
@@ -166,7 +136,8 @@ def _build_diffusion_candidates(
     random_neg_k: int,
     candidate_size: int,
     seed: int,
-) -> Tuple[np.ndarray, np.ndarray]:
+    walk_indices: Optional[np.ndarray] = None,
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     n_items = top_indices.shape[0]
     n_scales = len(scales)
     candidate_indices = np.zeros((n_items, candidate_size), dtype=np.int64)
@@ -182,6 +153,16 @@ def _build_diffusion_candidates(
 
         candidates = []
         seen = {i}
+        
+        if walk_indices is not None:
+            for node in walk_indices[i].flatten():
+                node = int(node)
+                if node not in seen:
+                    candidates.append(node)
+                    seen.add(node)
+                if len(candidates) >= candidate_size:
+                    break
+
         for dist in scale_dists:
             for node, _ in sorted(dist.items(), key=lambda item: item[1], reverse=True)[:diffusion_topk]:
                 if node not in seen:
@@ -190,9 +171,12 @@ def _build_diffusion_candidates(
                 if len(candidates) >= candidate_size:
                     break
 
+        # Collect hard negatives before appending fallback top_indices
+        hard_negs = []
         for node in top_indices[i, : max(hard_neg_k * 4, hard_neg_k)]:
             node = int(node)
             if node not in seen:
+                hard_negs.append(node)
                 candidates.append(node)
                 seen.add(node)
             if len(candidates) >= candidate_size - random_neg_k:
@@ -234,7 +218,29 @@ def _build_diffusion_candidates(
                 probs /= prob_sum
             teacher_probs[scale_idx, i] = probs
 
-    return candidate_indices, teacher_probs
+    # Compute local walk indices (relative to candidates)
+    local_walk_indices = np.zeros_like(walk_indices) if walk_indices is not None else None
+    local_hard_negs = np.zeros((n_items, hard_neg_k), dtype=np.int64)
+
+    if walk_indices is not None:
+        for i in tqdm(range(n_items), desc="Mapping relative candidates"):
+            cand_list = candidate_indices[i].tolist()
+            # Map walk indices
+            for w in range(walk_indices.shape[1]):
+                for step in range(walk_indices.shape[2]):
+                    target = int(walk_indices[i, w, step])
+                    local_walk_indices[i, w, step] = cand_list.index(target) if target in cand_list else 0
+            
+            # Extract hard negatives from candidates (excluding anchor and walks)
+            walk_set = set(walk_indices[i].flatten().tolist())
+            walk_set.add(i)
+            hns = [idx for idx, c in enumerate(cand_list) if c not in walk_set]
+            # Pad or truncate to hard_neg_k
+            while len(hns) < hard_neg_k:
+                hns.append(0)
+            local_hard_negs[i] = np.array(hns[:hard_neg_k], dtype=np.int64)
+
+    return candidate_indices, teacher_probs, local_walk_indices, local_hard_negs
 
 
 def _compute_spectral_coords(
@@ -278,7 +284,8 @@ def _metadata_matches(artifact: Dict, metadata: Dict) -> bool:
         "candidate_size",
         "spectral_dim",
         "use_spectral",
-        "graph_log_version",
+        "num_walks",
+        "walk_length",
     ]
     return all(old.get(key) == metadata.get(key) for key in keys)
 
@@ -286,7 +293,6 @@ def _metadata_matches(artifact: Dict, metadata: Dict) -> bool:
 def build_or_load_heatgeo_artifact(
     teacher_embeddings: torch.Tensor,
     cache_path: str,
-    log_dir: str,
     graph_k: int,
     graph_temp: float,
     diffusion_scales: Sequence[int],
@@ -297,6 +303,8 @@ def build_or_load_heatgeo_artifact(
     spectral_dim: int,
     use_spectral: bool,
     seed: int,
+    num_walks: int = 1,
+    walk_length: int = 3,
 ) -> Dict[str, torch.Tensor]:
     n_items = int(teacher_embeddings.size(0))
     scales = _as_tuple(diffusion_scales)
@@ -311,48 +319,40 @@ def build_or_load_heatgeo_artifact(
         "candidate_size": int(candidate_size),
         "spectral_dim": int(spectral_dim),
         "use_spectral": bool(use_spectral),
-        "graph_log_version": 1,
+        "num_walks": int(num_walks),
+        "walk_length": int(walk_length),
     }
 
     artifact_path = Path(cache_path)
     if artifact_path.exists():
         artifact = torch.load(artifact_path, map_location="cpu")
         if _metadata_matches(artifact, metadata):
-            graph_log_path = artifact.get("graph_log_path")
-            if graph_log_path and os.path.exists(graph_log_path):
-                print(f"Loaded HeatGeo artifact from: {artifact_path}")
-                graph_stats = artifact.get("graph_stats", {})
-                if graph_stats:
-                    print(
-                        "HeatGeo kNN graph summary: "
-                        f"fallback={graph_stats.get('fallback_count', 0)}/{graph_stats.get('n_items', 0)} "
-                        f"({float(graph_stats.get('fallback_rate', 0.0)):.2%}), "
-                        f"avg_degree={float(graph_stats.get('avg_degree', 0.0)):.2f}"
-                    )
-                return artifact
-            print(f"HeatGeo graph log missing, rebuilding artifact: {graph_log_path}")
-        else:
-            print(f"HeatGeo artifact config mismatch, rebuilding: {artifact_path}")
+            print(f"Loaded HeatGeo artifact from: {artifact_path}")
+            return artifact
+        print(f"HeatGeo artifact config mismatch, rebuilding: {artifact_path}")
 
     if str(artifact_path.parent):
         os.makedirs(artifact_path.parent, exist_ok=True)
     topk_for_graph = max(graph_k, hard_neg_k + diffusion_topk, candidate_size)
     top_indices, top_scores = _compute_topk_cosine(teacher_embeddings, k=topk_for_graph)
-    row_neighbors, row_probs, row_scores, fallback_flags, transition = _build_transition(
+    row_neighbors, row_probs, transition = _build_transition(
         top_indices=top_indices,
         top_scores=top_scores,
         graph_k=graph_k,
         graph_temp=graph_temp,
     )
-    graph_log_path, graph_stats = _write_knn_graph_log(
-        log_dir=log_dir,
-        row_neighbors=row_neighbors,
-        row_probs=row_probs,
-        row_scores=row_scores,
-        fallback_flags=fallback_flags,
-        graph_k=graph_k,
-    )
-    candidate_indices, teacher_probs = _build_diffusion_candidates(
+    
+    walk_indices = None
+    if num_walks > 0 and walk_length > 0:
+        walk_indices = _generate_random_walks(
+            row_neighbors=row_neighbors,
+            row_probs=row_probs,
+            num_walks=num_walks,
+            walk_length=walk_length,
+            seed=seed,
+        )
+        
+    candidate_indices, teacher_probs, local_walk_indices, local_hard_negs = _build_diffusion_candidates(
         top_indices=top_indices,
         scales=scales,
         row_neighbors=row_neighbors,
@@ -362,6 +362,7 @@ def build_or_load_heatgeo_artifact(
         random_neg_k=random_neg_k,
         candidate_size=candidate_size,
         seed=seed,
+        walk_indices=walk_indices,
     )
     spectral_coords = _compute_spectral_coords(transition, spectral_dim if use_spectral else 0)
 
@@ -369,10 +370,12 @@ def build_or_load_heatgeo_artifact(
         "candidate_indices": torch.from_numpy(candidate_indices).long(),
         "teacher_probs": torch.from_numpy(teacher_probs).float(),
         "spectral_coords": torch.from_numpy(spectral_coords).float(),
-        "graph_log_path": graph_log_path,
-        "graph_stats": graph_stats,
         "metadata": metadata,
     }
+    if local_walk_indices is not None:
+        artifact["walk_indices"] = torch.from_numpy(local_walk_indices).long()
+        artifact["hard_neg_indices"] = torch.from_numpy(local_hard_negs).long()
+        
     torch.save(artifact, artifact_path)
     print(f"Saved HeatGeo artifact to: {artifact_path}")
     return artifact
