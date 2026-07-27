@@ -15,8 +15,11 @@ class HeatGeoConfig(BaseConfig):
     
     student_temp = 0.07
 
-    # L = L_diff + lambda_anchor * L_anchor
-    lambda_anchor = 0.05
+    # L = L_diff. The pointwise anchor is off: loss_anchor stayed at 0.22-0.27 across
+    # all five epochs while loss_diff fell 5.5x, i.e. the linear student->teacher map
+    # saturates in epoch 1 and the term becomes a constant offset. Set to 0.05 to
+    # reproduce the ablation row.
+    lambda_anchor = 0.0
 
     graph_k = 50
     # graph_temp sets how much ranking information the diffusion targets carry. At 0.1

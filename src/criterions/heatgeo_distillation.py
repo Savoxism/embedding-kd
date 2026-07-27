@@ -31,9 +31,9 @@ def _assert_finite_tensors(named_tensors: Sequence[tuple[str, torch.Tensor]]) ->
 
 
 class HeatGeoDistillation(nn.Module):
-    """Two-term objective: multi-scale diffusion matching + a pointwise teacher anchor.
+    """Single-term objective: multi-scale diffusion matching.
 
-    L = L_diff + lambda_anchor * L_anchor
+    L = L_diff   (+ lambda_anchor * L_anchor, disabled by default)
 
     The spectral term was removed: matching heat diffusion at several scales already
     matches the graph spectrum with an increasingly strong low-pass, so a separate
@@ -41,6 +41,11 @@ class HeatGeoDistillation(nn.Module):
     unit-norm eigenvectors over N rows, at a magnitude of ~1/N it contributed nothing
     to the gradient anyway). The InfoNCE task term was removed for the same reason it
     had no effect at w_task=1e-3: it is orthogonal to what this loss is meant to test.
+
+    The pointwise anchor was removed after loss_anchor sat at 0.22-0.27 for all five
+    epochs while loss_diff fell 5.5x: a linear map from student CLS to teacher space
+    saturates within one epoch, after which the term is a constant offset with no
+    gradient left for the encoder. Set lambda_anchor > 0 to restore it for the ablation.
     """
 
     def __init__(
@@ -48,7 +53,7 @@ class HeatGeoDistillation(nn.Module):
         student_dim: int,
         teacher_dim: int,
         scale_weights: Sequence[float],
-        lambda_anchor: float = 0.05,
+        lambda_anchor: float = 0.0,
         student_temp: float = 0.07,
         eps_norm: float = 1e-8,
         diag_topk: int = 8,
@@ -61,15 +66,18 @@ class HeatGeoDistillation(nn.Module):
         self.eps_norm = eps_norm
         self.diag_topk = diag_topk
 
-        self.anchor_proj = nn.Linear(student_dim, teacher_dim, bias=False)
+        self.use_anchor = lambda_anchor > 0.0
+        if self.use_anchor:
+            self.anchor_proj = nn.Linear(student_dim, teacher_dim, bias=False)
+            nn.init.normal_(self.anchor_proj.weight, mean=0.0, std=1e-3)
+        else:
+            self.anchor_proj = None
 
         weights = torch.tensor(list(scale_weights), dtype=torch.float32)
         if weights.numel() == 0:
             weights = torch.ones(1, dtype=torch.float32)
         weights = weights / weights.sum().clamp_min(1e-12)
         self.register_buffer("scale_weights", weights)
-
-        nn.init.normal_(self.anchor_proj.weight, mean=0.0, std=1e-3)
 
     def _resolved_weights(self, n_scales: int) -> torch.Tensor:
         if self.scale_weights.numel() < n_scales:
@@ -84,16 +92,18 @@ class HeatGeoDistillation(nn.Module):
         anchor_embeddings: torch.Tensor,
         candidate_embeddings: torch.Tensor,
         teacher_probs: torch.Tensor,
-        teacher_cls: torch.Tensor,
+        teacher_cls: torch.Tensor | None = None,
     ) -> tuple[torch.Tensor, dict[str, float]]:
-        _assert_finite_tensors(
-            (
-                ("anchor_embeddings", anchor_embeddings),
-                ("candidate_embeddings", candidate_embeddings),
-                ("teacher_probs", teacher_probs),
-                ("teacher_cls", teacher_cls),
-            )
-        )
+        checked = [
+            ("anchor_embeddings", anchor_embeddings),
+            ("candidate_embeddings", candidate_embeddings),
+            ("teacher_probs", teacher_probs),
+        ]
+        if self.use_anchor:
+            if teacher_cls is None:
+                raise ValueError("lambda_anchor > 0 requires teacher_cls")
+            checked.append(("teacher_cls", teacher_cls))
+        _assert_finite_tensors(tuple(checked))
 
         batch_size = anchor_embeddings.size(0)
         candidate_size = teacher_probs.size(-1)
@@ -122,18 +132,17 @@ class HeatGeoDistillation(nn.Module):
         ).sum(dim=-1)
         loss_diff = (kl_per_scale * weights.view(1, -1)).sum(dim=-1).mean()
 
-        projected = self.anchor_proj(anchor_embeddings)
-        teacher_norm = F.normalize(teacher_cls, p=2, dim=-1, eps=self.eps_norm)
-        loss_anchor = 1.0 - F.cosine_similarity(projected, teacher_norm, dim=-1).mean()
-
-        total_loss = loss_diff + self.lambda_anchor * loss_anchor
-        _assert_finite_tensors(
-            (
-                ("loss_diff", loss_diff),
-                ("loss_anchor", loss_anchor),
-                ("total_loss", total_loss),
+        if self.use_anchor:
+            projected = self.anchor_proj(anchor_embeddings)
+            teacher_norm = F.normalize(teacher_cls, p=2, dim=-1, eps=self.eps_norm)
+            loss_anchor = (
+                1.0 - F.cosine_similarity(projected, teacher_norm, dim=-1).mean()
             )
-        )
+            total_loss = loss_diff + self.lambda_anchor * loss_anchor
+        else:
+            loss_anchor = None
+            total_loss = loss_diff
+        _assert_finite_tensors((("loss_diff", loss_diff), ("total_loss", total_loss)))
 
         metrics = self._diagnostics(
             total_loss=total_loss,
@@ -150,7 +159,7 @@ class HeatGeoDistillation(nn.Module):
         self,
         total_loss: torch.Tensor,
         loss_diff: torch.Tensor,
-        loss_anchor: torch.Tensor,
+        loss_anchor: torch.Tensor | None,
         kl_per_scale: torch.Tensor,
         log_probs_student: torch.Tensor,
         teacher_probs: torch.Tensor,
@@ -171,8 +180,6 @@ class HeatGeoDistillation(nn.Module):
         scalars = [
             total_loss.detach(),
             loss_diff.detach(),
-            loss_anchor.detach(),
-            (self.lambda_anchor * loss_anchor).detach(),
             student_entropy,
             student_entropy / uniform_entropy,
             probs_student.max(dim=-1).values.mean(),
@@ -182,14 +189,15 @@ class HeatGeoDistillation(nn.Module):
         names = [
             "loss_total",
             "loss_diff",
-            "loss_anchor",
-            "weighted_anchor",
             "student_entropy",
             "student_entropy_ratio",
             "student_top1",
             "target_top1",
             f"student_mass_on_teacher_top{k}",
         ]
+        if loss_anchor is not None:
+            scalars += [loss_anchor.detach(), (self.lambda_anchor * loss_anchor).detach()]
+            names += ["loss_anchor", "weighted_anchor"]
         per_scale = list(kl_per_scale.mean(dim=0).detach())
         # One device sync for all logged scalars instead of one sync per scalar.
         values = torch.stack(
