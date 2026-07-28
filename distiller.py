@@ -1538,6 +1538,20 @@ class KnowledgeDistiller:
         self.print_evaluation_table(split, results)
         return results
 
+    def get_average_score(self, results: Dict) -> float:
+        scores = []
+        for family, benchmarks in results.items():
+            for bench, metrics in benchmarks.items():
+                if family == "classification" and "f1" in metrics:
+                    scores.append(metrics["f1"])
+                elif family == "pair" and "average_precision" in metrics:
+                    scores.append(metrics["average_precision"])
+                elif family == "sts" and "spearman" in metrics:
+                    scores.append(metrics["spearman"])
+        if scores:
+            return sum(scores) / len(scores)
+        return 0.0
+
     def log_experiment_record(self, record: Dict[str, Any]):
         if not self.config.save_dir:
             return
@@ -1692,6 +1706,16 @@ class KnowledgeDistiller:
                 if (epoch + 1) % cfg.eval_every == 0:
                     try:
                         validation_results = self.evaluate("validation")
+                        
+                        # --- Track Best Validation Model ---
+                        val_score = self.get_average_score(validation_results)
+                        if not hasattr(self, 'best_val_score') or val_score > self.best_val_score:
+                            self.best_val_score = val_score
+                            print(f"\nNew best validation score: {val_score:.4f}")
+                            if cfg.save_dir:
+                                best_val_path = os.path.join(cfg.save_dir, 'best_val_model.pt')
+                                torch.save(self.model_student.state_dict(), best_val_path)
+                        
                         if getattr(self, "use_wandb", False) and WANDB_AVAILABLE and validation_results is not None:
                             wandb.log(self._flatten_metrics("validation", validation_results), step=self.global_step)
                     except Exception as e:
@@ -1723,6 +1747,14 @@ class KnowledgeDistiller:
             print("Done train()")
             
             self.save_checkpoint(cfg.epochs - 1, {'loss': avg_loss})
+            
+            # --- Load Best Validation Model for Final Test ---
+            if hasattr(self, 'best_val_score') and cfg.save_dir:
+                best_val_path = os.path.join(cfg.save_dir, 'best_val_model.pt')
+                if os.path.exists(best_val_path):
+                    print(f"\nLoading best validation model (score: {self.best_val_score:.4f}) for final test...")
+                    self.model_student.load_state_dict(torch.load(best_val_path, map_location=self.device_s))
+            
             try:
                 test_results = self.evaluate("test")
                 if getattr(self, "use_wandb", False) and WANDB_AVAILABLE and test_results is not None:
