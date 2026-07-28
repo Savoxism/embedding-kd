@@ -83,47 +83,54 @@ class TextPairWithTeacher(Dataset):
 
 
 class TextPairWithTeacherAndHeatGeo(Dataset):
+    """HeatGeo anchors with a candidate set redrawn every epoch.
+
+    `anchor_texts` is passed in explicitly rather than re-derived from the frame:
+    the teacher graph is built over exactly these strings, and silently pulling a
+    different column here (e.g. `premise` when the teacher encoded `text`) would
+    misalign every node in the graph without raising anything.
+    """
+
     def __init__(
         self,
-        df: pd.DataFrame,
-        task: str,
+        anchor_texts: List[str],
         teacher_cls: torch.Tensor,
-        heatgeo_artifact: Dict[str, torch.Tensor],
+        sampler,
+        labels: Optional[List[int]] = None,
     ):
-        self.task = task
+        self.anchor_texts = [str(text) for text in anchor_texts]
         self.teacher_cls = teacher_cls
-        self.candidate_indices = heatgeo_artifact["candidate_indices"]
-        self.teacher_probs = heatgeo_artifact["teacher_probs"]
+        self.sampler = sampler
+        self.labels = labels
 
-        if task == "single_cls":
-            self.samples = [(t, int(y)) for t, y in zip(df["text"].astype(str),
-                                                        df["label"].astype(int))]
-        elif task == "pair_cls":
-            self.samples = [(a, b) for a, b in zip(df["premise"].astype(str),
-                                                   df["hypothesis"].astype(str))]
-        else:
-            self.samples = [(a, b) for a, b in zip(df["sentence1"].astype(str),
-                                                   df["sentence2"].astype(str))]
+        if len(self.anchor_texts) != int(teacher_cls.size(0)):
+            raise ValueError(
+                f"anchor_texts has {len(self.anchor_texts)} rows but teacher_cls has "
+                f"{int(teacher_cls.size(0))}"
+            )
+        if labels is not None and len(labels) != len(self.anchor_texts):
+            raise ValueError("labels length does not match anchor_texts length")
 
     def __len__(self):
-        return len(self.samples)
+        return len(self.anchor_texts)
 
-    def _anchor_text(self, sample):
-        if self.task == "single_cls":
-            return sample[0]
-        return sample[0]
+    def set_epoch(self, epoch: int) -> None:
+        self.sampler.set_epoch(epoch)
 
     def __getitem__(self, idx):
-        candidate_idx = self.candidate_indices[idx]
-        candidate_samples = [self._anchor_text(self.samples[int(j)]) for j in candidate_idx]
-        return {
+        candidate_idx, teacher_probs = self.sampler.sample_torch(idx)
+        candidate_texts = [self.anchor_texts[int(j)] for j in candidate_idx]
+        item = {
             "idx": idx,
-            "sample": self.samples[idx],
+            "anchor_text": self.anchor_texts[idx],
             "teacher_cls": self.teacher_cls[idx],
             "candidate_idx": candidate_idx,
-            "candidate_texts": candidate_samples,
-            "teacher_probs": self.teacher_probs[:, idx, :],
+            "candidate_texts": candidate_texts,
+            "teacher_probs": teacher_probs,
         }
+        if self.labels is not None:
+            item["label"] = int(self.labels[idx])
+        return item
 
 
 class HeatGeoCollate:
@@ -133,7 +140,6 @@ class HeatGeoCollate:
         self.max_len = max_len
 
     def __call__(self, batch):
-        samples = [item["sample"] for item in batch]
         teacher_cls = torch.stack([item["teacher_cls"] for item in batch], dim=0)
         idx = torch.tensor([item["idx"] for item in batch], dtype=torch.long)
         candidate_idx = torch.stack([item["candidate_idx"] for item in batch], dim=0).long()
@@ -143,12 +149,8 @@ class HeatGeoCollate:
 
         # Only the anchor text is encoded: the objective scores anchor-vs-candidates,
         # so the second view of the pair has no consumer.
-        ys = None
-        if self.task == "single_cls":
-            s1s = [sample[0] for sample in samples]
-            ys = [sample[1] for sample in samples]
-        else:
-            s1s = [sample[0] for sample in samples]
+        s1s = [item["anchor_text"] for item in batch]
+        ys = [item["label"] for item in batch] if "label" in batch[0] else None
 
         s1_enc = self.ts(s1s, max_length=self.max_len, truncation=True,
                          padding=True, return_tensors="pt",

@@ -43,13 +43,16 @@ A one-step transition captures direct neighbors, but embedding spaces also conta
     P_r^T = (Q^T)^r,
     \qquad r \in \mathcal{R},
 \end{equation}
-where $\mathcal{R}$ is typically $\{1,2,4\}$. Small $r$ preserves sharp local neighborhoods, while larger $r$ captures semantic regions and multi-hop communities. Laziness is what makes $\mathcal{R}$ a graded family: a plain walk on a mutual $k$NN graph mixes within its local component in about two steps, so $(P^T)^2$ and $(P^T)^4$ collapse onto nearly the same distribution and the additional scales contribute duplicated terms rather than new structure. The lazy walk retains mass at intermediate step counts and yields scales that remain distinguishable. In implementation, diffusion is approximated sparsely by propagating probability mass through graph neighbor lists and retaining top candidates, with a single walk snapshotted at each scale in $\mathcal{R}$.
+where $\mathcal{R}$ is typically $\{1,2,4\}$. Small $r$ preserves sharp local neighborhoods, while larger $r$ captures semantic regions and multi-hop communities. Laziness is what makes $\mathcal{R}$ a graded family: a plain walk on a mutual $k$NN graph mixes within its local component in about two steps, so $(P^T)^2$ and $(P^T)^4$ collapse onto nearly the same distribution and the additional scales contribute duplicated terms rather than new structure. The lazy walk retains mass at intermediate step counts and yields scales that remain distinguishable. In implementation, diffusion is approximated sparsely by propagating probability mass through graph neighbor lists and retaining the top candidates, with a single walk snapshotted at each scale in $\mathcal{R}$. The truncation to a sparse support and the removal of the self-transition mass both destroy normalization, so the distribution is renormalized after each; we log the residual mass falling outside the retained support so that the approximation error is visible rather than assumed small.
 
-For each anchor $x_i$, HeatGeo builds a candidate set
+For each anchor $x_i$, HeatGeo precomputes a diffusion \emph{pool} $\mathcal{P}_i$ of size $P$ --- the retained sparse support of the walk --- together with a same-source hard-negative pool $\mathcal{H}_i$ drawn from the teacher's top-ranked non-neighbors of $x_i$. At the start of each epoch $e$ it then \emph{redraws} a candidate set
 \begin{equation}
-    C_i = C_i^{+} \cup C_i^{h} \cup C_i^{r},
+    C_i^{(e)} = C_i^{+} \cup C_i^{h} \cup C_i^{r},
+    \qquad |C_i^{(e)}| = C \ll P,
 \end{equation}
-where $C_i^{+}$ contains high-probability diffusion neighbors, $C_i^{h}$ contains teacher hard negatives, and $C_i^{r}$ contains random negatives, each filling a fixed slot quota. Diffusion positives are drawn round-robin across the scales in $\mathcal{R}$, so that every scale contributes candidates on which it can be scored; filling the quota scale by scale instead lets the sharpest scale exhaust the budget and leaves the broader scales without support. The teacher diffusion target at scale $r$ is the diffusion mass restricted and renormalized over $C_i$:
+where $C_i^{+}\subset\mathcal{P}_i$ contains diffusion neighbors, $C_i^{h}\subset\mathcal{H}_i$ contains teacher hard negatives, and $C_i^{r}$ contains random negatives, each filling a fixed slot quota. Resampling matters more than it appears. A candidate set frozen for the whole run defines a fixed finite collection of comparisons; once the student orders them correctly there is no further gradient, and training saturates after roughly one epoch regardless of how much structure the graph still holds. Redrawing $C_i^{(e)}$ exposes a different section of the same pool each epoch, so the objective keeps presenting comparisons the student has not yet fit while the underlying target distribution is unchanged. Within each scale we keep its top-$m$ neighbors deterministically and draw the remainder of its share by Gumbel top-$k$ sampling proportional to diffusion mass, which reaches the tail of the support without biasing the retained head.
+
+Diffusion positives are drawn round-robin across the scales in $\mathcal{R}$, each scale sampling from its own $p_{i,r}^T$. Drawing the whole positive quota from the mixture $\sum_r\omega_r p_{i,r}^T$ is the more obvious choice and is wrong: the mixture's support is dominated by the broadest walk, so the sharpest scale receives one or two scored candidates and its KL term stops carrying ranking information at all. The teacher diffusion target at scale $r$ is the diffusion mass restricted and renormalized over $C_i$:
 \begin{equation}
     p_{i,r}^{T}(j)
     =
@@ -61,15 +64,33 @@ This target is a soft distribution over semantic relatedness, rather than a bina
 
 \subsection{Student Neighborhood Distribution}
 
-Given an anchor embedding $s_i$ and candidate embeddings $\{s_j:j\in C_i\}$, the student induces a distribution over the same candidate set:
+Given an anchor embedding $s_i$ and candidate embeddings $\{s_j:j\in C_i\}$, the student induces a distribution over the same candidate set. A single student distribution, however, cannot support a multi-scale objective. Suppose the student used one temperature $\tau_s$ for all scales, giving one $p_i^S$. Since cross-entropy is linear in its target,
 \begin{equation}
-    p_i^{S}(j)
+    \sum_{r\in\mathcal{R}}\omega_r D_{\mathrm{KL}}\!\left(p_{i,r}^{T}\,\|\,p_i^{S}\right)
     =
-    \frac{\exp(\cos(s_i,s_j)/\tau_s)}
-    {\sum_{j'\in C_i}\exp(\cos(s_i,s_{j'})/\tau_s)},
+    \underbrace{-\sum_{r}\omega_r H\!\left(p_{i,r}^{T}\right)}_{\text{constant}}
+    +\,
+    H\!\left(\bar p_i^{T},\,p_i^{S}\right),
+    \label{eq:collapse}
+\end{equation}
+where $H(\cdot,\cdot)$ is cross-entropy and $\bar p_i^{T}=\sum_{r}\omega_r p_{i,r}^{T}$. Up to an additive constant the objective depends on $\mathcal{R}$ only through the single mixture $\bar p_i^T$: any two scale sets with the same mixture produce identical gradients, and ``multi-scale'' reduces to target smoothing. Worse, \eqref{eq:collapse} is minimized at $p_i^S=\bar p_i^T$, at which point the loss equals
+\begin{equation}
+    \mathrm{JS}_{\omega}\!\left(p_{i,1}^{T},\dots,p_{i,R}^{T}\right)
+    =
+    H\!\left(\bar p_i^{T}\right)-\sum_{r}\omega_r H\!\left(p_{i,r}^{T}\right)
+    \;\ge\;0,
+    \label{eq:floor}
+\end{equation}
+the generalized Jensen--Shannon divergence of the scales. This is an \emph{irreducible floor}: it is a property of the teacher graph, fixed before training begins, and no student can go below it. A tied-temperature run that plateaus is therefore ambiguous --- the plateau may be an optimization failure or may simply be \eqref{eq:floor} --- and the two have opposite fixes. We compute \eqref{eq:floor} offline from the artifact and report the \emph{excess} $\mathcal{L}_{\mathrm{diff}}-\mathrm{JS}_\omega$ alongside the raw loss, so the distinction is observable at every step.
+
+HeatGeo therefore assigns each scale its own student temperature $\tau_r$, with broader scales receiving larger $\tau_r$ to match their smoother targets:
+\begin{equation}
+    p_{i,r}^{S}(j)
+    =
+    \frac{\exp(\cos(s_i,s_j)/\tau_r)}
+    {\sum_{j'\in C_i}\exp(\cos(s_i,s_{j'})/\tau_r)},
     \qquad j\in C_i,
 \end{equation}
-where $\tau_s$ is a student temperature. The main diffusion distillation loss is
 \begin{equation}
     \mathcal{L}_{\mathrm{diff}}
     =
@@ -79,31 +100,39 @@ where $\tau_s$ is a student temperature. The main diffusion distillation loss is
     \omega_r
     D_{\mathrm{KL}}
     \left(
-        p_{i,r}^{T} \| p_i^{S}
+        p_{i,r}^{T} \,\|\, p_{i,r}^{S}
     \right),
 \end{equation}
-where $B$ is a mini-batch and $\omega_r$ is the scale weight.
+where $B$ is a mini-batch and $\omega_r$ is the scale weight. The scales now share the underlying similarity vector $\cos(s_i,\cdot)$ but not the distribution built from it, so \eqref{eq:collapse} no longer applies and \eqref{eq:floor} becomes a lower bound rather than an attained value. The mechanism is over-determination: $|\mathcal{R}|$ softmaxes at distinct temperatures impose $|\mathcal{R}|$ independent constraints on one $|C_i|$-vector of cosines, and satisfying them all requires reproducing the teacher's similarity \emph{gaps}, not merely its ranking. A single softmax pins $\cos(s_i,s_j)$ only up to a per-anchor additive constant, which is exactly the calibration that Spearman correlation on STS and any globally thresholded cosine retrieval depend on. In a controlled setting with free logits, minimizing the tied objective converges to the floor of \eqref{eq:floor} to four decimals, whereas untying $\tau_r$ reaches a value well below it.
+
+Finally, we score every anchor in $B$ against the \emph{union} of all candidates in the batch rather than against its own $C_i$ alone. The candidate texts are already encoded, so this is free in forward cost, multiplies the negatives per anchor by roughly $|B|$, and --- because anchors now share columns --- couples their logit scales so that similarity levels become comparable across the batch. The teacher target is scattered onto the union with zero mass on the columns an anchor did not draw, and the anchor's own column is masked.
 
 \subsection{Why No Separate Spectral Term}
 \label{sec:no-spectral}
 
-A natural addition would be a spectral term that regresses student embeddings onto the leading eigenvectors of the graph Laplacian $L^T = I - (D^T)^{-1/2}W^T(D^T)^{-1/2}$, on the grounds that diffusion matching is local while eigenvectors describe global topology. We deliberately omit such a term, because it distills information that $\mathcal{L}_{\mathrm{diff}}$ already carries. The heat kernel admits the spectral expansion
+A natural addition would be a spectral term that regresses student embeddings onto the leading eigenvectors of the graph Laplacian $L^T = I - (D^T)^{-1/2}W^T(D^T)^{-1/2}$, on the grounds that diffusion matching is local while eigenvectors describe global topology. The usual argument for omitting it appeals to the spectral expansion of the heat kernel,
 \begin{equation}
     e^{-tL^T} = \sum_{\ell} e^{-t\lambda_\ell}\, u_\ell u_\ell^{\top},
+    \label{eq:heatspec}
 \end{equation}
-so matching diffusion at several scales is matching the graph spectrum under a low-pass filter whose bandwidth is set by $t$. A truncated eigenvector-regression term is a strictly weaker version of the large-scale member of $\mathcal{R}$, and adding it distills the same structure twice. Omitting it also removes the only global eigendecomposition from the pipeline, leaving a method whose precomputation is a $k$NN search followed by sparse propagation. Section~\ref{sec:experiments} reports the ablation that adds the term back.
+concluding that matching diffusion at several scales already matches the graph spectrum under a low-pass filter of bandwidth $t$, so an eigenvector term distills the same structure twice.
+
+That argument does not survive Section~\ref{sec:no-spectral}'s own premises if the temperatures are tied. By \eqref{eq:collapse}, a tied objective constrains the student only through the mixture $\bar p^T$, i.e.\ through the \emph{single} fixed filter $g(Q^T)=\sum_r\omega_r (Q^T)^r$ applied once. Observing $u_\ell^\top g(Q^T) u_\ell = g(1-\lambda_\ell)$ for one known $g$ does not identify $\{\lambda_\ell\}$: $g$ is not injective on $[-1,1]$ for the weights we use, and in any case one scalar functional per eigenvalue recovered from row-normalized, candidate-restricted distributions is far weaker than eigenvector regression. Under a tied temperature the ``already covered'' claim is therefore unsupported, and the honest statement would be that the two terms are complementary.
+
+With per-scale temperatures the argument is restored, in a weaker and more defensible form. Each scale now imposes its own constraint, so the student must match $|\mathcal{R}|$ distinct filters $(Q^T)^r$ of the same operator rather than one mixture --- a filter bank, and it is the bank, not any single member, that pins down where the spectral mass sits. We still make no claim of exact spectral identifiability from $|\mathcal{R}|=3$ scales on truncated supports; we claim only that a truncated eigenvector-regression term adds little on top of the bank while reintroducing the pipeline's only global eigendecomposition. Section~\ref{sec:experiments} reports the ablation that adds the term back, run against the per-scale-temperature model so that the comparison is against the objective we actually advocate.
 
 \subsection{Training Objective}
 
-HeatGeo includes a lightweight pointwise anchor for stability:
+A relational objective constrains the student only up to a transformation of its space, which invites a pointwise anchor of the form
 \begin{equation}
     \mathcal{L}_{\mathrm{anchor}}
     =
     \frac{1}{|B|}
     \sum_{i\in B}
     \left(1-\cos(W_a s_i,t_i)\right),
+    \label{eq:anchor}
 \end{equation}
-where $W_a$ maps student embeddings to the teacher dimension. This term supplies the pointwise component that a purely relational objective leaves unconstrained, and it is the only auxiliary HeatGeo uses.
+where $W_a$ is a freely learned map to the teacher dimension. We report this term but disable it by default ($\lambda_{\mathrm{anchor}}=0$), because as written it cannot do the job it is introduced for. For any invertible $A$, replacing $s_i\mapsto As_i$ and $W_a\mapsto W_aA^{-1}$ leaves \eqref{eq:anchor} exactly invariant, so the term is blind to precisely the degrees of freedom --- rotation, anisotropic scaling, shear --- that the relational loss also leaves free. Its optimum is the best linear predictor of $t_i$ from $s_i$, a quantity that a single linear layer can fit early and then hold nearly constant; empirically it settles within one epoch and contributes no further gradient of consequence. Supplying genuine absolute calibration requires either freezing $W_a$ (e.g.\ to a random projection, breaking the gauge) or, as we do here, obtaining it from the per-scale temperatures, which constrain cosine gaps directly in the student's own metric. We keep \eqref{eq:anchor} only as an ablation row.
 
 The final objective is therefore two terms with a single balancing weight:
 \begin{equation}
@@ -115,22 +144,27 @@ The final objective is therefore two terms with a single balancing weight:
 \end{equation}
 All scales in $\mathcal{R}$ are active from the first step. We also evaluated a curriculum that introduces scales one epoch at a time; because the scale weights are renormalized over the active set, such a curriculum monotonically shifts weight away from the sharpest local scale as training proceeds, and we found no benefit from it (Section~\ref{sec:experiments}).
 
-Since the loss value alone cannot distinguish a student that has learned the teacher's neighborhood ranking from one whose embeddings have collapsed toward a uniform candidate distribution, we log the entropy of $p_i^S$ relative to $\log|C_i|$ and the student probability mass falling on the teacher's top-ranked candidates.
+The loss value alone is not interpretable. It cannot separate a student that has learned the teacher's neighborhood ranking from one whose embeddings have collapsed toward a uniform candidate distribution, and by \eqref{eq:floor} it cannot separate a converged student from an exhausted objective. We therefore log, at every step, (i) the entropy of $p_{i,r}^S$ relative to $\log|C_i|$, (ii) the student probability mass falling on the teacher's top-8 candidates, and (iii) the excess $\mathcal{L}_{\mathrm{diff}}-\mathrm{JS}_\omega$ over the floor computed offline from the teacher graph. Two build-time diagnostics accompany them: $D_{\mathrm{KL}}(p_{i,r}^T\|\mathcal{U}_{\mathrm{supp}})$ per scale, which detects a graph temperature that has flattened the targets into binary labels, and the pairwise cross-scale divergences $D_{\mathrm{KL}}(p_{i,r}^T\|p_{i,r'}^T)$, which detect scales that have become redundant. A near-zero $\mathrm{JS}_\omega$ is itself a warning: it certifies that the scales carry the same target and that, under a tied temperature, the multi-scale objective would be numerically identical to a single-scale one.
+
+We also deduplicate the corpus before building the graph. Exact duplicate texts have $\cos=1$ by construction, so their logit is pinned at the ceiling with no gradient while they continue to absorb teacher probability mass from the candidates that could still move.
 
 \begin{algorithm}[t]
 \caption{HeatGeo Training}
 \label{alg:heatgeo}
 \begin{algorithmic}[1]
-\REQUIRE Corpus $\mathcal{D}$, teacher $T$, student $S_{\theta}$, graph size $k$, diffusion scales $\mathcal{R}$
-\STATE Cache teacher embeddings $t_i=T(x_i)$ for all $x_i\in\mathcal{D}$
+\REQUIRE Corpus $\mathcal{D}$, teacher $T$, student $S_{\theta}$, graph size $k$, scales $\mathcal{R}$, temperatures $\{\tau_r\}$, pool size $P$, candidate size $C$
+\STATE Deduplicate $\mathcal{D}$; cache teacher embeddings $t_i=T(x_i)$
 \STATE Build a mutual $k$NN teacher graph $W^T$
-\STATE Compute transition matrix $P^T=(D^T)^{-1}W^T$ and lazy walk $Q^T=\frac{1}{2}(I+P^T)$
-\STATE Precompute sparse diffusion candidates and targets $p_{i,r}^T$ from one walk snapshotted at each $r\in\mathcal{R}$
-\FOR{each training epoch}
+\STATE Compute $P^T=(D^T)^{-1}W^T$ and lazy walk $Q^T=\frac{1}{2}(I+P^T)$
+\STATE Precompute diffusion pools $\mathcal{P}_i$ ($|\mathcal{P}_i|=P$) and targets $p_{i,r}^T$ from one walk snapshotted at each $r\in\mathcal{R}$; precompute same-source hard-negative pools $\mathcal{H}_i$
+\STATE Compute the floor $\mathrm{JS}_{\omega}$ of \eqref{eq:floor} and the build-time target diagnostics
+\FOR{each training epoch $e$}
+    \STATE Redraw $C_i^{(e)}$ for every $i$: per-scale positives from $\mathcal{P}_i$, hard negatives from $\mathcal{H}_i$, random negatives
     \FOR{each mini-batch $B$}
         \STATE Encode anchors and candidate texts with $S_{\theta}$
-        \STATE Compute student candidate distributions $p_i^S$
-        \STATE Compute $\mathcal{L}_{\mathrm{diff}}$ and $\mathcal{L}_{\mathrm{anchor}}$
+        \STATE Form the shared column set $\bigcup_{i\in B}C_i^{(e)}$ and scatter the targets onto it
+        \STATE Compute $p_{i,r}^S$ at temperature $\tau_r$ for each $r\in\mathcal{R}$
+        \STATE Compute $\mathcal{L}_{\mathrm{HeatGeo}}$ and the excess over $\mathrm{JS}_{\omega}$
         \STATE Update $\theta$ by minimizing $\mathcal{L}_{\mathrm{HeatGeo}}$
     \ENDFOR
 \ENDFOR

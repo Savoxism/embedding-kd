@@ -1,3 +1,4 @@
+import hashlib
 import json
 import os
 from collections.abc import Sequence
@@ -8,9 +9,36 @@ import torch
 import torch.nn.functional as F
 from tqdm import tqdm
 
+ARTIFACT_VERSION = 3
+
 
 def _as_tuple(values: Sequence[int]) -> tuple[int, ...]:
     return tuple(sorted({int(v) for v in values}))
+
+
+def _normalized_weights(scale_weights: Sequence[float], n_scales: int) -> np.ndarray:
+    weights = np.asarray(list(scale_weights), dtype=np.float64)
+    if weights.size == 0:
+        weights = np.ones(n_scales, dtype=np.float64)
+    if weights.size < n_scales:
+        weights = np.concatenate(
+            [weights, np.repeat(weights[-1], n_scales - weights.size)]
+        )
+    weights = weights[:n_scales]
+    return weights / max(float(weights.sum()), 1e-12)
+
+
+def _fingerprint(embeddings: torch.Tensor) -> str:
+    """Content hash of the teacher embeddings.
+
+    Without this, changing the teacher, the pooling, or the corpus while keeping
+    n_items constant silently reuses a stale graph and every downstream ablation
+    is measured against the wrong targets.
+    """
+    array = embeddings.detach().to(torch.float32).cpu().numpy()
+    digest = hashlib.sha1(np.ascontiguousarray(array).tobytes())
+    digest.update(str(array.shape).encode("utf-8"))
+    return digest.hexdigest()
 
 
 def _compute_topk_cosine(
@@ -143,6 +171,11 @@ def _diffuse_snapshots(
     The lazy walk is what makes the scales a graded family: a plain walk on a mutual
     kNN graph mixes within two steps, so (P)^2 and (P)^4 collapse onto the same
     distribution and the multi-scale objective degenerates into a duplicated term.
+
+    Truncation to keep_topk is followed by renormalization. Truncating without
+    renormalizing leaks mass at every step, and the leak compounds with r, so the
+    later scales end up systematically under-weighted relative to r=1 -- which
+    silently distorts the mixture target the loss actually optimizes.
     """
     snapshots: dict[int, dict[int, float]] = {}
     dist: dict[int, float] = {start_idx: 1.0}
@@ -164,165 +197,170 @@ def _diffuse_snapshots(
                 next_dist.items(), key=lambda item: item[1], reverse=True
             )[:keep_topk]
             next_dist = dict(top_items)
+        total = sum(next_dist.values())
+        if total > 0.0:
+            next_dist = {node: mass / total for node, mass in next_dist.items()}
         dist = next_dist
 
         if step in scales:
             snapshot = dict(dist)
             snapshot.pop(start_idx, None)
+            total = sum(snapshot.values())
+            if total > 0.0:
+                snapshot = {node: mass / total for node, mass in snapshot.items()}
             snapshots[step] = snapshot
 
     return [snapshots[scale] for scale in scales]
 
 
-def _build_diffusion_candidates(
+def _build_diffusion_pools(
     top_indices: np.ndarray,
     scales: tuple[int, ...],
+    weights: np.ndarray,
     row_neighbors: list[np.ndarray],
     row_probs: list[np.ndarray],
-    diffusion_topk: int,
-    hard_neg_k: int,
-    random_neg_k: int,
-    candidate_size: int,
-    seed: int,
-) -> tuple[np.ndarray, np.ndarray, dict[str, float]]:
+    pool_size: int,
+    hard_neg_pool: int,
+    source_ids: np.ndarray,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, dict[str, float]]:
+    """Per-anchor sparse diffusion support plus a same-source hard-negative pool.
+
+    Candidate *sets* are no longer frozen here. The previous design precomputed one
+    fixed 64-slot set per anchor and reused it for every epoch, so after epoch 1 the
+    student had fit those exact comparisons and the objective had nothing left to
+    say. What is precomputed now is the diffusion support; the candidate set is
+    resampled from it each epoch by HeatGeoCandidateSampler.
+    """
     n_items = top_indices.shape[0]
     n_scales = len(scales)
-    candidate_indices = np.zeros((n_items, candidate_size), dtype=np.int64)
-    teacher_probs = np.zeros((n_scales, n_items, candidate_size), dtype=np.float32)
-    rng = np.random.default_rng(seed)
-    keep_topk = max(candidate_size * 4, diffusion_topk * 4, 64)
+    keep_topk = max(pool_size * 4, 256)
 
-    # Explicit slot quotas. The previous implementation appended greedily and checked
-    # its break conditions after appending, so hard_neg_k / random_neg_k were never
-    # honoured -- the actual composition was whatever the diffusion supports left over.
-    diffusion_quota = max(0, candidate_size - hard_neg_k - random_neg_k)
-    source_counts = {"diffusion": 0, "hard": 0, "random": 0, "pad": 0}
-    uniform_fallback = np.zeros(n_scales, dtype=np.int64)
+    pool_indices = np.full((n_items, pool_size), -1, dtype=np.int64)
+    pool_probs = np.zeros((n_scales, n_items, pool_size), dtype=np.float32)
+    hard_neg_indices = np.full((n_items, hard_neg_pool), -1, dtype=np.int64)
 
-    for i in tqdm(range(n_items), desc="HeatGeo diffusion candidates"):
+    residual_mass = np.zeros(n_scales, dtype=np.float64)
+    pool_fill = np.zeros(n_items, dtype=np.int64)
+    hard_fill = np.zeros(n_items, dtype=np.int64)
+    empty_scale = np.zeros(n_scales, dtype=np.int64)
+
+    for i in tqdm(range(n_items), desc="HeatGeo diffusion pools"):
         scale_dists = _diffuse_snapshots(i, scales, row_neighbors, row_probs, keep_topk)
-        ranked_per_scale = [
-            [
-                node
-                for node, _ in sorted(
-                    dist.items(), key=lambda item: item[1], reverse=True
-                )[:diffusion_topk]
-            ]
-            for dist in scale_dists
-        ]
 
-        candidates: list[int] = []
-        seen = {i}
-
-        # Round-robin across scales so every scale contributes candidates. Taking the
-        # scales in order instead lets the sharpest scale exhaust the budget, which
-        # leaves the broader scales with no support to be scored on.
-        cursors = [0] * n_scales
-        while len(candidates) < diffusion_quota and any(
-            cursors[s] < len(ranked_per_scale[s]) for s in range(n_scales)
-        ):
-            for s in range(n_scales):
-                while cursors[s] < len(ranked_per_scale[s]):
-                    node = int(ranked_per_scale[s][cursors[s]])
-                    cursors[s] += 1
-                    if node not in seen:
-                        candidates.append(node)
-                        seen.add(node)
-                        break
-                if len(candidates) >= diffusion_quota:
-                    break
-        source_counts["diffusion"] += len(candidates)
-
-        hard_start = len(candidates)
-        hard_target = hard_start + hard_neg_k
-        for node in top_indices[i]:
-            if len(candidates) >= hard_target:
-                break
-            node = int(node)
-            if node not in seen:
-                candidates.append(node)
-                seen.add(node)
-        source_counts["hard"] += len(candidates) - hard_start
-
-        random_target = min(candidate_size, len(candidates) + random_neg_k)
-        random_start = len(candidates)
-        attempts = 0
-        while (
-            len(candidates) < random_target
-            and len(seen) < n_items
-            and attempts < 20 * n_items
-        ):
-            attempts += 1
-            node = int(rng.integers(0, n_items))
-            if node in seen:
-                continue
-            candidates.append(node)
-            seen.add(node)
-        source_counts["random"] += len(candidates) - random_start
-
-        pad_start = len(candidates)
-        for node in top_indices[i]:
-            if len(candidates) >= candidate_size:
-                break
-            node = int(node)
-            if node not in seen:
-                candidates.append(node)
-                seen.add(node)
-        while len(candidates) < candidate_size:
-            node = int(rng.integers(0, n_items))
-            if node != i:
-                candidates.append(node)
-        source_counts["pad"] += len(candidates) - pad_start
-
-        candidate_arr = np.asarray(candidates[:candidate_size], dtype=np.int64)
-        candidate_indices[i] = candidate_arr
-
+        mixture: dict[int, float] = {}
         for scale_idx, dist in enumerate(scale_dists):
-            probs = np.asarray(
-                [dist.get(int(node), 0.0) for node in candidate_arr], dtype=np.float32
+            weight = float(weights[scale_idx])
+            for node, mass in dist.items():
+                mixture[node] = mixture.get(node, 0.0) + weight * mass
+
+        ranked = sorted(mixture.items(), key=lambda item: item[1], reverse=True)
+        selected = [node for node, _ in ranked[:pool_size]]
+        pool_fill[i] = len(selected)
+        if selected:
+            pool_indices[i, : len(selected)] = np.asarray(selected, dtype=np.int64)
+
+        pool_set = set(selected)
+        for scale_idx, dist in enumerate(scale_dists):
+            if not dist:
+                empty_scale[scale_idx] += 1
+                continue
+            kept = np.asarray(
+                [dist.get(node, 0.0) for node in selected], dtype=np.float64
             )
-            prob_sum = float(probs.sum())
-            if prob_sum <= 0.0:
-                uniform_fallback[scale_idx] += 1
-                probs[:] = 1.0 / candidate_size
-            else:
-                probs /= prob_sum
-            teacher_probs[scale_idx, i] = probs
+            kept_sum = float(kept.sum())
+            total = float(sum(dist.values()))
+            residual_mass[scale_idx] += max(0.0, total - kept_sum) / max(total, 1e-12)
+            if kept_sum <= 0.0:
+                empty_scale[scale_idx] += 1
+                continue
+            pool_probs[scale_idx, i, : len(selected)] = (kept / kept_sum).astype(
+                np.float32
+            )
+
+        # Hard negatives: nearest teacher neighbours from the SAME source corpus that
+        # carry no diffusion mass. Sampling negatives uniformly from a corpus made of
+        # three disjoint datasets makes ~2/3 of them separable by domain alone, which
+        # is why the discrimination task was exhausted within one epoch.
+        source_i = source_ids[i]
+        hard: list[int] = []
+        for node in top_indices[i]:
+            if len(hard) >= hard_neg_pool:
+                break
+            node = int(node)
+            if node == i or node in pool_set:
+                continue
+            if source_ids[node] != source_i:
+                continue
+            hard.append(node)
+        if len(hard) < hard_neg_pool:
+            # Same-source pool exhausted: top up with cross-source nearest neighbours
+            # rather than leaving the quota unfilled.
+            for node in top_indices[i]:
+                if len(hard) >= hard_neg_pool:
+                    break
+                node = int(node)
+                if node == i or node in pool_set or node in hard:
+                    continue
+                hard.append(node)
+        hard_fill[i] = len(hard)
+        if hard:
+            hard_neg_indices[i, : len(hard)] = np.asarray(hard, dtype=np.int64)
 
     stats = {
-        f"candidate_src_{key}": float(value / max(1, n_items))
-        for key, value in source_counts.items()
+        "pool_size": float(pool_size),
+        "pool_fill_avg": float(pool_fill.mean()),
+        "pool_fill_min": float(pool_fill.min()),
+        "hard_pool_fill_avg": float(hard_fill.mean()),
+        "hard_pool_fill_min": float(hard_fill.min()),
     }
     for scale_idx, scale in enumerate(scales):
-        stats[f"uniform_fallback_r{scale}"] = float(
-            uniform_fallback[scale_idx] / max(1, n_items)
+        stats[f"pool_residual_mass_r{scale}"] = float(
+            residual_mass[scale_idx] / max(1, n_items)
         )
-    return candidate_indices, teacher_probs, stats
+        stats[f"pool_empty_r{scale}"] = float(empty_scale[scale_idx] / max(1, n_items))
+    return pool_indices, pool_probs, hard_neg_indices, stats
 
 
 def _target_sharpness_stats(
-    teacher_probs: np.ndarray, scales: tuple[int, ...]
+    pool_indices: np.ndarray,
+    pool_probs: np.ndarray,
+    scales: tuple[int, ...],
+    weights: np.ndarray,
 ) -> dict[str, float]:
-    """Is the target actually informative, and are the scales actually different?
+    """Is the target informative, are the scales different, and what is the loss floor?
 
     KL(p || uniform-on-support) near zero means the target degenerates into a binary
-    neighbour/non-neighbour label and carries no ranking signal; cross-scale KL near
-    zero means an extra scale adds a duplicated term rather than new structure.
+    neighbour/non-neighbour label and carries no ranking signal. The Jensen-Shannon
+    term is the exact irreducible value of L_diff when all scales share one student
+    distribution, so it is the number the training loss can never go below.
     """
     stats: dict[str, float] = {}
-    probs = np.clip(teacher_probs.astype(np.float64), 0.0, None)
-    support = probs > 0
+    valid = pool_indices >= 0
+    probs = np.clip(pool_probs.astype(np.float64), 0.0, None)
+    probs = np.where(valid[None, :, :], probs, 0.0)
 
+    entropies = np.zeros((len(scales), pool_indices.shape[0]), dtype=np.float64)
     for scale_idx, scale in enumerate(scales):
         p = probs[scale_idx]
-        mask = support[scale_idx]
+        mask = p > 0
         supp_size = mask.sum(axis=-1).astype(np.float64)
         safe = np.where(mask, p, 1.0)
         entropy = -(np.where(mask, p * np.log(safe), 0.0)).sum(axis=-1)
+        entropies[scale_idx] = entropy
         kl_uniform = np.log(np.maximum(supp_size, 1.0)) - entropy
         stats[f"target_support_r{scale}"] = float(supp_size.mean())
         stats[f"target_kl_uniform_r{scale}"] = float(kl_uniform.mean())
         stats[f"target_top1_r{scale}"] = float(p.max(axis=-1).mean())
+
+    mixture = (probs * weights.reshape(-1, 1, 1)).sum(axis=0)
+    mask = mixture > 0
+    safe = np.where(mask, mixture, 1.0)
+    mixture_entropy = -(np.where(mask, mixture * np.log(safe), 0.0)).sum(axis=-1)
+    js = mixture_entropy - (entropies * weights.reshape(-1, 1)).sum(axis=0)
+    stats["target_js_floor"] = float(js.mean())
+    stats["target_js_floor_p90"] = float(np.percentile(js, 90))
+    stats["target_mixture_entropy"] = float(mixture_entropy.mean())
+    stats["target_mixture_top1"] = float(mixture.max(axis=-1).mean())
 
     clamped = np.clip(probs, 1e-12, None)
     clamped = clamped / clamped.sum(axis=-1, keepdims=True)
@@ -335,21 +373,27 @@ def _target_sharpness_stats(
     return stats
 
 
-def _metadata_matches(artifact: dict, metadata: dict) -> bool:
+_METADATA_KEYS = (
+    "n_items",
+    "graph_k",
+    "graph_temp",
+    "diffusion_scales",
+    "scale_weights",
+    "pool_size",
+    "hard_neg_pool",
+    "lazy_walk",
+    "artifact_version",
+    "teacher_fingerprint",
+    "source_fingerprint",
+)
+
+
+def _metadata_matches(artifact: dict, metadata: dict) -> tuple[bool, str]:
     old = artifact.get("metadata", {})
-    keys = [
-        "n_items",
-        "graph_k",
-        "graph_temp",
-        "diffusion_scales",
-        "diffusion_topk",
-        "hard_neg_k",
-        "random_neg_k",
-        "candidate_size",
-        "lazy_walk",
-        "graph_log_version",
-    ]
-    return all(old.get(key) == metadata.get(key) for key in keys)
+    for key in _METADATA_KEYS:
+        if old.get(key) != metadata.get(key):
+            return False, f"{key}: cached={old.get(key)!r} requested={metadata.get(key)!r}"
+    return True, ""
 
 
 def build_or_load_heatgeo_artifact(
@@ -359,31 +403,44 @@ def build_or_load_heatgeo_artifact(
     graph_k: int,
     graph_temp: float,
     diffusion_scales: Sequence[int],
-    diffusion_topk: int,
-    hard_neg_k: int,
-    random_neg_k: int,
-    candidate_size: int,
-    seed: int,
-) -> dict[str, torch.Tensor]:
+    scale_weights: Sequence[float],
+    pool_size: int,
+    hard_neg_pool: int,
+    source_ids: Sequence[int] | None = None,
+) -> dict:
     n_items = int(teacher_embeddings.size(0))
     scales = _as_tuple(diffusion_scales)
+    weights = _normalized_weights(scale_weights, len(scales))
+
+    if source_ids is None:
+        source_array = np.zeros(n_items, dtype=np.int64)
+    else:
+        source_array = np.asarray(source_ids, dtype=np.int64)
+        if source_array.shape[0] != n_items:
+            raise ValueError(
+                f"source_ids has {source_array.shape[0]} entries but there are "
+                f"{n_items} teacher embeddings"
+            )
+
     metadata = {
         "n_items": n_items,
         "graph_k": int(graph_k),
         "graph_temp": float(graph_temp),
         "diffusion_scales": scales,
-        "diffusion_topk": int(diffusion_topk),
-        "hard_neg_k": int(hard_neg_k),
-        "random_neg_k": int(random_neg_k),
-        "candidate_size": int(candidate_size),
+        "scale_weights": tuple(round(float(w), 8) for w in weights),
+        "pool_size": int(pool_size),
+        "hard_neg_pool": int(hard_neg_pool),
         "lazy_walk": True,
-        "graph_log_version": 2,
+        "artifact_version": ARTIFACT_VERSION,
+        "teacher_fingerprint": _fingerprint(teacher_embeddings),
+        "source_fingerprint": hashlib.sha1(source_array.tobytes()).hexdigest(),
     }
 
     artifact_path = Path(cache_path)
     if artifact_path.exists():
-        artifact = torch.load(artifact_path, map_location="cpu")
-        if _metadata_matches(artifact, metadata):
+        artifact = torch.load(artifact_path, map_location="cpu", weights_only=False)
+        matches, reason = _metadata_matches(artifact, metadata)
+        if matches:
             graph_log_path = artifact.get("graph_log_path")
             if graph_log_path and os.path.exists(graph_log_path):
                 print(f"Loaded HeatGeo artifact from: {artifact_path}")
@@ -392,10 +449,11 @@ def build_or_load_heatgeo_artifact(
             print(f"HeatGeo graph log missing, rebuilding artifact: {graph_log_path}")
         else:
             print(f"HeatGeo artifact config mismatch, rebuilding: {artifact_path}")
+            print(f"  first mismatch -> {reason}")
 
     if str(artifact_path.parent):
         os.makedirs(artifact_path.parent, exist_ok=True)
-    topk_for_graph = max(graph_k, hard_neg_k + diffusion_topk, candidate_size)
+    topk_for_graph = min(n_items - 1, max(graph_k, hard_neg_pool, pool_size))
     top_indices, top_scores = _compute_topk_cosine(teacher_embeddings, k=topk_for_graph)
     row_neighbors, row_probs, row_scores, fallback_flags = _build_transition(
         top_indices=top_indices,
@@ -411,23 +469,26 @@ def build_or_load_heatgeo_artifact(
         fallback_flags=fallback_flags,
         graph_k=graph_k,
     )
-    candidate_indices, teacher_probs, candidate_stats = _build_diffusion_candidates(
+    pool_indices, pool_probs, hard_neg_indices, pool_stats = _build_diffusion_pools(
         top_indices=top_indices,
         scales=scales,
+        weights=weights,
         row_neighbors=row_neighbors,
         row_probs=row_probs,
-        diffusion_topk=diffusion_topk,
-        hard_neg_k=hard_neg_k,
-        random_neg_k=random_neg_k,
-        candidate_size=candidate_size,
-        seed=seed,
+        pool_size=pool_size,
+        hard_neg_pool=hard_neg_pool,
+        source_ids=source_array,
     )
-    graph_stats.update(candidate_stats)
-    graph_stats.update(_target_sharpness_stats(teacher_probs, scales))
+    graph_stats.update(pool_stats)
+    graph_stats.update(
+        _target_sharpness_stats(pool_indices, pool_probs, scales, weights)
+    )
 
     artifact = {
-        "candidate_indices": torch.from_numpy(candidate_indices).long(),
-        "teacher_probs": torch.from_numpy(teacher_probs).float(),
+        "pool_indices": torch.from_numpy(pool_indices).long(),
+        "pool_probs": torch.from_numpy(pool_probs).float(),
+        "hard_neg_indices": torch.from_numpy(hard_neg_indices).long(),
+        "source_ids": torch.from_numpy(source_array).long(),
         "graph_log_path": graph_log_path,
         "graph_stats": graph_stats,
         "metadata": metadata,
@@ -449,13 +510,13 @@ def _print_graph_summary(
         f"({float(graph_stats.get('fallback_rate', 0.0)):.2%}), "
         f"avg_degree={float(graph_stats.get('avg_degree', 0.0)):.2f}"
     )
-    if "candidate_src_diffusion" in graph_stats:
+    if "pool_fill_avg" in graph_stats:
         print(
-            "HeatGeo candidate slots (avg): "
-            f"diffusion={graph_stats['candidate_src_diffusion']:.2f}, "
-            f"hard={graph_stats['candidate_src_hard']:.2f}, "
-            f"random={graph_stats['candidate_src_random']:.2f}, "
-            f"pad={graph_stats['candidate_src_pad']:.2f}"
+            "HeatGeo pools: "
+            f"diffusion_fill={graph_stats['pool_fill_avg']:.1f}/"
+            f"{graph_stats['pool_size']:.0f} (min {graph_stats['pool_fill_min']:.0f}), "
+            f"hard_neg_fill={graph_stats['hard_pool_fill_avg']:.1f} "
+            f"(min {graph_stats['hard_pool_fill_min']:.0f})"
         )
     for scale in scales:
         key = f"target_kl_uniform_r{scale}"
@@ -463,15 +524,30 @@ def _print_graph_summary(
             print(
                 f"HeatGeo target r={scale}: support={graph_stats[f'target_support_r{scale}']:.1f}, "
                 f"KL(p||uniform_on_support)={graph_stats[key]:.4f}, "
-                f"top1={graph_stats[f'target_top1_r{scale}']:.4f}"
+                f"top1={graph_stats[f'target_top1_r{scale}']:.4f}, "
+                f"residual_mass_outside_pool={graph_stats.get(f'pool_residual_mass_r{scale}', 0.0):.2e}"
             )
     cross_keys = [key for key in graph_stats if key.startswith("target_cross_kl_")]
     for key in sorted(cross_keys):
         print(f"HeatGeo {key}={graph_stats[key]:.4f}")
+    if "target_js_floor" in graph_stats:
+        print(
+            "HeatGeo irreducible L_diff floor (tied student temperature): "
+            f"JS_omega={graph_stats['target_js_floor']:.4f} nats "
+            f"(p90={graph_stats['target_js_floor_p90']:.4f}); "
+            f"mixture H={graph_stats['target_mixture_entropy']:.4f}, "
+            f"top1={graph_stats['target_mixture_top1']:.4f}"
+        )
     low = [s for s in scales if graph_stats.get(f"target_kl_uniform_r{s}", 1.0) < 0.05]
     if low:
         print(
             f"WARNING: HeatGeo targets at scales {low} are close to uniform on their support "
             f"(KL < 0.05 nats) -- lower graph_temp, otherwise L_diff degenerates into a "
             f"binary neighbour/non-neighbour objective."
+        )
+    if float(graph_stats.get("target_js_floor", 1.0)) < 0.01:
+        print(
+            "WARNING: JS_omega < 0.01 nats -- the diffusion scales carry almost the same "
+            "target, so with a tied student temperature the multi-scale objective is "
+            "numerically identical to a single-scale one."
         )
