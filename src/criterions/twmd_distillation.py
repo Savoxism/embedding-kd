@@ -1,6 +1,7 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+import math
 from typing import Dict, Sequence, Tuple
 
 
@@ -72,34 +73,17 @@ class TWMDDistillation(nn.Module):
             return min(2, n_scales)
         return n_scales
         
-    def twmd_path_contrastive_loss(self, student_anchors, student_paths, hard_negatives):
-        if student_paths.dim() == 3:
-            student_paths = student_paths.mean(dim=1)
-
+    def twmd_path_pull_loss(self, student_anchors, student_paths):
+        """
+        TWMD 2.0 Contrastive-Free Walk: 
+        Only pulls the student anchor towards the topological random walk mean.
+        Completely eliminates False Negative pushing.
+        """
         student_anchors = F.normalize(student_anchors, dim=-1, eps=self.eps_norm)
         student_paths = F.normalize(student_paths, dim=-1, eps=self.eps_norm)
-        hard_negatives = F.normalize(hard_negatives, dim=-1, eps=self.eps_norm)
-
-        pos_sim = F.cosine_similarity(student_anchors, student_paths, dim=-1) / self.tau_rw
-        pos_sim = pos_sim.unsqueeze(1) 
-
-        anchors_expanded = student_anchors.unsqueeze(1) 
-        neg_sim = F.cosine_similarity(anchors_expanded, hard_negatives, dim=-1) / self.tau_rw 
-
-        inbatch_sim = torch.matmul(student_anchors, student_paths.T) / self.tau_rw
-        mask = torch.eye(student_anchors.size(0), device=student_anchors.device).bool()
-        inbatch_sim = inbatch_sim.masked_fill(mask, -float('inf'))
-
-        # DCL (Decoupled Contrastive Learning) Loss
-        # L_DCL = -pos_sim + log(sum(exp(neg_sim)))
         
-        neg_logits = torch.cat([neg_sim, inbatch_sim], dim=1)
-        
-        # log_sum_exp for numerical stability
-        lse_neg = torch.logsumexp(neg_logits, dim=1)
-        
-        # DCL objective: decouple positive pull from negative push
-        loss = -pos_sim.squeeze(1) + lse_neg
+        # Pull: 1 - cosine similarity
+        loss = 1.0 - F.cosine_similarity(student_anchors, student_paths, dim=-1)
         
         return loss.mean()
 
@@ -150,9 +134,7 @@ class TWMDDistillation(nn.Module):
             walk_emb = walk_emb.view(batch_size, num_walks, walk_length, dim)
             s_path = walk_emb.mean(dim=2)
             
-            hard_neg_emb = candidate_embeddings.gather(1, hard_neg_indices.unsqueeze(-1).expand(-1, -1, dim))
-            
-            loss_rw_path = self.twmd_path_contrastive_loss(anchor_embeddings, s_path, hard_neg_emb)
+            loss_rw_path = self.twmd_path_pull_loss(anchor_embeddings, s_path)
         else:
             loss_rw_path = torch.tensor(0.0, device=anchor_embeddings.device, dtype=anchor_embeddings.dtype)
 
@@ -172,7 +154,18 @@ class TWMDDistillation(nn.Module):
 
         log_teacher = teacher_probs.log()
         kl_per_scale = (teacher_probs * (log_teacher - log_probs_student.unsqueeze(1))).sum(dim=-1)
-        loss_diff = (kl_per_scale * weights.view(1, -1)).sum(dim=-1).mean()
+        
+        # --- TWMD 2.0 Entropy-Gated Diffusion ---
+        # Tính Entropy của Teacher Probs: H = -sum(p * log(p))
+        entropy = -(teacher_probs * log_teacher).sum(dim=-1) # shape: (B, active_scales)
+        max_entropy = math.log(teacher_probs.size(-1))
+        normalized_entropy = entropy / max_entropy # [0, 1]
+        
+        # Gate: 1.0 (diffusion mạnh) khi entropy thấp (0.0), 0.0 (không diffusion) khi entropy cao (1.0)
+        gate = 1.0 - normalized_entropy
+        
+        # Áp dụng Gate vào KL Divergence
+        loss_diff = (kl_per_scale * weights.view(1, -1) * gate).sum(dim=-1).mean()
 
         # --- MDD Spectral Anchoring Loss ---
         projected = self.anchor_proj(anchor_embeddings)

@@ -17,9 +17,9 @@ class TWMDConfig(BaseConfig):
     w_task = 0.001
     # TWMD Spec
     lambda_rw_path = 0.5
-    lambda_diff = 0.1       # Giảm sức mạnh khuếch tán xuống thành Regularization
+    lambda_diff = 1.0       # Trả lại sức mạnh cho Khuếch tán nhiệt
     lambda_spec = 0.2
-    lambda_anchor = 5.0     # Tăng sức mạnh bám Teacher lên gấp 10 lần
+    lambda_anchor = 0.5     # Trả lại trọng số ban đầu cho Anchor
     
     # VICReg Spec
     lambda_vicreg_var = 25.0
