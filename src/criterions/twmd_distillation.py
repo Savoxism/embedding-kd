@@ -90,10 +90,18 @@ class TWMDDistillation(nn.Module):
         mask = torch.eye(student_anchors.size(0), device=student_anchors.device).bool()
         inbatch_sim = inbatch_sim.masked_fill(mask, -float('inf'))
 
-        logits = torch.cat([pos_sim, neg_sim, inbatch_sim], dim=1) 
-        labels = torch.zeros(logits.size(0), dtype=torch.long, device=logits.device)
+        # DCL (Decoupled Contrastive Learning) Loss
+        # L_DCL = -pos_sim + log(sum(exp(neg_sim)))
         
-        return F.cross_entropy(logits, labels)
+        neg_logits = torch.cat([neg_sim, inbatch_sim], dim=1)
+        
+        # log_sum_exp for numerical stability
+        lse_neg = torch.logsumexp(neg_logits, dim=1)
+        
+        # DCL objective: decouple positive pull from negative push
+        loss = -pos_sim.squeeze(1) + lse_neg
+        
+        return loss.mean()
 
     def vicreg_loss(self, student_emb: torch.Tensor, gamma: float = 1.0, eps: float = 1e-4) -> Tuple[torch.Tensor, torch.Tensor]:
         # student_emb: [batch_size, dim]
