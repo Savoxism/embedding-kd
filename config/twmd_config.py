@@ -36,10 +36,11 @@ class TWMDConfig(BaseConfig):
     
     eps_norm = 1e-8
     
-    graph_k = 50
+    # Graph & Diffusion Spec (Giảm số lượng hàng xóm để giữ ranh giới cứng)
+    graph_k = 10          # Giảm từ 50 xuống 10 (Chỉ kết nối với những hàng xóm cực kỳ gần)
     graph_temp = 0.1
     diffusion_scales = [1, 2, 4]
-    diffusion_topk = 32
+    diffusion_topk = 10   # Giảm từ 32 xuống 10 (Học sinh chỉ bắt chước 10 điểm lân cận nhất)
     hard_neg_k = 16
     random_neg_k = 16
     candidate_size = 64
