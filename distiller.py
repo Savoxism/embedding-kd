@@ -185,6 +185,10 @@ class KnowledgeDistiller:
                 eps_norm=getattr(config, "eps_norm", 1e-8),
                 diag_topk=getattr(config, "diag_topk", 8),
                 share_in_batch=getattr(config, "share_in_batch", True),
+                teacher_embeddings=self.teacher_cls_all,
+                direct_weight=getattr(config, "direct_weight", 1.0),
+                direct_temp=getattr(config, "direct_temp", 0.10),
+                direct_student_temp=getattr(config, "direct_student_temp", 0.10),
             ).to(self.device_s)
             # With the anchor term off the criterion is parameter-free, and
             # add_param_group rejects an empty parameter list.
@@ -201,6 +205,21 @@ class KnowledgeDistiller:
                 f"lambda_anchor={config.lambda_anchor}, "
                 f"{len(criterion_params)} criterion params)"
             )
+            if self.criterion.use_direct:
+                print(
+                    f"HeatGeo direct scale r=0 active: weight="
+                    f"{self.criterion.direct_weight.item():.3g}, "
+                    f"teacher_temp={self.criterion.direct_temp:.3g}, "
+                    f"student_temp={self.criterion.direct_student_temp.item():.3g}, "
+                    f"bank={tuple(self.criterion.teacher_bank.shape)} "
+                    f"({self.criterion.teacher_bank.numel() * 2 / 1024**2:.0f} MB)"
+                )
+            else:
+                print(
+                    "WARNING: HeatGeo direct scale disabled. Every column outside an "
+                    "anchor's diffusion pool then carries target 0, which is a "
+                    "gradient driving that cosine down regardless of the teacher."
+                )
             if self.criterion.temps_tied:
                 print(
                     "WARNING: all scale_temps are equal. sum_r w_r KL(p_r||p^S) then "
@@ -1381,6 +1400,23 @@ class KnowledgeDistiller:
             )
 
         print(f"Done train_epoch {epoch + 1}")
+        epoch_means = {key: value / max(1, n_items) for key, value in metric_totals.items()}
+
+        # The progress bar shows the *last* step's diagnostics, and the last batch is
+        # usually a short remainder -- with 13553 items and batch 16 it holds a single
+        # anchor, which makes target_entropy/js_floor swing wildly for reasons that
+        # have nothing to do with training. Print the example-weighted epoch means.
+        if epoch_means:
+            headline = [
+                "loss_diff", "js_floor", "loss_excess", "target_entropy",
+                "student_entropy", "student_entropy_ratio", "student_top1",
+                "target_top1", "candidates_per_anchor",
+            ]
+            shown = [k for k in headline if k in epoch_means]
+            shown += sorted(k for k in epoch_means if k.startswith("kl_scale"))
+            body = "  ".join(f"{k}={epoch_means[k]:.4f}" for k in shown)
+            print(f"[Epoch {epoch + 1}] mean over {n_items} examples: {body}")
+
         self.last_epoch_metrics = {
             "epoch": epoch + 1,
             "loss": avg_loss,
@@ -1390,7 +1426,7 @@ class KnowledgeDistiller:
                 else 0.0
             ),
             "peak_memory_mb": peak_memory_mb,
-            **{key: value / max(1, n_items) for key, value in metric_totals.items()},
+            **epoch_means,
         }
         return avg_loss
 

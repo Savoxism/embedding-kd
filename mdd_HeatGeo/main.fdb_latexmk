@@ -1,13 +1,13 @@
 # Fdb version 4
-["bibtex main"] 1785208511.58922 "main.aux" "main.bbl" "main" 1785208552.08232 0
+["bibtex main"] 1785215201.68338 "main.aux" "main.bbl" "main" 1785215202.5567 0
   "./aaai2026.bib" 1785129882.6163 35340 8f5627b51eb4ffc2895dd22cf70453e3 ""
   "./aaai2026.bst" 1785129882.6163 30207 6eaa2a4f2eed92c930f9e98d689c010a ""
-  "main.aux" 1785208551.8593 4632 118ff581d3c4835d28a9d14bb6078afe "pdflatex"
+  "main.aux" 1785215202.30567 4741 399c3ad746f082024578bd5dd955454c "pdflatex"
   (generated)
   "main.bbl"
   "main.blg"
   (rewritten before read)
-["pdflatex"] 1785208551.47903 "/home/duncan-nguyen/research/AAAI-TALAS/mdd_HeatGeo/main.tex" "main.pdf" "main" 1785208552.0825 0
+["pdflatex"] 1785215201.78546 "/home/duncan-nguyen/research/AAAI-TALAS/mdd_HeatGeo/main.tex" "main.pdf" "main" 1785215202.55691 0
   "/etc/texmf/web2c/texmf.cnf" 1773138757.194 475 c0e671620eb5563b2130f56340a5fde8 ""
   "/home/duncan-nguyen/research/AAAI-TALAS/mdd_HeatGeo/main.tex" 1785129882.62497 1368 a0aba76624fd8f131692cbfd6ae1bd16 ""
   "/usr/share/texlive/texmf-dist/fonts/enc/dvips/base/8r.enc" 1165713224 4850 80dc9bab7f31fb78a000ccfed0e27cab ""
@@ -90,14 +90,14 @@
   "/var/lib/texmf/fonts/map/pdftex/updmap/pdftex.map" 1773138781.56912 5472669 54eaf61a88b6b7896ebd0dac973cb29c ""
   "/var/lib/texmf/web2c/pdftex/pdflatex.fmt" 1773138815 8213355 5c73132d1f44e382582447bfc6ff5c5e ""
   "aaai2026.sty" 1785129882.6163 11802 ebafcca046fa76cd12a651daf05aa669 ""
-  "main.aux" 1785208551.8593 4632 118ff581d3c4835d28a9d14bb6078afe "pdflatex"
-  "main.bbl" 1785208511.66182 11410 0b21acee34534ea65897fd691ae576db "bibtex main"
+  "main.aux" 1785215202.30567 4741 399c3ad746f082024578bd5dd955454c "pdflatex"
+  "main.bbl" 1785215201.77863 11410 0b21acee34534ea65897fd691ae576db "bibtex main"
   "main.tex" 1785129882.62497 1368 a0aba76624fd8f131692cbfd6ae1bd16 ""
   "sections/00_abstract.tex" 1785134386.57238 1917 c6920ffc675cefcd8d515467d171467b ""
   "sections/01_introduction.tex" 1785134404.56148 5764 37c2355c41614514510531aee6426e35 ""
   "sections/02_related_work.tex" 1785134465.09412 7039 ba49b478b8a1fdd919c01b2644f87bdf ""
   "sections/03_problem_setup.tex" 1785129882.6293 1338 3a5dac7289b6c1ad1ebb515c4ce96aac ""
-  "sections/04_heatgeo.tex" 1785208551.26872 16537 4fd30a79be8496818bd0139378095255 ""
+  "sections/04_heatgeo.tex" 1785215200.37736 19442 8cee881728e7988484363c869ec9a0f1 ""
   "sections/05_experiments.tex" 1785134439.27265 3955 6843551470c5d9b4093c5462b838df8b ""
   "sections/06_discussion.tex" 1785129882.6293 1230 28c017d7437a9cecdb6c15466100b367 ""
   "sections/07_conclusion.tex" 1785134455.41037 853 2593d3d01c0b6a6575719f59cc758ec1 ""

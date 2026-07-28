@@ -29,10 +29,32 @@ class HeatGeoConfig(BaseConfig):
     # couple anchors so similarity levels become comparable across the batch.
     share_in_batch = True
 
-    # Off by default. As written (free linear map W_a + scale-invariant cosine) this
-    # term is invariant to any invertible transform of the student space, so it can
-    # never supply the absolute calibration it was meant to; that is why it pinned
-    # at 0.22-0.27 after one epoch. Kept for the ablation row only.
+    # ---- the direct scale (r=0) ---------------------------------------------
+    # The diffusion targets are the graph's mass renormalized over the scored
+    # columns, so every column outside the anchor's pool gets target exactly 0 --
+    # and a 0 target is not "no opinion", it is a gradient pushing that cosine down
+    # forever. With in-batch sharing ~97% of an anchor's columns are zero-target,
+    # including the same-source hard negatives whose true teacher cosine is high.
+    # That is the objective teaching the student to separate pairs the teacher calls
+    # similar, and it is why STS moved only +1.4 while emotion F1 fell 2.9.
+    #
+    # r=0 targets softmax(cos(t_i,t_j)/direct_temp) over the *full* column set, so
+    # every column carries its real teacher mass. The teacher embeddings are already
+    # cached, so this is free. It also replaces lambda_anchor properly: comparing
+    # student cosines to teacher cosines is not invariant to a linear map of the
+    # student space, which is exactly why the old anchor term could not calibrate.
+    direct_weight = 1.0
+    # Over a ~1k-column pool the teacher cosine spread is ~0.5, so 0.05 (the graph
+    # value) would put essentially all mass on the single nearest column. 0.10 keeps
+    # roughly 80% of the mass on genuinely related columns. Watch kl_direct and
+    # target_entropy after changing it.
+    direct_temp = 0.10
+    direct_student_temp = 0.10
+
+    # Off by default, superseded by the direct scale. As written (free linear map
+    # W_a + scale-invariant cosine) this term is invariant to any invertible
+    # transform of the student space, so it can never supply the absolute
+    # calibration it was meant to. Kept for the ablation row only.
     lambda_anchor = 0.0
 
     # ---- teacher graph -------------------------------------------------------
@@ -57,8 +79,14 @@ class HeatGeoConfig(BaseConfig):
     # cause of the eval saturating at epoch 1. Quotas must sum to <= candidate_size.
     candidate_size = 64
     diffusion_quota = 32
-    hard_neg_k = 16
-    random_neg_k = 16
+    # Hard negatives were a liability while their target was a false zero: same-source,
+    # top-200 teacher cosine, and the loss drove them apart anyway. With the direct
+    # scale they carry their real teacher mass (~27% of it in a controlled probe, vs
+    # ~67% for the diffusion positives), which puts them exactly in the discriminative
+    # band, so they are now worth more slots than random negatives -- and in-batch
+    # sharing already supplies easy negatives from the other anchors for free.
+    hard_neg_k = 24
+    random_neg_k = 8
     resample_candidates_per_epoch = True
     # The diffusion quota is split evenly across scales, not drawn from the mixture:
     # the mixture's support is dominated by the broadest walk, which would leave the
@@ -74,10 +102,16 @@ class HeatGeoConfig(BaseConfig):
 
     diag_topk = 8
 
-    batch_size = 16
+    # The previous run peaked at 1687 MB of a 69 GB card -- 2.4%. Batch size is what
+    # sets the number of shared columns each anchor is scored against (~batch_size x
+    # candidate_size after dedup), and cross-anchor calibration is precisely what STS
+    # Spearman and a global cosine threshold measure. 16 -> 32 doubles it for free;
+    # go higher if the card allows. learning_rate is raised with it (sqrt scaling)
+    # because the step count per epoch halves.
+    batch_size = 32
     epochs = 5
-    learning_rate = 2e-5
-    min_lr = 2e-6
+    learning_rate = 3e-5
+    min_lr = 3e-6
     num_workers = 4
 
     train_data_path = "data/train_set/merged_3_data_5k_each.csv"

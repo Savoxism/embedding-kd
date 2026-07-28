@@ -362,6 +362,18 @@ def _target_sharpness_stats(
     stats["target_mixture_entropy"] = float(mixture_entropy.mean())
     stats["target_mixture_top1"] = float(mixture.max(axis=-1).mean())
 
+    # Anchors whose sharpest-scale target is (near) one-hot. These sit in tiny
+    # connected components: the lazy walk never leaves them, so every scale returns
+    # the same point mass, JS_omega is 0, and the loss reduces to "drive this one
+    # cosine to 1" at the sharpest temperature against every negative in the batch.
+    # That is a memorization signal, not geometry, so it is worth counting.
+    degenerate = probs[0].max(axis=-1) > 0.99
+    stats["target_degenerate_count"] = float(degenerate.sum())
+    stats["target_degenerate_rate"] = float(degenerate.mean())
+    stats["target_min_support_r%d" % scales[0]] = float(
+        (probs[0] > 0).sum(axis=-1).min()
+    )
+
     clamped = np.clip(probs, 1e-12, None)
     clamped = clamped / clamped.sum(axis=-1, keepdims=True)
     for scale_idx in range(len(scales) - 1):
@@ -537,6 +549,17 @@ def _print_graph_summary(
             f"(p90={graph_stats['target_js_floor_p90']:.4f}); "
             f"mixture H={graph_stats['target_mixture_entropy']:.4f}, "
             f"top1={graph_stats['target_mixture_top1']:.4f}"
+        )
+    degenerate = int(graph_stats.get("target_degenerate_count", 0))
+    if degenerate:
+        print(
+            f"WARNING: HeatGeo {degenerate} anchors "
+            f"({graph_stats.get('target_degenerate_rate', 0.0):.2%}) have a near one-hot "
+            f"target at r={scales[0]} (min support "
+            f"{int(graph_stats.get(f'target_min_support_r{scales[0]}', 0))}). They sit in "
+            f"tiny components, contribute JS_omega=0, and their loss is just "
+            f"'push one cosine to 1' at the sharpest temperature -- raise graph_k or "
+            f"drop them from training if the count is large."
         )
     low = [s for s in scales if graph_stats.get(f"target_kl_uniform_r{s}", 1.0) < 0.05]
     if low:

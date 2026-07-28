@@ -96,14 +96,31 @@ HeatGeo therefore assigns each scale its own student temperature $\tau_r$, with 
     =
     \frac{1}{|B|}
     \sum_{i\in B}
-    \sum_{r\in\mathcal{R}}
+    \sum_{r\in\bar{\mathcal{R}}}
     \omega_r
     D_{\mathrm{KL}}
     \left(
         p_{i,r}^{T} \,\|\, p_{i,r}^{S}
     \right),
 \end{equation}
-where $B$ is a mini-batch and $\omega_r$ is the scale weight. The scales now share the underlying similarity vector $\cos(s_i,\cdot)$ but not the distribution built from it, so \eqref{eq:collapse} no longer applies and \eqref{eq:floor} becomes a lower bound rather than an attained value. The mechanism is over-determination: $|\mathcal{R}|$ softmaxes at distinct temperatures impose $|\mathcal{R}|$ independent constraints on one $|C_i|$-vector of cosines, and satisfying them all requires reproducing the teacher's similarity \emph{gaps}, not merely its ranking. A single softmax pins $\cos(s_i,s_j)$ only up to a per-anchor additive constant, which is exactly the calibration that Spearman correlation on STS and any globally thresholded cosine retrieval depend on. In a controlled setting with free logits, minimizing the tied objective converges to the floor of \eqref{eq:floor} to four decimals, whereas untying $\tau_r$ reaches a value well below it.
+where $B$ is a mini-batch, $\omega_r$ is the scale weight, and $\bar{\mathcal{R}}=\{0\}\cup\mathcal{R}$ includes the direct scale introduced in Section~\ref{sec:direct}. The scales now share the underlying similarity vector $\cos(s_i,\cdot)$ but not the distribution built from it, so \eqref{eq:collapse} no longer applies and \eqref{eq:floor} becomes a lower bound rather than an attained value. The mechanism is over-determination: $|\mathcal{R}|$ softmaxes at distinct temperatures impose $|\mathcal{R}|$ independent constraints on one $|C_i|$-vector of cosines, and satisfying them all requires reproducing the teacher's similarity \emph{gaps}, not merely its ranking. A single softmax pins $\cos(s_i,s_j)$ only up to a per-anchor additive constant, which is exactly the calibration that Spearman correlation on STS and any globally thresholded cosine retrieval depend on. In a controlled setting with free logits, minimizing the tied objective converges to the floor of \eqref{eq:floor} to four decimals, whereas untying $\tau_r$ reaches a value well below it.
+
+\subsection{The Direct Scale}
+\label{sec:direct}
+
+The diffusion targets are graph mass renormalized over the scored columns, so every column outside $\mathcal{P}_i$ receives target \emph{exactly zero}. A zero target is not an abstention. The gradient of the cross-entropy with respect to the logit of column $j$ is $p_{i,r}^S(j)-p_{i,r}^T(j)$, so at a zero-target column it is $+p^S_{i,r}(j)>0$, and the objective drives $\cos(s_i,s_j)$ down without bound. Under in-batch sharing roughly $97\%$ of the columns an anchor is scored against are zero-target, and they include the hard negatives $C_i^h$ --- same-source, inside the teacher's top-200 by cosine, excluded from the graph only because the mutual-$k$NN test rejected them. In a controlled probe with planted cluster structure, those hard negatives carry teacher cosine $0.283$ against $0.349$ for the diffusion positives, and the graph-only objective pushes $98\%$ of them apart. The method is thus training the student to separate pairs its own teacher calls similar, which is precisely the calibration that STS Spearman and a global cosine threshold measure.
+
+We therefore add a scale $r=0$ whose target is the teacher's own similarity over the full column set,
+\begin{equation}
+    p_{i,0}^{T}(j)
+    =
+    \frac{\exp\!\left(\cos(t_i,t_j)/\tau_t\right)}
+    {\sum_{j'}\exp\!\left(\cos(t_i,t_{j'})/\tau_t\right)},
+    \label{eq:direct}
+\end{equation}
+and optimize over $\bar{\mathcal{R}}=\{0\}\cup\mathcal{R}$. Unlike the diffusion targets, \eqref{eq:direct} is dense: every scored column receives its true teacher mass. In the same probe it assigns $0.670$ to the positives, $0.271$ to the hard negatives and $0.059$ to the random ones, and the fraction of hard negatives pushed apart falls from $98\%$ to $41\%$. The teacher embeddings are cached already, so the term is free.
+
+Scale $r=0$ also supersedes $\mathcal{L}_{\mathrm{anchor}}$ on its own terms. Comparing cosines measured in the student's metric against cosines measured in the teacher's is \emph{not} invariant to a linear map of the student space --- an anisotropic rescaling of $s$ changes $\cos(s_i,s_j)$ and therefore changes \eqref{eq:direct}'s loss --- so this is the term that actually pins the absolute geometry, which Section~\ref{sec:objective} shows the projected anchor cannot. Note also that $\tau_t$ cannot simply inherit $\tau_g$: the graph temperature acts on a mutual-$k$NN neighborhood where cosines occupy a narrow band, whereas \eqref{eq:direct} ranges over the whole column set, where the same value would place nearly all mass on the single nearest column.
 
 Finally, we score every anchor in $B$ against the \emph{union} of all candidates in the batch rather than against its own $C_i$ alone. The candidate texts are already encoded, so this is free in forward cost, multiplies the negatives per anchor by roughly $|B|$, and --- because anchors now share columns --- couples their logit scales so that similarity levels become comparable across the batch. The teacher target is scattered onto the union with zero mass on the columns an anchor did not draw, and the anchor's own column is masked.
 
@@ -122,6 +139,7 @@ That argument does not survive Section~\ref{sec:no-spectral}'s own premises if t
 With per-scale temperatures the argument is restored, in a weaker and more defensible form. Each scale now imposes its own constraint, so the student must match $|\mathcal{R}|$ distinct filters $(Q^T)^r$ of the same operator rather than one mixture --- a filter bank, and it is the bank, not any single member, that pins down where the spectral mass sits. We still make no claim of exact spectral identifiability from $|\mathcal{R}|=3$ scales on truncated supports; we claim only that a truncated eigenvector-regression term adds little on top of the bank while reintroducing the pipeline's only global eigendecomposition. Section~\ref{sec:experiments} reports the ablation that adds the term back, run against the per-scale-temperature model so that the comparison is against the objective we actually advocate.
 
 \subsection{Training Objective}
+\label{sec:objective}
 
 A relational objective constrains the student only up to a transformation of its space, which invites a pointwise anchor of the form
 \begin{equation}
@@ -152,7 +170,7 @@ We also deduplicate the corpus before building the graph. Exact duplicate texts 
 \caption{HeatGeo Training}
 \label{alg:heatgeo}
 \begin{algorithmic}[1]
-\REQUIRE Corpus $\mathcal{D}$, teacher $T$, student $S_{\theta}$, graph size $k$, scales $\mathcal{R}$, temperatures $\{\tau_r\}$, pool size $P$, candidate size $C$
+\REQUIRE Corpus $\mathcal{D}$, teacher $T$, student $S_{\theta}$, graph size $k$, scales $\bar{\mathcal{R}}=\{0\}\cup\mathcal{R}$, temperatures $\{\tau_r\}$, teacher temperature $\tau_t$, pool size $P$, candidate size $C$
 \STATE Deduplicate $\mathcal{D}$; cache teacher embeddings $t_i=T(x_i)$
 \STATE Build a mutual $k$NN teacher graph $W^T$
 \STATE Compute $P^T=(D^T)^{-1}W^T$ and lazy walk $Q^T=\frac{1}{2}(I+P^T)$
@@ -163,7 +181,8 @@ We also deduplicate the corpus before building the graph. Exact duplicate texts 
     \FOR{each mini-batch $B$}
         \STATE Encode anchors and candidate texts with $S_{\theta}$
         \STATE Form the shared column set $\bigcup_{i\in B}C_i^{(e)}$ and scatter the targets onto it
-        \STATE Compute $p_{i,r}^S$ at temperature $\tau_r$ for each $r\in\mathcal{R}$
+        \STATE Compute the direct target \eqref{eq:direct} on the shared columns from the cached $t_i$
+        \STATE Compute $p_{i,r}^S$ at temperature $\tau_r$ for each $r\in\bar{\mathcal{R}}$
         \STATE Compute $\mathcal{L}_{\mathrm{HeatGeo}}$ and the excess over $\mathrm{JS}_{\omega}$
         \STATE Update $\theta$ by minimizing $\mathcal{L}_{\mathrm{HeatGeo}}$
     \ENDFOR

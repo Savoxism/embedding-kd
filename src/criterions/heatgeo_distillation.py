@@ -64,6 +64,29 @@ class HeatGeoDistillation(nn.Module):
     row masked out. Encoding cost is unchanged, negatives per anchor go up by a
     factor of the batch size, and the shared columns couple anchors, which is what
     makes similarity levels comparable across the batch.
+
+    **The direct scale, and why it is not optional.** The diffusion targets are the
+    graph's mass renormalized over the scored columns, so every column outside the
+    anchor's diffusion pool receives target *exactly zero*. That is not a neutral
+    "no information" value: the gradient of the cross-entropy at such a column is
+    +p^S(j), which pushes cos(s_i, s_j) down without bound. Under in-batch sharing
+    roughly 97% of the columns an anchor sees are zero-target, and they include the
+    hard negatives -- same-source, top-200 by teacher cosine, excluded from the
+    mutual-kNN graph -- whose true teacher similarity is high. The objective is
+    therefore actively training the student to drive apart pairs the teacher calls
+    similar, which is exactly the calibration STS and a global cosine threshold
+    depend on.
+
+    Scale r=0 fixes this by targeting the teacher's own similarity over the full
+    column set,
+
+        p^T_0(j) = softmax_j( cos(t_i, t_j) / tau_t ),
+
+    which is dense: every scored column gets its true teacher mass instead of a
+    false zero. It costs nothing (the teacher embeddings are already cached), and it
+    supplies the absolute calibration that L_anchor was introduced for but cannot
+    provide, since comparing cosines in the student's own metric to cosines in the
+    teacher's is not invariant to a linear transform of the student space.
     """
 
     def __init__(
@@ -77,6 +100,10 @@ class HeatGeoDistillation(nn.Module):
         eps_norm: float = 1e-8,
         diag_topk: int = 8,
         share_in_batch: bool = True,
+        teacher_embeddings: torch.Tensor | None = None,
+        direct_weight: float = 1.0,
+        direct_temp: float = 0.10,
+        direct_student_temp: float = 0.10,
     ):
         super().__init__()
         self.student_dim = student_dim
@@ -86,6 +113,28 @@ class HeatGeoDistillation(nn.Module):
         self.eps_norm = eps_norm
         self.diag_topk = diag_topk
         self.share_in_batch = share_in_batch
+
+        self.use_direct = teacher_embeddings is not None and direct_weight > 0.0
+        if self.use_direct:
+            if direct_temp <= 0.0 or direct_student_temp <= 0.0:
+                raise ValueError("direct temperatures must be positive")
+            # Stored normalized and in half precision: the only operation it feeds is
+            # a cosine, and at corpus scale this buffer is the largest thing the
+            # criterion owns (N x 2560).
+            normalized = F.normalize(
+                teacher_embeddings.float(), p=2, dim=-1, eps=eps_norm
+            ).half()
+            self.register_buffer("teacher_bank", normalized, persistent=False)
+            self.direct_temp = float(direct_temp)
+            self.register_buffer(
+                "direct_weight", torch.tensor([float(direct_weight)])
+            )
+            self.register_buffer(
+                "direct_student_temp", torch.tensor([float(direct_student_temp)])
+            )
+        else:
+            self.teacher_bank = None
+            self.direct_temp = float(direct_temp)
 
         self.use_anchor = lambda_anchor > 0.0
         if self.use_anchor:
@@ -114,10 +163,6 @@ class HeatGeoDistillation(nn.Module):
             pad = buffer[-1:].repeat(n_scales - buffer.numel())
             return torch.cat([buffer, pad], dim=0)
         return buffer[:n_scales]
-
-    def _resolved_weights(self, n_scales: int) -> torch.Tensor:
-        weights = self._resolved(self.scale_weights, n_scales)
-        return weights / weights.sum().clamp_min(1e-12)
 
     def _build_shared_pool(
         self,
@@ -159,7 +204,30 @@ class HeatGeoDistillation(nn.Module):
         target.scatter_add_(2, scatter_index, teacher_probs)
 
         self_mask = unique_idx.view(1, -1) == anchor_idx.view(-1, 1)
-        return pool_embeddings, target, self_mask
+        return pool_embeddings, target, self_mask, unique_idx
+
+    @torch.no_grad()
+    def _direct_target(
+        self,
+        anchor_idx: torch.Tensor,
+        column_idx: torch.Tensor,
+        self_mask: torch.Tensor,
+        shared: bool,
+    ) -> torch.Tensor:
+        """Teacher similarity over every scored column, not just the graph pool."""
+        bank = self.teacher_bank
+        t_anchor = bank.index_select(0, anchor_idx).float()
+        if shared:
+            t_columns = bank.index_select(0, column_idx).float()
+            logits = t_anchor @ t_columns.t()
+        else:
+            batch_size, candidate_size = column_idx.shape
+            t_columns = bank.index_select(0, column_idx.reshape(-1)).float()
+            t_columns = t_columns.view(batch_size, candidate_size, -1)
+            logits = torch.einsum("bd,bcd->bc", t_anchor, t_columns)
+        logits = logits / self.direct_temp
+        logits = logits.masked_fill(self_mask, float("-inf"))
+        return F.softmax(logits, dim=-1)
 
     def forward(
         self,
@@ -197,7 +265,7 @@ class HeatGeoDistillation(nn.Module):
 
         share = self.share_in_batch and candidate_idx is not None and anchor_idx is not None
         if share:
-            pool_embeddings, target, self_mask = self._build_shared_pool(
+            pool_embeddings, target, self_mask, column_idx = self._build_shared_pool(
                 candidate_embeddings, teacher_probs, candidate_idx, anchor_idx
             )
             pool_norm = F.normalize(pool_embeddings, p=2, dim=-1, eps=self.eps_norm)
@@ -214,9 +282,22 @@ class HeatGeoDistillation(nn.Module):
             similarity = torch.einsum("bd,bcd->bc", anchor_norm, candidate_norm)
             target = teacher_probs
             self_mask = torch.zeros_like(similarity, dtype=torch.bool)
+            column_idx = candidate_idx
 
-        weights = self._resolved_weights(n_scales)
+        weights = self._resolved(self.scale_weights, n_scales)
         temps = self._resolved(self.scale_temps, n_scales)
+
+        # Scale r=0: the teacher's own similarity over every scored column. Without
+        # it, every column outside the anchor's diffusion pool carries target 0 and
+        # is pushed toward maximal dissimilarity regardless of what the teacher says.
+        self.direct_active = self.use_direct and anchor_idx is not None and column_idx is not None
+        if self.direct_active:
+            direct = self._direct_target(anchor_idx, column_idx, self_mask, share)
+            target = torch.cat([direct.unsqueeze(1).to(target.dtype), target], dim=1)
+            weights = torch.cat([self.direct_weight.to(weights.dtype), weights])
+            temps = torch.cat([self.direct_student_temp.to(temps.dtype), temps])
+            n_scales += 1
+        weights = weights / weights.sum().clamp_min(1e-12)
 
         log_target = torch.where(
             target > 0, target.clamp_min(1e-12).log(), torch.zeros_like(target)
@@ -265,6 +346,7 @@ class HeatGeoDistillation(nn.Module):
             target_entropy=target_entropy,
             weights=weights,
             self_mask=self_mask,
+            temps=temps,
         )
         return total_loss, metrics
 
@@ -280,6 +362,7 @@ class HeatGeoDistillation(nn.Module):
         target_entropy: torch.Tensor,
         weights: torch.Tensor,
         self_mask: torch.Tensor,
+        temps: torch.Tensor,
     ) -> dict[str, float]:
         """Loss value alone cannot distinguish "learned the geometry" from "went uniform".
 
@@ -351,7 +434,17 @@ class HeatGeoDistillation(nn.Module):
             [value.float().reshape(()) for value in scalars + per_scale]
         ).tolist()
         metrics = dict(zip(names, values[: len(names)]))
-        for scale_idx, value in enumerate(values[len(names) :]):
+        per_scale_values = values[len(names) :]
+        offset = 0
+        if getattr(self, "direct_active", False):
+            metrics["kl_direct"] = per_scale_values[0]
+            offset = 1
+        for scale_idx, value in enumerate(per_scale_values[offset:]):
             metrics[f"kl_scale{scale_idx}"] = value
-        metrics["excess_is_exact"] = float(self.temps_tied)
+        # The excess above the JS floor is the exact residual only when one shared
+        # student distribution serves every scale; the direct scale always breaks
+        # that, so this reports what actually held for this batch.
+        metrics["excess_is_exact"] = float(
+            bool(temps.numel() == 1 or torch.allclose(temps, temps[0]))
+        )
         return metrics
