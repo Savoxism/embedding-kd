@@ -85,7 +85,7 @@ class TWMDDistillation(nn.Module):
         # Pull: 1 - cosine similarity
         loss = 1.0 - F.cosine_similarity(student_anchors, student_paths, dim=-1)
         
-        return loss.mean()
+        return loss # Return unreduced loss [B] for gating
 
     def vicreg_loss(self, student_emb: torch.Tensor, gamma: float = 1.0, eps: float = 1e-4) -> Tuple[torch.Tensor, torch.Tensor]:
         # student_emb: [batch_size, dim]
@@ -134,9 +134,9 @@ class TWMDDistillation(nn.Module):
             walk_emb = walk_emb.view(batch_size, num_walks, walk_length, dim)
             s_path = walk_emb.mean(dim=2)
             
-            loss_rw_path = self.twmd_path_pull_loss(anchor_embeddings, s_path)
+            loss_rw_path_unreduced = self.twmd_path_pull_loss(anchor_embeddings, s_path)
         else:
-            loss_rw_path = torch.tensor(0.0, device=anchor_embeddings.device, dtype=anchor_embeddings.dtype)
+            loss_rw_path_unreduced = torch.zeros(batch_size, device=anchor_embeddings.device, dtype=anchor_embeddings.dtype)
 
         # --- MDD (HeatGeo) Barycenter Matching Loss ---
         logits = torch.einsum("bd,bcd->bc", anchor_norm, candidate_norm) / self.student_temp
@@ -166,6 +166,10 @@ class TWMDDistillation(nn.Module):
         
         # Áp dụng Gate vào KL Divergence
         loss_diff = (kl_per_scale * weights.view(1, -1) * gate).sum(dim=-1).mean()
+        
+        # --- TWMD 3.0: Gating Random Walk ---
+        mean_gate = gate.mean(dim=-1) # shape: [B]
+        loss_rw_path = (loss_rw_path_unreduced * mean_gate).mean()
 
         # --- MDD Spectral Anchoring Loss ---
         projected = self.anchor_proj(anchor_embeddings)
