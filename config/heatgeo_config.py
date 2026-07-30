@@ -58,7 +58,7 @@ class HeatGeoConfig(BaseConfig):
     lambda_anchor = 0.0
 
     # ---- teacher graph -------------------------------------------------------
-    graph_k = 50
+    graph_k = 200
     # graph_temp sets how much ranking information the diffusion targets carry. At 0.1
     # the target was within 0.03 nats of uniform on its support, i.e. a binary
     # neighbour/non-neighbour label. Check target_kl_uniform_r* in the build log after
