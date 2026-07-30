@@ -1,0 +1,69 @@
+\section{Related Work}
+\label{sec:related}
+
+\paragraph{Compact text embedding models and distillation.}
+Sentence-BERT made transformer encoders practical for sentence-level similarity
+\citep{reimers2019sentencebert}, contrastive objectives such as SimCSE showed strong
+sentence embeddings can be learned with minimal supervision \citep{gao2021simcse}, and
+broad benchmarks shifted evaluation to retrieval, classification and clustering suites
+\citep{thakur2021beir,muennighoff2023mteb,chung2025maintainingmteb}. Recent systems scale
+the backbone and training mixture \citep{chen2024bgem3,zhang2025qwen3embedding,zhang2025dewey},
+which makes them strong teachers but expensive to serve; we treat them strictly as
+black-box teachers, using only their final vectors. Distillation of pretrained encoders
+transfers through logits, hidden states and attention relations
+\citep{hinton2015distilling,sanh2019distilbert,jiao2019tinybert,wang2020minilm}; recent LLM
+distillation adds on-policy training and alternative divergences
+\citep{agarwal2024onpolicy,ko2025distillm2,wen2023fdivergence,xu2024survey}, and
+cross-tokenizer methods address vocabulary mismatch \citep{zhang2024dskd,chen2025cdm}.
+Embedding-specific work distils LLM-generated retrieval data \citep{lee2024gecko}, uses
+multi-stage distillation \citep{zhang2024jasperstella}, aligns students for asymmetric
+retrieval \citep{vujanic2025leaf}, or combines task-targeted distillation with contrastive
+training \citep{akram2026jinaembeddingsv5}. Every one of these adds a supervision channel and
+none changes how the student turns a similarity vector into a distribution, so the failures
+of Section~\ref{sec:analysis} are inherited by all of them: a richer signal read out through
+one softmax is still constrained only up to a per-anchor shift, and combining several such
+signals still reduces to their mixture.
+
+\paragraph{Relational and neighbourhood-distribution objectives.}
+Relational knowledge distillation preserves relations among examples rather than
+coordinates \citep{park2019rkd}, and similarity-preserving distillation matches mini-batch
+Gram matrices \citep{tung2019sp}. Closest to the zero-step member of our scale family is
+SEED \citep{fang2021seed}, in which the student matches the teacher's softmax similarity
+distribution over a queue of instances; contrastive distillation
+\citep{tian2020crd,gao2021distilcse,xu2023distillcse} transfers related pairwise
+preferences, and in the graph setting local-structure-preserving distillation matches
+neighbourhood distributions between networks \citep{yang2020lsp,zhang2022glnn}. This is the
+family our analysis targets, and it has two blind spots. Each of these methods defines the
+student distribution by a single softmax at a single temperature and studies only what the
+target should be, so none asks what the readout itself determines; the well-known observation
+that relational objectives preserve neighbour order but not comparable similarity scales is
+reported as an empirical limitation rather than derived, and
+Proposition~\ref{prop:levels} shows it is forced. And where several targets are used at once
+--- multiple teachers, layers, views or resolutions --- they are averaged against that one
+distribution, which Proposition~\ref{prop:collapse} shows is a single-target objective on the
+mixture. Our contribution is therefore not another target: \method is the objective these
+results force. In particular the zero-step target coincides with a SEED-style similarity
+distribution, which we make explicit precisely so the multi-resolution component is measured
+\emph{on top of} that baseline rather than confounded with it.
+
+\paragraph{Graph diffusion, manifolds, and internal alignment.}
+Neighbourhood graphs expose low-dimensional structure through spectral coordinates
+\citep{belkin2003laplacian}, Markov diffusion \citep{coifman2006diffusionmaps}, and heat
+diffusion for visualisation and geodesic-preserving embedding
+\citep{moon2019phate,huguet2023heat}; powers of a transition operator are a standard filter
+bank in graph learning \citep{klicpera2019gdc}. We borrow this machinery only to
+\emph{generate} a target family --- no spectral coordinates are used as an output and no
+eigendecomposition is required. The multi-scale motivation carries over from these settings,
+but the consumption does not: a filter bank is informative when its outputs are read
+separately, whereas a distillation objective that pushes them through one softmax recovers
+only their mixture. Two further practices in this line become liabilities under
+distillation. Mutual $k$NN construction is the standard defence against hubness
+\citep{radovanovic2010hubs}, and Section~\ref{sec:support} shows it turns every discarded
+near pair into a repulsion; and diffusion beyond a few steps, harmless when the operator is
+used for visualisation, makes the scales duplicates of one another. Orthogonally,
+representation-similarity matching \citep{kornblith2019similarity}, optimal-transport
+alignment \citep{alqahtani2021ot} and teacher-anchored layer alignment
+\citep{dao2026talas} supervise internal states under capacity mismatch; these need teacher
+internals, which a black-box embedding API does not expose, and they constrain the student's
+coordinates rather than the similarity levels our analysis isolates. We include the
+strongest as baselines.

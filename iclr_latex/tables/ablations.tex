@@ -1,0 +1,50 @@
+% Downstream ablations. Only the reference rows are filled (single seed); all variants "--".
+\begin{table}[t]
+\centering
+\caption{Downstream ablations, grouped by the result each isolates. \emph{Level-sens.}
+averages the six metrics that score pairs drawn from many different anchors on one common
+scale (MRPC, SciTail, WiC average precision; SICK-R, STS12, STS-B Spearman $\rho$), which
+depend on the per-anchor level Proposition~\ref{prop:levels}(a) leaves free;
+\emph{Probe} averages the three linear probes (Bank77, TweetEval, Emotion), which fit their
+own boundary on the embeddings and never compare cosines across anchors. Since
+Predictions~\ref{pred:levels}--\ref{pred:anchor} are differential, the test statistic is
+$D = \Delta_{\mathrm{Probe}} - \Delta_{\mathrm{Level}}$, the excess damage a variant does to
+the level-sensitive family; $D>0$ supports a prediction, $D\approx0$ refutes it whether or
+not the variant is worse overall. \emph{Pred.} fixes the expected sign before the run
+($++$ large, $+$ positive, $0$ none). $D$ counts only if it exceeds the seed spread in the
+reference block. ``--'' = not run.}
+\label{tab:ablation}
+\small
+\setlength{\tabcolsep}{4pt}
+\begin{tabular}{llcccc}
+\toprule
+Variant & Isolates & Pred. & Level-sens. & Probe & $D$ \\
+\midrule
+\multicolumn{6}{l}{\emph{Reference points}}\\
+\textbf{\method (full)} & --- & --- & \textbf{78.88} & \textbf{77.34} & --- \\
+\quad seed spread, $n=3$ & noise floor for $D$ & --- & -- & -- & -- \\
+SEED, $\Rset=\{0\}$ & no bank, no diffusion & $+$ & -- & -- & -- \\
+TALAS (strongest prior) & different objective & n/a & 77.98 & 76.83 & n/a \\
+\midrule
+\multicolumn{6}{l}{\emph{(A) Prop.~\ref{prop:collapse}: one readout collapses the family onto its mixture}}\\
+Tied readout, $\tau_r\equiv\tau$ & Pred.~\ref{pred:levels} & $++$ & -- & -- & -- \\
+\quad vs.\ single scale on $\bar p$ & Eq.~\eqref{eq:collapse} is exact & $0$ & -- & -- & -- \\
+Mixture-proportional sampler & Cond.~\ref{cond:cover}: collapse by sampling & $+$ & -- & -- & -- \\
+\midrule
+\multicolumn{6}{l}{\emph{(B) Prop.~\ref{prop:levels}: one readout leaves the per-anchor level free}}\\
+Two distinct $\tau$, $\Rset$ fixed & part (b), minimal case & $+$ & -- & -- & -- \\
+$\tau_r$ decreasing in $r$ & distinctness vs.\ assignment & $0$ & -- & -- & -- \\
+Per-anchor columns, no $\mathcal{C}_B$ & levels across anchors & $+$ & -- & -- & -- \\
+\midrule
+\multicolumn{6}{l}{\emph{(C) Prop.~\ref{prop:support}: truncated targets repel off the graph}}\\
+Drop $r=0$ (graph only) & Pred.~\ref{pred:support} & $++$ & -- & -- & -- \\
+\quad $r{=}0$ restricted to $\mathcal{P}_i$ & support alone, $\omega_0$ and mass held & $++$ & -- & -- & -- \\
+\quad $r{=}0$ replaced by uniform & support without the teacher's mass & $+$ & -- & -- & -- \\
+\midrule
+\multicolumn{6}{l}{\emph{(D) Lem.~\ref{lem:gauge}: a pointwise anchor cannot supply the missing quantity}}\\
+Tied readout $+\,\mathcal{L}_{\mathrm{anc}}$ & can it substitute for the bank? & $++$ & -- & -- & -- \\
+Full $+\,\mathcal{L}_{\mathrm{anc}}$, $W_a$ free & Pred.~\ref{pred:anchor}, a null & $0$ & -- & -- & -- \\
+Full $+\,\mathcal{L}_{\mathrm{anc}}$, $W_a$ orth. & control: $GL(d_S)$ removed & $0$ & -- & -- & -- \\
+\bottomrule
+\end{tabular}
+\end{table}

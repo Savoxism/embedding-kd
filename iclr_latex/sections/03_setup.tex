@@ -1,0 +1,80 @@
+\section{Setup: A Scale Family of Teacher Targets}
+\label{sec:setup}
+
+Let $\mathcal{D}=\{x_i\}_{i=1}^{N}$ be a training corpus, $T$ a frozen teacher encoder
+producing $t_i = T(x_i)\in\R^{d_T}$, and $S_\theta$ a compact student producing
+$s_i = S_\theta(x_i)\in\R^{d_S}$. Teacher embeddings are computed once, cached, and the
+teacher discarded; only cosine similarities of teacher vectors are ever used, so nothing is
+assumed about $d_T$, the teacher's tokenizer, or its internal states.
+
+\paragraph{Teacher affinity.}
+For a temperature $\tau>0$ define the affinity kernel
+\begin{equation}
+    K^{(\tau)}_{ij} = \exp\!\big(\cos(t_i,t_j)/\tau\big)\,\1_{i\neq j},
+    \label{eq:kernel}
+\end{equation}
+which is dense: every ordered pair receives positive affinity. A neighbourhood graph is
+obtained by masking $K$ to mutual $k$-nearest neighbours,
+\begin{equation}
+    M_{ij} = \1\!\left[\,j\in\mathcal{N}_k(i)\ \wedge\ i\in\mathcal{N}_k(j)\,\right],
+    \qquad
+    W = M \odot K^{(\tau_g)},
+    \label{eq:graph}
+\end{equation}
+where $\mathcal{N}_k(i)$ is the teacher's top-$k$ neighbour set of $i$. Mutuality is the
+standard defence against hubness \citep{radovanovic2010hubs}; Section~\ref{sec:support}
+shows it has a cost. With $D=\mathrm{diag}(W\mathbf{1})$ we write $P = D^{-1}W$ for the
+row-stochastic transition matrix and $Q = \tfrac{1}{2}(I + P)$ for its lazy variant.
+
+\paragraph{The scale family.}
+Sparsification and diffusion are two separate operations on the same kernel, and
+indexing them jointly yields a single family. Let
+$\Rset = \{0\}\cup\mathcal{R}$ with $\mathcal{R}\subset\mathbb{N}_{>0}$, and define
+\begin{equation}
+    P_r =
+    \begin{cases}
+        \rownorm\!\left(K^{(\tau_0)}\right), & r = 0 \quad\text{(no sparsification, no diffusion)},\\[2pt]
+        Q^{\,r}, & r \in \mathcal{R} \quad\text{($r$-step lazy walk on the sparsified kernel)}.
+    \end{cases}
+    \label{eq:family}
+\end{equation}
+The index $r$ therefore reads as \emph{how much graph structure has been imposed}. At $r=0$
+the teacher is asked directly: row $i$ of $P_0$ is its own similarity distribution over the
+whole corpus. At $r\geq 1$ the kernel is first pruned to a manifold approximation, then mass
+is propagated along it, so larger $r$ describes broader semantic regions. The two extremes
+are not different kinds of supervision but the endpoints of one construction, which is why
+\method needs no second loss term and no balancing weight.
+
+Laziness is what makes $\mathcal{R}$ graded rather than a set of near-duplicates. Since
+$\spec(P)\subseteq[-1,1]$, the map $\lambda\mapsto\frac{1}{2}(1+\lambda)$ sends $\spec(Q)$
+into $[0,1]$, removing sign oscillation and roughly doubling the mixing time. Scales stay
+distinguishable only while $|\lambda_2(Q)|^{r}$ has not decayed, which for a plain walk on a
+mutual $k$NN graph fails within about two steps.
+
+\paragraph{Candidate sets and restricted targets.}
+Scoring an anchor against all $N-1$ columns is infeasible, so each anchor $i$ is scored
+against a candidate set $C_i\subset[N]\setminus\{i\}$ with $|C_i| = C \ll N$. The target
+at scale $r$ is the corresponding row of $P_r$ restricted and renormalised,
+\begin{equation}
+    p_{i,r}(j) = \frac{(P_r)_{ij}}{\sum_{j'\in C_i}(P_r)_{ij'}},
+    \qquad j \in C_i .
+    \label{eq:target}
+\end{equation}
+For $r\geq1$ we additionally retain only a sparse pool $\mathcal{P}_i$ of size $P$ per
+anchor, whose truncation residual
+$\varepsilon_{i,r} = 1-\sum_{j\in\mathcal{P}_i}(P_r)_{ij}$ is reported rather than assumed
+negligible. Note $\supp(p_{i,0}) = C_i$ while $\supp(p_{i,r})\subseteq \mathcal{P}_i\cap C_i$
+for $r\geq1$; this asymmetry is the subject of Section~\ref{sec:support}.
+
+\paragraph{Student readout.}
+Writing $v_i\in\R^{C}$ for the student's cosine profile, $v_i(j) = \cos(s_i,s_j)$, a
+readout at temperature $\tau$ is
+\begin{equation}
+    q_{i}^{\tau}(j) = \frac{\exp\big(v_i(j)/\tau\big)}{\sum_{j'\in C_i}\exp\big(v_i(j')/\tau\big)} .
+    \label{eq:readout}
+\end{equation}
+Every objective below is a weighted sum of $\KL(p_{i,r}\Vert q_i^{\tau_r})$ over $r\in\Rset$
+with $\omega_r\geq0$, $\sum_r\omega_r=1$. The only design question is how many distinct
+temperatures the readout uses, and Section~\ref{sec:analysis} shows that this single question
+decides whether the objective is multi-resolution at all, whether it constrains similarity
+levels, and whether it agrees with the teacher off the graph.

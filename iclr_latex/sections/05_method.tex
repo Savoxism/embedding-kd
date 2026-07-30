@@ -1,0 +1,84 @@
+\section{\method}
+\label{sec:method}
+
+Sections~\ref{sec:collapse}--\ref{sec:anchor} leave one objective standing. Assign each
+scale $r\in\Rset$ its own readout temperature $\tau_r$, keep the zero-step member of the
+family so that one target has full support, and add nothing else:
+\begin{equation}
+    \boxed{\;
+    \mathcal{L}_{\method}
+    \;=\;
+    \frac{1}{|B|}\sum_{i\in B}\ \sum_{r\in\Rset}\ \omega_r\,
+    \KL\!\left(p_{i,r}\ \middle\Vert\ q_i^{\tau_r}\right),
+    \qquad
+    \Rset=\{0\}\cup\mathcal{R},
+    \;}
+    \label{eq:objective}
+\end{equation}
+with $p_{i,r}$ from \eqref{eq:target}, $q_i^{\tau_r}$ from \eqref{eq:readout}, and
+$\tau_r$ increasing over $r\in\mathcal{R}$ so that broader targets are read out more
+smoothly. There is one term and no balancing weight: the quantity a pointwise anchor was
+meant to supply is produced by the bank itself (Lemma~\ref{lem:gauge}), and the quantity a
+separate relational term was meant to supply is the $r=0$ member of the family. Constants,
+the choice of $\tau_0$, and the full procedure are in Appendix~\ref{app:impl}.
+
+The scales share the underlying vector $v_i$ but not the distribution built from it. The
+identity \eqref{eq:collapse} therefore no longer applies, and \eqref{eq:floor} becomes a
+lower bound rather than an attained value --- so a run of \eqref{eq:objective} whose loss
+falls below $\JS_\omega$ is direct evidence that the bank is doing something a single
+readout cannot.
+
+\paragraph{Shared columns.}
+Anchors in a batch are scored against the union of all candidates in the batch,
+$\mathcal{C}_B = \bigcup_{i\in B} C_i$, with $p_{i,r}(j) = 0$ for
+$j \in \mathcal{C}_B\setminus C_i$ and $q_i^{\tau_r}$ masked at $j=i$. Its purpose is not
+more negatives but \emph{shared} ones: Proposition~\ref{prop:levels}(b) removes the additive
+freedom within an anchor, and shared columns extend the comparison across anchors, which is
+the regime level-sensitive metrics measure. Because the candidate texts are encoded regardless,
+this is free in forward cost; but it also multiplies the number of zero-target columns, so
+it amplifies Proposition~\ref{prop:support} and is compatible with \eqref{eq:objective} only
+because $r=0$ is present.
+
+\paragraph{Sampling can reintroduce the collapse.}
+Scoring an anchor against all $N-1$ columns is infeasible, so $C_i$ is drawn from some
+$\mu_i$ and redrawn each epoch. The analysis requires one property of $\mu_i$.
+
+\begin{condition}[Per-scale coverage]
+\label{cond:cover}
+$\Pr_{\mu_i}\!\left[\ \supp(p_{i,r}) \cap C_i \neq \emptyset\ \right] = 1$ for every
+$r\in\Rset$.
+\end{condition}
+
+Condition~\ref{cond:cover} forbids the obvious sampler. Drawing the positive quota from the
+mixture $\bar p_i = \sum_r \omega_r p_{i,r}$ is natural but wrong: its support is dominated
+by the broadest walk, so the sharpest scale receives one or two scored candidates and its KL
+term stops carrying ranking information --- reintroducing by sampling exactly the collapse
+that Proposition~\ref{prop:collapse} identifies in the objective. A per-scale quota
+satisfies the condition; Appendix~\ref{app:impl} gives the allocation we use.
+
+\paragraph{The family is checkable before training.}
+Each result of Section~\ref{sec:analysis} names a quantity that can be computed from the
+teacher artifact alone, so a degenerate scale family is detectable before the first gradient
+step:
+\begin{equation}
+    \underbrace{\KL\!\left(p_{i,r}\,\Vert\,\mathcal{U}_{\supp(p_{i,r})}\right)}_{\text{sharpness}},
+    \qquad
+    \underbrace{\KL\!\left(p_{i,r}\,\Vert\,p_{i,r'}\right)}_{\text{distinctness}},
+    \qquad
+    \underbrace{\JS_\omega\!\left(\{p_{i,r}\}\right)}_{\text{floor }\eqref{eq:floor}} .
+    \label{eq:diag1}
+\end{equation}
+Sharpness near $0$ means the target is a binary neighbour label carrying no ranking signal;
+distinctness near $0$ means $r$ and $r'$ are duplicates; a floor near $0$ certifies the
+family is degenerate by Corollary~\ref{cor:floor}. These also select $\tau_g$ and bound a
+useful $\mathcal{R}$ without a downstream sweep, and they matter during training as well:
+by Corollary~\ref{cor:floor} the loss value alone separates neither a student that has
+learned the neighbourhood ranking from one whose embeddings have collapsed towards uniform,
+nor a converged student from an exhausted objective (Appendix~\ref{app:impl}).
+
+\paragraph{Cost.}
+Graph construction is a one-off $O(Nk)$ sparse operation over cached embeddings, and the
+$r=0$ target is a lookup in the same cache. Training never touches the teacher: the memory
+resident during optimisation is the student plus an $N\times d_T$ table of teacher vectors,
+and the additional runtime cost over a mini-batch relational objective is $|\Rset|$ softmaxes
+over $|\mathcal{C}_B|$ columns per anchor, negligible next to the encoder forward pass.

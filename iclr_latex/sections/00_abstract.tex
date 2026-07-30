@@ -1,0 +1,29 @@
+\begin{abstract}
+Knowledge distillation for text embedding models must transfer the teacher's geometry:
+which examples are neighbours, and whether a similarity score means the same thing for one
+query as for another. The dominant family of methods does this relationally, asking the
+student to match the teacher's softmax distribution over a set of candidate neighbours, and
+recent work improves them by enriching that supervision --- multiple teachers, views,
+layers, or multiple resolutions of a teacher-induced neighbourhood graph. We show that these
+methods all read the student out the same way, through a \emph{single} softmax over the
+candidate set, and that this shared choice, rather than any property of the target, causes
+three failures no target can repair. Matching several targets through one readout is
+algebraically equal to matching their \emph{mixture} alone plus a constant, so the
+additional targets change nothing and the attained minimum is a divergence the targets fix
+before training begins. A single softmax determines the student's cosine profile only up to
+a per-anchor additive constant, which is why relational distillation transfers within-anchor
+ranking but leaves unconstrained the absolute similarity levels that globally thresholded
+retrieval and Spearman correlation depend on. And targets built on a sparsified
+neighbourhood graph --- the standard defence against hubness --- place a strictly positive
+gradient on every unsupported column, so the objective separates exactly the pairs the
+teacher ranks as near but the graph discarded. We therefore replace the single softmax with
+a \emph{bank} of softmaxes at distinct temperatures, over a scale family whose zero-step
+member is the teacher's own dense kernel before any sparsification. The resulting objective,
+\method, is a single term with no balancing weight, adds no parameters, and needs only
+cached teacher embeddings. Distilling LLM-scale embedding teachers into a compact encoder,
+it improves over the strongest prior relational objective, and the improvement concentrates
+in the level-sensitive metrics the analysis singles out rather than in the probe-based ones.
+Because each result names the quantity a single readout leaves free, it predicts which
+metrics each component should move and which it should leave unchanged, so the ablations can
+falsify the analysis rather than merely rank configurations.
+\end{abstract}

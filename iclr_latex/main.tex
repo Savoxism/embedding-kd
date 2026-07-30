@@ -1,0 +1,61 @@
+\documentclass{article} % For LaTeX2e
+\usepackage{iclr2026_conference,times}
+
+% Optional math commands from https://github.com/goodfeli/dlbook_notation.
+\input{math_commands.tex}
+
+\usepackage{amsmath}
+\usepackage{amssymb}
+\usepackage{amsthm}
+\usepackage{booktabs}
+\usepackage{multirow}
+\usepackage{xspace}
+\usepackage{algorithm}
+\usepackage{algorithmic}
+\usepackage{hyperref}
+\usepackage{url}
+
+% ---------------------------------------------------------------------------
+% Method name. Change here only.
+% ---------------------------------------------------------------------------
+\newcommand{\method}{HeatBank\xspace}
+
+\newtheorem{proposition}{Proposition}
+\newtheorem{lemma}{Lemma}
+\newtheorem{corollary}{Corollary}
+\theoremstyle{definition}
+\newtheorem{prediction}{Prediction}
+\newtheorem{condition}{Condition}
+
+\newcommand{\Rset}{\bar{\mathcal{R}}}
+\newcommand{\JS}{\mathrm{JS}}
+\newcommand{\supp}{\mathrm{supp}}
+\newcommand{\rownorm}{\mathrm{rownorm}}
+\newcommand{\spec}{\mathrm{spec}}
+
+\title{The Readout, Not the Target: \\ Multi-Resolution Relational Distillation \\ for Compact Text Embeddings}
+
+\author{Anonymous authors\\
+Paper under double-blind review}
+
+%\iclrfinalcopy % Uncomment for camera-ready version, but NOT for submission.
+\begin{document}
+
+\maketitle
+
+\input{sections/00_abstract}
+\input{sections/01_introduction}
+\input{sections/02_related_work}
+\input{sections/03_setup}
+\input{sections/04_analysis}
+\input{sections/05_method}
+\input{sections/07_experiments}
+\input{sections/08_discussion}
+
+\bibliography{references}
+\bibliographystyle{iclr2026_conference}
+
+\appendix
+\input{sections/09_appendix}
+
+\end{document}

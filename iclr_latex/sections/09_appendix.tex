@@ -1,0 +1,160 @@
+\section{Deferred Statements and Proofs}
+\label{app:proofs}
+
+\begin{lemma}[Gauge]
+\label{lem:gauge}
+Let $\mathcal{L}_{\mathrm{rel}}$ depend on the student only through
+$\{\cos(s_i,s_j)\}_{i,j}$; its invariance group contains
+$G_{\mathrm{rel}} = \{s\mapsto cRs : c>0,\ R\in O(d_S)\}$. For
+$\mathcal{L}_{\mathrm{anc}} = \frac{1}{|B|}\sum_{i\in B}\big(1-\cos(W_a s_i,t_i)\big)$
+with $W_a\in\R^{d_T\times d_S}$ free, the substitution $s\mapsto As$,
+$W_a\mapsto W_a A^{-1}$ leaves the term exactly invariant for every $A\in GL(d_S)$. Hence
+$G_{\mathrm{anc}} = GL(d_S) \supsetneq G_{\mathrm{rel}}$, and
+$\min_{W_a}\mathcal{L}_{\mathrm{anc}}$ is a function of the student space only through its
+$GL(d_S)$-orbit.
+\end{lemma}
+
+\begin{proof}
+For any invertible $A$, $W_a A^{-1}(As_i) = W_a s_i$, so every summand is unchanged; the
+map $W_a\mapsto W_aA^{-1}$ is a bijection of the parameter space, so the minimised value is
+unchanged as well. Taking $A=cR$ recovers $G_{\mathrm{rel}}\subseteq G_{\mathrm{anc}}$, and
+any $A$ with distinct singular values lies in $G_{\mathrm{anc}}\setminus G_{\mathrm{rel}}$,
+which gives strict containment.
+\end{proof}
+
+\begin{proof}[Proof of Proposition~\ref{prop:levels}]
+(a) is the shift invariance of the softmax: replacing $v_i$ by $v_i+a\mathbf{1}$ multiplies
+numerator and denominator of \eqref{eq:readout} by $e^{a/\tau}$.
+
+(b) Exact satisfaction $q_i^{\tau_r}=p_{i,r}$ holds iff
+$v_i/\tau_r = \log p_{i,r} + c_r\mathbf{1}$ for some $c_r\in\R$, i.e.\
+$v_i = \tau_r\log p_{i,r} + \tau_r c_r\mathbf{1}$. Equating two such expressions for
+$r\neq r'$ gives \eqref{eq:consistency}. The first constraint already pins $v_i$ up to one
+scalar; each further $r$ imposes $C-1$ additional conditions on that single remaining
+degree of freedom, which for generic targets admit no solution. The minimiser of
+$\sum_r\omega_r\KL(p_{i,r}\Vert q_i^{\tau_r})$ is therefore a compromise, and since the
+residuals it balances are the vectors $\tau_r\log p_{i,r}$ themselves, its location depends
+on the absolute values of $\log p_{i,r}$ and not only on the shift-equivalence class of
+$v_i$.
+\end{proof}
+
+\section{Implementation Details}
+\label{app:impl}
+
+This appendix fixes the constants left symbolic in the main text. Nothing here is required
+by the analysis of Section~\ref{sec:analysis}; the choices are reported so that
+Table~\ref{tab:main} is reproducible and so that Condition~\ref{cond:cover} can be checked
+rather than assumed.
+
+\begin{algorithm}[h]
+\caption{\method training}
+\label{alg:method}
+\begin{algorithmic}[1]
+\REQUIRE Corpus $\mathcal{D}$, teacher $T$, student $S_\theta$, graph size $k$, scales
+$\Rset=\{0\}\cup\mathcal{R}$, temperatures $\{\tau_r\}$, weights $\{\omega_r\}$, pool size
+$P$, candidate size $C$
+\STATE Cache $t_i = T(x_i)$ for all $i$; discard $T$
+\STATE Build $W$ by \eqref{eq:graph}; form $P$ and $Q$ as in Section~\ref{sec:setup}
+\STATE Precompute pools $\mathcal{P}_i$ and targets $p_{i,r}$, $r\in\mathcal{R}$, from one walk snapshotted at each $r$; record residuals $\varepsilon_{i,r}$
+\STATE Compute the floor \eqref{eq:floor} and the build-time diagnostics \eqref{eq:diag1}
+\FOR{each epoch $e$}
+  \STATE Redraw $C_i^{(e)}\sim\mu_i$ for every anchor $i$ \COMMENT{Condition~\ref{cond:cover}}
+  \FOR{each mini-batch $B$}
+    \STATE Encode anchors and candidates with $S_\theta$; form the shared column set $\mathcal{C}_B$ and scatter targets onto it
+    \STATE Evaluate $p_{i,0}$ on $\mathcal{C}_B$ from the cached teacher embeddings
+    \STATE Compute $q_i^{\tau_r}$ for every $r\in\Rset$ and update $\theta$ on \eqref{eq:objective}
+  \ENDFOR
+\ENDFOR
+\RETURN $S_\theta$
+\end{algorithmic}
+\end{algorithm}
+
+\subsection{Hyperparameters}
+
+\begin{table}[h]
+\centering
+\small
+\begin{tabular}{llc}
+\toprule
+Symbol & Meaning & Value \\
+\midrule
+$k$ & mutual $k$NN graph degree cap & $50$ \\
+$\tau_g$ & graph kernel temperature, \eqref{eq:graph} & $0.05$ \\
+$\tau_0^{\mathrm{tgt}}$ & teacher temperature of the $r{=}0$ target, \eqref{eq:family} & $0.10$ \\
+$\mathcal{R}$ & diffusion scales & $\{1,2,4\}$ \\
+$(\tau_1,\tau_2,\tau_4)$ & readout temperatures, diffusion scales & $(0.05,\,0.07,\,0.10)$ \\
+$\tau_0$ & readout temperature, zero-step scale & $0.10$ \\
+$(\omega_0,\omega_1,\omega_2,\omega_4)$ & scale weights, normalised & $(0.500,\,0.286,\,0.143,\,0.071)$ \\
+$P$ & retained pool size per anchor & $128$ \\
+$C$ & candidate set size per anchor & $64$ \\
+--- & optimiser / LR / batch / epochs & AdamW / $2{\times}10^{-5}$ / $16$ / $5$ \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+The diffusion readout temperatures increase with $r$, so that broader targets are read out
+more smoothly. The zero-step readout temperature is set independently rather than by
+extending that trend: $q_i^{\tau_0}$ ranges over the entire candidate set rather than a
+$k$NN neighbourhood, where inheriting $\tau_g$ would place nearly all mass on the nearest
+column, and it is paired with a target whose own temperature is $\tau_0^{\mathrm{tgt}}$.
+Proposition~\ref{prop:levels}(b) requires only that at least two readout temperatures
+differ, which the bank satisfies. The graph temperature $\tau_g$ is selected by the
+sharpness diagnostic of \eqref{eq:diag1} rather than by a downstream sweep: teacher cosines
+within an anchor's top-$k$ neighbourhood occupy a narrow band, so a $\tau_g$ large relative
+to that band flattens every row of $P$ towards uniform on its support, which sharpness
+detects offline.
+
+The weights follow from normalising the raw diffusion weights $(1,\,\tfrac12,\,\tfrac14)$
+to sum to one and then admitting $r=0$ with unit relative weight, so the zero-step scale
+carries half the total. We record this explicitly because it is easy to introduce a scale
+whose effective weight is far from what a list of raw coefficients suggests, and because
+$\omega$ enters both the objective \eqref{eq:objective} and the floor \eqref{eq:floor} ---
+a floor computed under different weights than the loss is not comparable to it.
+
+\subsection{The candidate sampler}
+
+Condition~\ref{cond:cover} is realised by a fixed quota allocation of the $C=64$ slots:
+\begin{itemize}
+    \item $32$ diffusion slots, split evenly across $\mathcal{R}$ (not drawn from the
+    mixture $\bar p_i$), so each scale is guaranteed scored columns from its own support;
+    \item $24$ teacher hard negatives, drawn from the $200$ nearest teacher neighbours that
+    lie outside the graph pool;
+    \item $8$ uniform random negatives.
+\end{itemize}
+Within a scale's quota, the top $2$ columns by diffusion mass are taken deterministically
+and the remainder are drawn without replacement by Gumbel top-$k$ over
+$\log (P_r)_{ij}$, which samples proportionally to diffusion mass while keeping the draw
+vectorised. Sets are redrawn once per epoch, for a reason independent of
+Condition~\ref{cond:cover}: a frozen candidate set defines a fixed finite collection of
+comparisons, so once the student orders them correctly the gradient vanishes even though
+$p_{i,r}$ still describes unlearned structure. If mutuality isolates an anchor --- $2.0\%$ of
+anchors on our corpus --- its pool falls back to the teacher's directed top-$k$ neighbours;
+these anchors still receive a well-defined $r=0$ target, which is one practical consequence
+of Proposition~\ref{prop:support}'s remedy.
+
+\subsection{Corpus preparation and targets}
+
+Exact-duplicate texts are removed before graph construction ($13.5$k anchors remain): they
+have $\cos=1$ by construction, so their logits sit at the ceiling with vanishing gradient
+while still absorbing teacher mass from candidates that could still move.
+Diffusion targets are precomputed once by a single sparse walk snapshotted at each
+$r\in\mathcal{R}$, retaining the top $P=128$ entries per row and recording the truncation
+residual $\varepsilon_{i,r}$ of \eqref{eq:target}; the $r=0$ target is evaluated on the fly
+from cached teacher vectors, so it is exact on $\mathcal{C}_B$ and requires no storage. All
+targets are renormalised on the scored column set after masking the anchor's own index.
+
+\subsection{Build-time diagnostics}
+\label{app:diag}
+
+\input{tables/diagnostics}
+
+\subsection{Logged quantities}
+
+Per epoch we log: total loss and per-scale KL; the excess $\mathcal{L}-\JS_\omega$; student
+entropy relative to $\log|\mathcal{C}_B|$ per scale; student mass on the teacher's top-$8$
+candidates; mean and $90$th-percentile truncation residual; and the number of steps skipped
+for non-finite gradients. The last is reported because a silently skipped step is
+indistinguishable from a completed one in the loss curve. Checkpoint selection uses a
+held-out validation metric, not the training objective: by Corollary~\ref{cor:floor} the
+training loss contains a large anchor-dependent constant, so its across-epoch differences
+are not a reliable ordering of model quality.

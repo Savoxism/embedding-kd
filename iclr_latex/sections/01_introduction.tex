@@ -1,0 +1,75 @@
+\section{Introduction}
+\label{sec:intro}
+
+The value of a text embedding model comes less from individual vectors than from the
+geometry they induce: which examples are neighbours, and whether a similarity score means
+the same thing for one query as for another. Since strong embedding models are increasingly
+built on large language-model backbones \citep{chen2024bgem3,zhang2025qwen3embedding}, they
+are expensive to serve, and distilling them into small encoders that preserve that geometry
+is a practical necessity.
+
+\paragraph{Existing methods differ in the target, not in the readout.}
+The dominant approach is relational: rather than regressing student coordinates onto teacher
+coordinates, the student is asked to preserve relations among examples
+\citep{park2019rkd,tung2019sp}, in practice by matching a teacher-induced distribution over
+candidate neighbours \citep{fang2021seed,tian2020crd,yang2020lsp}. Progress in this line has
+come almost entirely from making that distribution carry more: distilling from several
+teachers or several stages \citep{zhang2024jasperstella}, adding views and alternative
+divergences \citep{xu2023distillcse,wen2023fdivergence}, supervising internal states under
+capacity mismatch \citep{zhang2024dskd,dao2026talas}, or --- reading the teacher space as a
+sampled manifold --- deriving targets at several resolutions from random walks on a
+neighbourhood graph \citep{coifman2006diffusionmaps,klicpera2019gdc}. Whatever the target,
+the student side is left untouched: a cosine profile over the candidate set is converted to
+a distribution by \emph{one} softmax at \emph{one} temperature, and the several targets are
+matched against that same distribution through a weighted sum of KL divergences. Our
+starting point is that this uniform, unexamined choice is where these methods lose the
+geometry they set out to transfer.
+
+\paragraph{Three failures of the shared readout.}
+None of the following is a statement about targets; each holds for any relational objective
+of the form above. First, cross-entropy is linear in its target, so a weighted sum of KL
+divergences against \emph{one} student distribution collapses onto the mixture of the
+targets plus a target-only constant (Proposition~\ref{prop:collapse}). Enriching the target
+family therefore buys smoothing and nothing else --- two families with the same mixture
+induce identical gradients --- and the attained minimum is a generalised Jensen--Shannon
+divergence among the targets, a number determined before any training
+(Corollary~\ref{cor:floor}), so a loss curve that flattens is not evidence of convergence.
+This applies verbatim to the multi-teacher, multi-view and multi-layer variants above.
+Second, a softmax is invariant to a constant shift of its logits, so a single readout pins
+the student's cosine profile only up to a per-anchor additive constant
+(Proposition~\ref{prop:levels}): within-anchor ranking is transferred, absolute similarity
+\emph{levels} are not. This is the precise reason relational distillation is observed to
+preserve neighbour order while degrading tasks that apply one global threshold or rank all
+pairs jointly, and it is what the usual remedy --- a pointwise term aligning $s_i$ to $t_i$
+through a learned map --- provably cannot fix, since its invariance group is strictly larger
+(Lemma~\ref{lem:gauge}). Third, targets derived from a sparsified graph assign mass zero
+outside the anchor's support, where the cross-entropy gradient is strictly positive
+(Proposition~\ref{prop:support}); the objective thus pushes apart precisely those pairs the
+teacher scores as near but the mutual-neighbour test discarded --- so the standard defence
+against hubness \citep{radovanovic2010hubs} creates a second, compounding failure.
+
+\paragraph{One change addresses all three.}
+Each failure is a statement about how the student reads a similarity vector out as a
+distribution, so we intervene there. We replace the single softmax with a bank of softmaxes
+at distinct temperatures, one per scale. Distinct temperatures break the algebraic identity
+behind Proposition~\ref{prop:collapse}, and they over-determine the cosine profile, so the
+minimiser depends on similarity levels rather than only on their shift-equivalence class
+(Proposition~\ref{prop:levels}). For the support pathology we add no auxiliary term but
+extend the scale family downwards: the zero-step member is the teacher's own dense kernel,
+taken \emph{before} sparsification, and is the unique member whose support is the full
+candidate set. The family thus interpolates between two extremes of one construction --- no
+graph at $r=0$, deep walks at large $r$ --- rather than gluing a relational loss to a
+diffusion loss. The result, \method, is a one-term objective with no balancing weight,
+requiring only cached teacher embeddings: no hidden states, no online teacher pass, no
+architecture change, no shared tokenizer.
+
+Our contributions are the three results above --- a collapse identity with a pre-training
+floor (Section~\ref{sec:collapse}), an under-determination result and its removal by
+over-determination (Section~\ref{sec:levels}), and a support result with the zero-step
+repair (Section~\ref{sec:support}) --- together with \method, the objective they force, and
+build-time diagnostics that make each failure checkable before training
+(Section~\ref{sec:method}). Because each proposition names the quantity left unconstrained,
+it also says which downstream metrics should move when the corresponding component is
+removed and which should not. We report results split along that line --- metrics defined by
+a single global decision rule on cosine against metrics that use only within-anchor ordering
+--- so the ablations test the analysis rather than merely rank configurations.

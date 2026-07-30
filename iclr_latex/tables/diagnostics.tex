@@ -1,0 +1,25 @@
+% Build-time diagnostics, Qwen3-Embedding-4B teacher, 13.5k deduplicated anchors.
+% All quantities computed from the cached teacher artifact before any gradient step.
+\begin{table}[t]
+\centering
+\caption{Build-time diagnostics of the scale family \eqref{eq:family} for the
+Qwen3-Embedding-4B teacher ($k=50$, $\tau_g=0.05$), averaged over anchors and evaluated on
+the retained pool. Sharpness is the first quantity in \eqref{eq:diag1}, in nats; a value near $0$ would indicate
+a binary neighbour label. Residual is $\varepsilon_{i,r}$ of \eqref{eq:target}. The
+zero-step scale is dense on $C_i$ by construction and is reported separately in the text.}
+\label{tab:diag}
+\small
+\begin{tabular}{lcccc}
+\toprule
+Scale & $|\supp(p_{i,r})|$ & Sharpness \eqref{eq:diag1} & Top-1 mass & Residual $\varepsilon_{i,r}$ \\
+\midrule
+$r=1$ & \phantom{0}20.5 & 0.649 & 0.401 & $1.4\times10^{-17}$ \\
+$r=2$ & 101.8 & 1.719 & 0.333 & $2.4\times10^{-2}$ \\
+$r=4$ & 124.9 & 1.528 & 0.257 & $8.7\times10^{-2}$ \\
+\midrule
+\multicolumn{5}{l}{\emph{Scale distinctness}: $\KL(p_{i,1}\Vert p_{i,2})=0.173$, \ $\KL(p_{i,2}\Vert p_{i,4})=0.127$} \\
+\multicolumn{5}{l}{\emph{Irreducible floor} \eqref{eq:floor}: $\JS_\omega = 0.100$ (mean), $0.191$ (90th percentile)} \\
+\multicolumn{5}{l}{\emph{Graph}: mean degree $20.5$; $2.0\%$ of anchors isolated by mutuality and restored by fallback} \\
+\bottomrule
+\end{tabular}
+\end{table}
