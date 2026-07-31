@@ -40,9 +40,9 @@ class HeatGeoConfig(BaseConfig):
     #
     # r=0 targets softmax(cos(t_i,t_j)/direct_temp) over the *full* column set, so
     # every column carries its real teacher mass. The teacher embeddings are already
-    # cached, so this is free. It also replaces lambda_anchor properly: comparing
-    # student cosines to teacher cosines is not invariant to a linear map of the
-    # student space, which is exactly why the old anchor term could not calibrate.
+    # cached, so this is free. This is also what replaced the old pointwise anchor
+    # term: comparing student cosines to teacher cosines is not invariant to a linear
+    # map of the student space, so that term could never calibrate anything.
     direct_weight = 1.0
     # Over a ~1k-column pool the teacher cosine spread is ~0.5, so 0.05 (the graph
     # value) would put essentially all mass on the single nearest column. 0.10 keeps
@@ -50,12 +50,6 @@ class HeatGeoConfig(BaseConfig):
     # target_entropy after changing it.
     direct_temp = 0.10
     direct_student_temp = 0.10
-
-    # Off by default, superseded by the direct scale. As written (free linear map
-    # W_a + scale-invariant cosine) this term is invariant to any invertible
-    # transform of the student space, so it can never supply the absolute
-    # calibration it was meant to. Kept for the ablation row only.
-    lambda_anchor = 0.0
 
     # ---- teacher graph -------------------------------------------------------
     graph_k = 200
@@ -113,6 +107,13 @@ class HeatGeoConfig(BaseConfig):
     learning_rate = 3e-5
     min_lr = 3e-6
     num_workers = 4
+
+    # Candidates are deduplicated and sorted by length, then encoded in chunks of
+    # this size so each chunk pads to its own longest member. Padding the whole
+    # batch_size x candidate_size block to its global maximum cost ~3.3x more
+    # padded tokens on this corpus (median length 13, longest of ~2000 draws ~70).
+    # Smaller chunks pad tighter but launch more kernels; 256 is near the knee.
+    encode_chunk_size = 256
 
     train_data_path = "data/train_set/merged_3_data_5k_each.csv"
     cache_teacher = True

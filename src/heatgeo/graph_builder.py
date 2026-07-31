@@ -5,11 +5,18 @@ from collections.abc import Sequence
 from pathlib import Path
 
 import numpy as np
+import scipy.sparse as sp
 import torch
 import torch.nn.functional as F
 from tqdm import tqdm
 
-ARTIFACT_VERSION = 3
+ARTIFACT_VERSION = 4
+
+# Anchors diffused per sparse matrix product. The intermediate X @ P holds up to
+# block_size * keep_topk * max_degree nonzeros, so this trades memory for the
+# number of scipy calls; 256 keeps the intermediate under a few hundred MB at
+# graph_k=200.
+DIFFUSION_BLOCK = 256
 
 
 def _as_tuple(values: Sequence[int]) -> tuple[int, ...]:
@@ -159,58 +166,154 @@ def _write_knn_graph_log(
     return log_path, stats
 
 
-def _diffuse_snapshots(
-    start_idx: int,
-    scales: tuple[int, ...],
+def _transition_matrix(
     row_neighbors: list[np.ndarray],
     row_probs: list[np.ndarray],
+    n_items: int,
+) -> sp.csr_matrix:
+    """Row-stochastic P as CSR, so a diffusion step is one sparse matrix product."""
+    sizes = np.fromiter(
+        (int(neighbors.size) for neighbors in row_neighbors),
+        dtype=np.int64,
+        count=n_items,
+    )
+    indptr = np.zeros(n_items + 1, dtype=np.int64)
+    np.cumsum(sizes, out=indptr[1:])
+    matrix = sp.csr_matrix(
+        (
+            np.concatenate(row_probs).astype(np.float64),
+            np.concatenate(row_neighbors).astype(np.int64),
+            indptr,
+        ),
+        shape=(n_items, n_items),
+    )
+    matrix.sort_indices()
+    return matrix
+
+
+def _truncate_renormalize(matrix: sp.csr_matrix, keep_topk: int) -> sp.csr_matrix:
+    """Row-wise top-keep_topk, then renormalize each row.
+
+    Truncating without renormalizing leaks mass at every step, and the leak
+    compounds with r, so the later scales end up systematically under-weighted
+    relative to r=1 -- which silently distorts the mixture target the loss
+    actually optimizes.
+    """
+    indptr, indices, data = matrix.indptr, matrix.indices, matrix.data
+    n_rows = matrix.shape[0]
+    kept_indices: list[np.ndarray] = []
+    kept_data: list[np.ndarray] = []
+    new_indptr = np.zeros(n_rows + 1, dtype=np.int64)
+
+    for row in range(n_rows):
+        start, end = indptr[row], indptr[row + 1]
+        row_indices, row_data = indices[start:end], data[start:end]
+        if row_data.size > keep_topk:
+            top = np.argpartition(-row_data, keep_topk - 1)[:keep_topk]
+            row_indices, row_data = row_indices[top], row_data[top]
+        total = float(row_data.sum())
+        if total > 0.0:
+            row_data = row_data / total
+        kept_indices.append(row_indices)
+        kept_data.append(row_data)
+        new_indptr[row + 1] = new_indptr[row] + row_data.size
+
+    out = sp.csr_matrix(
+        (np.concatenate(kept_data), np.concatenate(kept_indices), new_indptr),
+        shape=matrix.shape,
+    )
+    # argpartition scrambles column order; searchsorted downstream needs it sorted.
+    out.sort_indices()
+    return out
+
+
+def _drop_self_renormalize(
+    dist: sp.csr_matrix, start_ids: np.ndarray
+) -> sp.csr_matrix:
+    """Remove each row's own start node and renormalize what is left."""
+    out = dist.copy()
+    indptr, indices, data = out.indptr, out.indices, out.data
+    for row, start in enumerate(start_ids):
+        lo, hi = indptr[row], indptr[row + 1]
+        pos = lo + int(np.searchsorted(indices[lo:hi], start))
+        if pos < hi and indices[pos] == start:
+            data[pos] = 0.0
+
+    row_sums = np.asarray(out.sum(axis=1)).ravel()
+    scale = np.where(row_sums > 0.0, 1.0 / np.maximum(row_sums, 1e-300), 0.0)
+    out = (sp.diags(scale) @ out).tocsr()
+    out.eliminate_zeros()
+    out.sort_indices()
+    return out
+
+
+def _diffuse_block(
+    start_ids: np.ndarray,
+    scales: tuple[int, ...],
+    transition: sp.csr_matrix,
     keep_topk: int,
-) -> list[dict[int, float]]:
-    """Lazy random walk x <- (x + xP)/2, snapshotted at each scale.
+) -> list[sp.csr_matrix]:
+    """Lazy random walk X <- (X + XP)/2 for a whole block of anchors, snapshotted
+    at each scale.
 
     The lazy walk is what makes the scales a graded family: a plain walk on a mutual
     kNN graph mixes within two steps, so (P)^2 and (P)^4 collapse onto the same
     distribution and the multi-scale objective degenerates into a duplicated term.
 
-    Truncation to keep_topk is followed by renormalization. Truncating without
-    renormalizing leaks mass at every step, and the leak compounds with r, so the
-    later scales end up systematically under-weighted relative to r=1 -- which
-    silently distorts the mixture target the loss actually optimizes.
+    Diffusing one anchor at a time through Python dicts costs ~250k interpreter-level
+    operations per anchor; the same recursion expressed as a sparse product over a
+    block of anchors is the identical arithmetic (agreement with the dict version is
+    at the 1e-17 level) with the inner loops in compiled code.
     """
-    snapshots: dict[int, dict[int, float]] = {}
-    dist: dict[int, float] = {start_idx: 1.0}
-    max_scale = max(scales)
+    n_items = transition.shape[0]
+    block = start_ids.size
+    dist = sp.csr_matrix(
+        (
+            np.ones(block, dtype=np.float64),
+            (np.arange(block, dtype=np.int64), start_ids.astype(np.int64)),
+        ),
+        shape=(block, n_items),
+    )
 
-    for step in range(1, max_scale + 1):
-        next_dist: dict[int, float] = {}
-        for node, mass in dist.items():
-            for nbr, prob in zip(row_neighbors[node], row_probs[node]):
-                next_dist[int(nbr)] = next_dist.get(int(nbr), 0.0) + float(
-                    mass
-                ) * float(prob)
-        for node, mass in dist.items():
-            next_dist[node] = next_dist.get(node, 0.0) + float(mass)
-        next_dist = {node: mass * 0.5 for node, mass in next_dist.items()}
-
-        if len(next_dist) > keep_topk:
-            top_items = sorted(
-                next_dist.items(), key=lambda item: item[1], reverse=True
-            )[:keep_topk]
-            next_dist = dict(top_items)
-        total = sum(next_dist.values())
-        if total > 0.0:
-            next_dist = {node: mass / total for node, mass in next_dist.items()}
-        dist = next_dist
-
+    snapshots: dict[int, sp.csr_matrix] = {}
+    for step in range(1, max(scales) + 1):
+        dist = _truncate_renormalize(
+            ((dist + dist @ transition) * 0.5).tocsr(), keep_topk
+        )
         if step in scales:
-            snapshot = dict(dist)
-            snapshot.pop(start_idx, None)
-            total = sum(snapshot.values())
-            if total > 0.0:
-                snapshot = {node: mass / total for node, mass in snapshot.items()}
-            snapshots[step] = snapshot
+            snapshots[step] = _drop_self_renormalize(dist, start_ids)
 
     return [snapshots[scale] for scale in scales]
+
+
+def _select_pool(
+    supports: list[tuple[np.ndarray, np.ndarray]],
+    weights: np.ndarray,
+    pool_size: int,
+) -> np.ndarray:
+    """Top-pool_size nodes of the weighted mixture over the per-scale supports."""
+    nodes = np.concatenate([support[0] for support in supports])
+    if nodes.size == 0:
+        return np.empty(0, dtype=np.int64)
+    mass = np.concatenate(
+        [float(weights[scale_idx]) * support[1] for scale_idx, support in enumerate(supports)]
+    )
+    unique_nodes, inverse = np.unique(nodes, return_inverse=True)
+    mixture = np.bincount(inverse, weights=mass, minlength=unique_nodes.size)
+    order = np.argsort(-mixture, kind="stable")[:pool_size]
+    return unique_nodes[order].astype(np.int64)
+
+
+def _gather_masses(support: tuple[np.ndarray, np.ndarray], nodes: np.ndarray) -> np.ndarray:
+    """Diffusion mass of `nodes` under one scale; 0 for nodes outside its support."""
+    support_indices, support_data = support
+    if support_indices.size == 0 or nodes.size == 0:
+        return np.zeros(nodes.size, dtype=np.float64)
+    pos = np.searchsorted(support_indices, nodes)
+    in_range = pos < support_indices.size
+    clipped = np.where(in_range, pos, 0)
+    hit = in_range & (support_indices[clipped] == nodes)
+    return np.where(hit, support_data[clipped], 0.0)
 
 
 def _build_diffusion_pools(
@@ -222,6 +325,7 @@ def _build_diffusion_pools(
     pool_size: int,
     hard_neg_pool: int,
     source_ids: np.ndarray,
+    block_size: int = DIFFUSION_BLOCK,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, dict[str, float]]:
     """Per-anchor sparse diffusion support plus a same-source hard-negative pool.
 
@@ -244,67 +348,69 @@ def _build_diffusion_pools(
     hard_fill = np.zeros(n_items, dtype=np.int64)
     empty_scale = np.zeros(n_scales, dtype=np.int64)
 
-    for i in tqdm(range(n_items), desc="HeatGeo diffusion pools"):
-        scale_dists = _diffuse_snapshots(i, scales, row_neighbors, row_probs, keep_topk)
+    transition = _transition_matrix(row_neighbors, row_probs, n_items)
 
-        mixture: dict[int, float] = {}
-        for scale_idx, dist in enumerate(scale_dists):
-            weight = float(weights[scale_idx])
-            for node, mass in dist.items():
-                mixture[node] = mixture.get(node, 0.0) + weight * mass
+    for block_start in tqdm(
+        range(0, n_items, block_size), desc="HeatGeo diffusion pools"
+    ):
+        block_ids = np.arange(
+            block_start, min(block_start + block_size, n_items), dtype=np.int64
+        )
+        scale_matrices = _diffuse_block(block_ids, scales, transition, keep_topk)
 
-        ranked = sorted(mixture.items(), key=lambda item: item[1], reverse=True)
-        selected = [node for node, _ in ranked[:pool_size]]
-        pool_fill[i] = len(selected)
-        if selected:
-            pool_indices[i, : len(selected)] = np.asarray(selected, dtype=np.int64)
+        for row, i in enumerate(block_ids):
+            i = int(i)
+            supports = [
+                (
+                    matrix.indices[matrix.indptr[row] : matrix.indptr[row + 1]],
+                    matrix.data[matrix.indptr[row] : matrix.indptr[row + 1]],
+                )
+                for matrix in scale_matrices
+            ]
 
-        pool_set = set(selected)
-        for scale_idx, dist in enumerate(scale_dists):
-            if not dist:
-                empty_scale[scale_idx] += 1
-                continue
-            kept = np.asarray(
-                [dist.get(node, 0.0) for node in selected], dtype=np.float64
-            )
-            kept_sum = float(kept.sum())
-            total = float(sum(dist.values()))
-            residual_mass[scale_idx] += max(0.0, total - kept_sum) / max(total, 1e-12)
-            if kept_sum <= 0.0:
-                empty_scale[scale_idx] += 1
-                continue
-            pool_probs[scale_idx, i, : len(selected)] = (kept / kept_sum).astype(
-                np.float32
-            )
+            selected = _select_pool(supports, weights, pool_size)
+            pool_fill[i] = selected.size
+            if selected.size:
+                pool_indices[i, : selected.size] = selected
 
-        # Hard negatives: nearest teacher neighbours from the SAME source corpus that
-        # carry no diffusion mass. Sampling negatives uniformly from a corpus made of
-        # three disjoint datasets makes ~2/3 of them separable by domain alone, which
-        # is why the discrimination task was exhausted within one epoch.
-        source_i = source_ids[i]
-        hard: list[int] = []
-        for node in top_indices[i]:
-            if len(hard) >= hard_neg_pool:
-                break
-            node = int(node)
-            if node == i or node in pool_set:
-                continue
-            if source_ids[node] != source_i:
-                continue
-            hard.append(node)
-        if len(hard) < hard_neg_pool:
-            # Same-source pool exhausted: top up with cross-source nearest neighbours
-            # rather than leaving the quota unfilled.
-            for node in top_indices[i]:
-                if len(hard) >= hard_neg_pool:
-                    break
-                node = int(node)
-                if node == i or node in pool_set or node in hard:
+            for scale_idx, support in enumerate(supports):
+                if support[0].size == 0:
+                    empty_scale[scale_idx] += 1
                     continue
-                hard.append(node)
-        hard_fill[i] = len(hard)
-        if hard:
-            hard_neg_indices[i, : len(hard)] = np.asarray(hard, dtype=np.int64)
+                kept = _gather_masses(support, selected)
+                kept_sum = float(kept.sum())
+                total = float(support[1].sum())
+                residual_mass[scale_idx] += max(0.0, total - kept_sum) / max(
+                    total, 1e-12
+                )
+                if kept_sum <= 0.0:
+                    empty_scale[scale_idx] += 1
+                    continue
+                pool_probs[scale_idx, i, : selected.size] = (kept / kept_sum).astype(
+                    np.float32
+                )
+
+            # Hard negatives: nearest teacher neighbours from the SAME source corpus
+            # that carry no diffusion mass. Sampling negatives uniformly from a corpus
+            # made of three disjoint datasets makes ~2/3 of them separable by domain
+            # alone, which is why the discrimination task was exhausted within one
+            # epoch.
+            candidates = top_indices[i]
+            outside_pool = ~np.isin(candidates, selected)
+            eligible = outside_pool & (candidates != i)
+            hard = candidates[eligible & (source_ids[candidates] == source_ids[i])][
+                :hard_neg_pool
+            ]
+            if hard.size < hard_neg_pool:
+                # Same-source pool exhausted: top up with cross-source nearest
+                # neighbours rather than leaving the quota unfilled.
+                extra = candidates[eligible & ~np.isin(candidates, hard)][
+                    : hard_neg_pool - hard.size
+                ]
+                hard = np.concatenate([hard, extra])
+            hard_fill[i] = hard.size
+            if hard.size:
+                hard_neg_indices[i, : hard.size] = hard.astype(np.int64)
 
     stats = {
         "pool_size": float(pool_size),

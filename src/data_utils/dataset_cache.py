@@ -89,6 +89,12 @@ class TextPairWithTeacherAndHeatGeo(Dataset):
     the teacher graph is built over exactly these strings, and silently pulling a
     different column here (e.g. `premise` when the teacher encoded `text`) would
     misalign every node in the graph without raising anything.
+
+    `teacher_cls` is checked for row alignment and then dropped. Nothing in the
+    batch carries teacher embeddings any more: the pointwise anchor term was the
+    only consumer, and the direct scale reads the same rows from the criterion's
+    own bank by corpus index. The check is still worth making here, since it is
+    what catches a teacher cache that does not line up with these texts.
     """
 
     def __init__(
@@ -99,7 +105,6 @@ class TextPairWithTeacherAndHeatGeo(Dataset):
         labels: Optional[List[int]] = None,
     ):
         self.anchor_texts = [str(text) for text in anchor_texts]
-        self.teacher_cls = teacher_cls
         self.sampler = sampler
         self.labels = labels
 
@@ -118,14 +123,14 @@ class TextPairWithTeacherAndHeatGeo(Dataset):
         self.sampler.set_epoch(epoch)
 
     def __getitem__(self, idx):
+        # Only corpus indices cross the worker boundary. Carrying the candidate
+        # *texts* here shipped candidate_size strings per item through shared
+        # memory and re-tokenized every one of them; HeatGeoCollate holds the
+        # corpus tokenized once and looks them up by index instead.
         candidate_idx, teacher_probs = self.sampler.sample_torch(idx)
-        candidate_texts = [self.anchor_texts[int(j)] for j in candidate_idx]
         item = {
             "idx": idx,
-            "anchor_text": self.anchor_texts[idx],
-            "teacher_cls": self.teacher_cls[idx],
             "candidate_idx": candidate_idx,
-            "candidate_texts": candidate_texts,
             "teacher_probs": teacher_probs,
         }
         if self.labels is not None:
@@ -134,49 +139,117 @@ class TextPairWithTeacherAndHeatGeo(Dataset):
 
 
 class HeatGeoCollate:
-    def __init__(self, tok_student, task: str, max_len: int):
+    """Deduplicated, length-bucketed candidate batches.
+
+    Three things drive the cost of a HeatGeo step, and none of them are the loss:
+
+    * **Duplicate encodes.** With ``share_in_batch`` the criterion runs
+      ``torch.unique`` over the flattened candidate indices and keeps exactly one
+      representative embedding per corpus index -- every other copy is encoded and
+      then thrown away. Deduplicating here instead makes that waste impossible.
+    * **Padding.** ``padding=True`` over the whole ``batch_size * candidate_size``
+      block pads every sequence to the longest one in it. On a corpus whose median
+      length is 13 tokens, the longest of ~2000 draws is ~70, so most of the
+      student's FLOPs went into pad tokens. Sorting by length and encoding in
+      chunks cuts the padded token count by ~3x; ``candidate_inverse`` maps the
+      flattened ``[B, C]`` layout onto the encode order so the criterion sees
+      exactly the tensor it saw before.
+    * **Re-tokenization.** Each corpus text is drawn as a candidate ~candidate_size
+      times per epoch and was tokenized every single time. The corpus is tokenized
+      once in ``__init__`` and looked up by index afterwards.
+
+    Only the anchor text is encoded on the anchor side: the objective scores
+    anchor-vs-candidates, so the second view of the pair has no consumer.
+
+    Note that with ``share_in_batch=False`` the criterion scores every copy of a
+    duplicated candidate separately; deduplication makes those copies share one
+    forward pass (hence one dropout draw) instead of getting independent ones. The
+    expected gradient is unchanged.
+    """
+
+    def __init__(
+        self,
+        tok_student,
+        task: str,
+        max_len: int,
+        corpus_texts: list[str],
+        encode_chunk_size: int = 256,
+        pad_to_multiple_of: int = 8,
+    ):
         self.ts = tok_student
         self.task = task
         self.max_len = max_len
+        self.encode_chunk_size = int(encode_chunk_size)
+        self.pad_to_multiple_of = int(pad_to_multiple_of)
+
+        self.pad_id = tok_student.pad_token_id
+        if self.pad_id is None:
+            raise ValueError("student tokenizer has no pad_token_id")
+
+        encoded = tok_student(
+            [str(text) for text in corpus_texts],
+            max_length=max_len,
+            truncation=True,
+        )["input_ids"]
+        self.corpus_ids = [np.asarray(ids, dtype=np.int64) for ids in encoded]
+        self.corpus_len = np.asarray(
+            [len(ids) for ids in self.corpus_ids], dtype=np.int64
+        )
+
+    def _pad(self, nodes) -> tuple[torch.Tensor, torch.Tensor]:
+        rows = [self.corpus_ids[int(node)] for node in nodes]
+        width = max(len(ids) for ids in rows)
+        if self.pad_to_multiple_of > 1:
+            multiple = self.pad_to_multiple_of
+            width = ((width + multiple - 1) // multiple) * multiple
+
+        input_ids = np.full((len(rows), width), self.pad_id, dtype=np.int64)
+        attention_mask = np.zeros((len(rows), width), dtype=np.int64)
+        for row, ids in enumerate(rows):
+            input_ids[row, : ids.size] = ids
+            attention_mask[row, : ids.size] = 1
+        return torch.from_numpy(input_ids), torch.from_numpy(attention_mask)
 
     def __call__(self, batch):
-        teacher_cls = torch.stack([item["teacher_cls"] for item in batch], dim=0)
         idx = torch.tensor([item["idx"] for item in batch], dtype=torch.long)
-        candidate_idx = torch.stack([item["candidate_idx"] for item in batch], dim=0).long()
-        teacher_probs = torch.stack([item["teacher_probs"] for item in batch], dim=0).float()
-        candidate_texts_nested = [item["candidate_texts"] for item in batch]
-        candidate_texts = [text for texts in candidate_texts_nested for text in texts]
-
-        # Only the anchor text is encoded: the objective scores anchor-vs-candidates,
-        # so the second view of the pair has no consumer.
-        s1s = [item["anchor_text"] for item in batch]
+        candidate_idx = torch.stack(
+            [item["candidate_idx"] for item in batch], dim=0
+        ).long()
+        teacher_probs = torch.stack(
+            [item["teacher_probs"] for item in batch], dim=0
+        ).float()
         ys = [item["label"] for item in batch] if "label" in batch[0] else None
 
-        s1_enc = self.ts(s1s, max_length=self.max_len, truncation=True,
-                         padding=True, return_tensors="pt",
-                         return_special_tokens_mask=True)
-        cand_enc = self.ts(candidate_texts, max_length=self.max_len, truncation=True,
-                           padding=True, return_tensors="pt",
-                           return_special_tokens_mask=True)
+        unique_idx, inverse = torch.unique(candidate_idx.reshape(-1), return_inverse=True)
+        unique_nodes = unique_idx.numpy()
+
+        # Encode short sequences together so a chunk is padded to its own longest
+        # member rather than the batch's. `rank` sends each unique candidate to its
+        # row in the concatenated encode output.
+        order = np.argsort(self.corpus_len[unique_nodes], kind="stable")
+        rank = np.empty(order.size, dtype=np.int64)
+        rank[order] = np.arange(order.size, dtype=np.int64)
+        candidate_inverse = torch.from_numpy(rank)[inverse]
+
+        sorted_nodes = unique_nodes[order]
+        candidate_chunks = []
+        for start in range(0, sorted_nodes.size, self.encode_chunk_size):
+            chunk_ids, chunk_mask = self._pad(sorted_nodes[start : start + self.encode_chunk_size])
+            candidate_chunks.append(
+                {"input_ids": chunk_ids, "attention_mask": chunk_mask}
+            )
+
+        anchor_ids, anchor_mask = self._pad(idx.tolist())
 
         out = {
             "idx": idx,
             "candidate_idx": candidate_idx,
-            "input_ids1_stu": s1_enc["input_ids"],
-            "attention_mask1_stu": s1_enc["attention_mask"],
-            "special_tokens_mask1_stu": s1_enc["special_tokens_mask"],
-            "candidate_input_ids_stu": cand_enc["input_ids"],
-            "candidate_attention_mask_stu": cand_enc["attention_mask"],
-            "candidate_special_tokens_mask_stu": cand_enc["special_tokens_mask"],
-            "teacher_cls": teacher_cls,
+            "input_ids1_stu": anchor_ids,
+            "attention_mask1_stu": anchor_mask,
+            "candidate_chunks": candidate_chunks,
+            "candidate_inverse": candidate_inverse,
             "teacher_probs": teacher_probs,
         }
-
         if ys is not None:
             out["labels"] = torch.tensor(ys, dtype=torch.long)
-        if "token_type_ids" in s1_enc:
-            out["token_type_ids1_stu"] = s1_enc["token_type_ids"]
-        if "token_type_ids" in cand_enc:
-            out["candidate_token_type_ids_stu"] = cand_enc["token_type_ids"]
-
         return out

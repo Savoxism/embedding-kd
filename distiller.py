@@ -180,7 +180,6 @@ class KnowledgeDistiller:
                 teacher_dim=self.teacher_cls_all.shape[-1],
                 scale_weights=config.scale_weights,
                 scale_temps=getattr(config, "scale_temps", None),
-                lambda_anchor=config.lambda_anchor,
                 student_temp=config.student_temp,
                 eps_norm=getattr(config, "eps_norm", 1e-8),
                 diag_topk=getattr(config, "diag_topk", 8),
@@ -190,20 +189,13 @@ class KnowledgeDistiller:
                 direct_temp=getattr(config, "direct_temp", 0.10),
                 direct_student_temp=getattr(config, "direct_student_temp", 0.10),
             ).to(self.device_s)
-            # With the anchor term off the criterion is parameter-free, and
+            # The criterion is parameter-free: everything it owns is a buffer, and
             # add_param_group rejects an empty parameter list.
-            criterion_params = list(self.criterion.parameters())
-            if criterion_params:
-                self.optimizer.add_param_group(
-                    {"params": criterion_params, "lr": config.learning_rate * 5}
-                )
             self.scheduler = self._build_scheduler()
             print(
                 "HeatGeo criterion initialized "
                 f"(scale_temps={self.criterion.scale_temps.tolist()}, "
-                f"share_in_batch={self.criterion.share_in_batch}, "
-                f"lambda_anchor={config.lambda_anchor}, "
-                f"{len(criterion_params)} criterion params)"
+                f"share_in_batch={self.criterion.share_in_batch})"
             )
             if self.criterion.use_direct:
                 print(
@@ -613,16 +605,24 @@ class KnowledgeDistiller:
                     deterministic_topm=getattr(cfg, "deterministic_topm", 4),
                     stochastic=getattr(cfg, "stochastic_candidates", True),
                 )
+                anchor_texts = df[self.heatgeo_anchor_column].astype(str).tolist()
                 self.train_ds = TextPairWithTeacherAndHeatGeo(
-                    anchor_texts=df[self.heatgeo_anchor_column].astype(str).tolist(),
+                    anchor_texts=anchor_texts,
                     teacher_cls=teacher_cls_list,
                     sampler=self.heatgeo_sampler,
                     labels=df["label"].astype(int).tolist()
                     if "label" in df.columns
                     else None,
                 )
+                # The collate owns the tokenized corpus: anchors and candidates are
+                # drawn from the same rows, so every text is tokenized once here
+                # instead of ~candidate_size times per epoch in the workers.
                 self.collate_fn = HeatGeoCollate(
-                    self.tok_student, cfg.task_type, cfg.max_length
+                    self.tok_student,
+                    cfg.task_type,
+                    cfg.max_length,
+                    corpus_texts=anchor_texts,
+                    encode_chunk_size=getattr(cfg, "encode_chunk_size", 256),
                 )
                 print(
                     "HeatGeo candidate sampling: "
@@ -777,7 +777,7 @@ class KnowledgeDistiller:
                     "labels",
                     "idx",
                     "candidate_idx",
-                    "teacher_cls",
+                    "candidate_inverse",
                     "teacher_probs",
                 }:
                     batch_s[k] = v.to(self.device_s, non_blocking=True)
@@ -790,14 +790,29 @@ class KnowledgeDistiller:
                     attention_mask=batch_s["attention_mask1_stu"],
                     return_dict=True,
                 )
-                s_out_candidates = self.model_student(
-                    input_ids=batch_s["candidate_input_ids_stu"],
-                    attention_mask=batch_s["candidate_attention_mask_stu"],
-                    return_dict=True,
-                )
+
+                # Candidates arrive deduplicated and grouped by length, so each chunk
+                # pads to its own longest member. `candidate_inverse` expands the
+                # encoded rows back to the flat [batch_size * candidate_size] layout
+                # the criterion expects; the gather is differentiable, so a candidate
+                # shared by several anchors accumulates all of their gradient.
+                chunk_embeddings = []
+                for chunk in batch["candidate_chunks"]:
+                    chunk_out = self.model_student(
+                        input_ids=chunk["input_ids"].to(
+                            self.device_s, non_blocking=True
+                        ),
+                        attention_mask=chunk["attention_mask"].to(
+                            self.device_s, non_blocking=True
+                        ),
+                        return_dict=True,
+                    )
+                    chunk_embeddings.append(chunk_out.last_hidden_state[:, 0, :])
 
                 S_cls1 = s_out1.last_hidden_state[:, 0, :]
-                S_candidates = s_out_candidates.last_hidden_state[:, 0, :]
+                S_candidates = torch.cat(chunk_embeddings, dim=0).index_select(
+                    0, batch_s["candidate_inverse"]
+                )
 
                 loss, metrics = self.criterion(
                     anchor_embeddings=S_cls1,
@@ -805,7 +820,6 @@ class KnowledgeDistiller:
                     teacher_probs=batch_s["teacher_probs"],
                     candidate_idx=batch_s.get("candidate_idx"),
                     anchor_idx=batch_s.get("idx"),
-                    teacher_cls=batch_s.get("teacher_cls"),
                 )
                 loss = loss.float()
 
