@@ -10,7 +10,7 @@ import torch
 import torch.nn.functional as F
 from tqdm import tqdm
 
-ARTIFACT_VERSION = 4
+ARTIFACT_VERSION = 5
 
 # Anchors diffused per sparse matrix product. The intermediate X @ P holds up to
 # block_size * keep_topk * max_degree nonzeros, so this trades memory for the
@@ -191,27 +191,40 @@ def _transition_matrix(
     return matrix
 
 
-def _truncate_renormalize(matrix: sp.csr_matrix, keep_topk: int) -> sp.csr_matrix:
+def _truncate_renormalize(
+    matrix: sp.csr_matrix, keep_topk: int
+) -> tuple[sp.csr_matrix, float]:
     """Row-wise top-keep_topk, then renormalize each row.
 
     Truncating without renormalizing leaks mass at every step, and the leak
     compounds with r, so the later scales end up systematically under-weighted
     relative to r=1 -- which silently distorts the mixture target the loss
     actually optimizes.
+
+    Renormalizing hides the leak from the row sums but not from the distribution:
+    dropping the tail and rescaling the head makes the walk *sharper* than the true
+    lazy walk, and the distortion grows with r. Since the broad scales exist
+    precisely to be broad, this is the one approximation in the build that can
+    quietly collapse the multi-scale objective, so the dropped fraction is returned
+    and logged rather than discarded.
     """
     indptr, indices, data = matrix.indptr, matrix.indices, matrix.data
     n_rows = matrix.shape[0]
     kept_indices: list[np.ndarray] = []
     kept_data: list[np.ndarray] = []
     new_indptr = np.zeros(n_rows + 1, dtype=np.int64)
+    dropped = 0.0
 
     for row in range(n_rows):
         start, end = indptr[row], indptr[row + 1]
         row_indices, row_data = indices[start:end], data[start:end]
+        full_total = float(row_data.sum())
         if row_data.size > keep_topk:
             top = np.argpartition(-row_data, keep_topk - 1)[:keep_topk]
             row_indices, row_data = row_indices[top], row_data[top]
         total = float(row_data.sum())
+        if full_total > 0.0:
+            dropped += 1.0 - total / full_total
         if total > 0.0:
             row_data = row_data / total
         kept_indices.append(row_indices)
@@ -224,7 +237,7 @@ def _truncate_renormalize(matrix: sp.csr_matrix, keep_topk: int) -> sp.csr_matri
     )
     # argpartition scrambles column order; searchsorted downstream needs it sorted.
     out.sort_indices()
-    return out
+    return out, dropped / max(1, n_rows)
 
 
 def _drop_self_renormalize(
@@ -252,7 +265,7 @@ def _diffuse_block(
     scales: tuple[int, ...],
     transition: sp.csr_matrix,
     keep_topk: int,
-) -> list[sp.csr_matrix]:
+) -> tuple[list[sp.csr_matrix], dict[int, float]]:
     """Lazy random walk X <- (X + XP)/2 for a whole block of anchors, snapshotted
     at each scale.
 
@@ -276,14 +289,16 @@ def _diffuse_block(
     )
 
     snapshots: dict[int, sp.csr_matrix] = {}
+    truncation_loss: dict[int, float] = {}
     for step in range(1, max(scales) + 1):
-        dist = _truncate_renormalize(
+        dist, dropped = _truncate_renormalize(
             ((dist + dist @ transition) * 0.5).tocsr(), keep_topk
         )
+        truncation_loss[step] = dropped
         if step in scales:
             snapshots[step] = _drop_self_renormalize(dist, start_ids)
 
-    return [snapshots[scale] for scale in scales]
+    return [snapshots[scale] for scale in scales], truncation_loss
 
 
 def _select_pool(
@@ -325,6 +340,7 @@ def _build_diffusion_pools(
     pool_size: int,
     hard_neg_pool: int,
     source_ids: np.ndarray,
+    keep_topk: int,
     block_size: int = DIFFUSION_BLOCK,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, dict[str, float]]:
     """Per-anchor sparse diffusion support plus a same-source hard-negative pool.
@@ -337,7 +353,6 @@ def _build_diffusion_pools(
     """
     n_items = top_indices.shape[0]
     n_scales = len(scales)
-    keep_topk = max(pool_size * 4, 256)
 
     pool_indices = np.full((n_items, pool_size), -1, dtype=np.int64)
     pool_probs = np.zeros((n_scales, n_items, pool_size), dtype=np.float32)
@@ -349,6 +364,8 @@ def _build_diffusion_pools(
     empty_scale = np.zeros(n_scales, dtype=np.int64)
 
     transition = _transition_matrix(row_neighbors, row_probs, n_items)
+    truncation_totals: dict[int, float] = {}
+    n_blocks = 0
 
     for block_start in tqdm(
         range(0, n_items, block_size), desc="HeatGeo diffusion pools"
@@ -356,7 +373,12 @@ def _build_diffusion_pools(
         block_ids = np.arange(
             block_start, min(block_start + block_size, n_items), dtype=np.int64
         )
-        scale_matrices = _diffuse_block(block_ids, scales, transition, keep_topk)
+        scale_matrices, truncation_loss = _diffuse_block(
+            block_ids, scales, transition, keep_topk
+        )
+        n_blocks += 1
+        for step, dropped in truncation_loss.items():
+            truncation_totals[step] = truncation_totals.get(step, 0.0) + dropped
 
         for row, i in enumerate(block_ids):
             i = int(i)
@@ -414,11 +436,23 @@ def _build_diffusion_pools(
 
     stats = {
         "pool_size": float(pool_size),
+        "walk_keep_topk": float(keep_topk),
         "pool_fill_avg": float(pool_fill.mean()),
         "pool_fill_min": float(pool_fill.min()),
         "hard_pool_fill_avg": float(hard_fill.mean()),
         "hard_pool_fill_min": float(hard_fill.min()),
     }
+    # Mass discarded by the top-keep_topk truncation at each walk step, before the
+    # renormalization hides it. This is the only number that says whether keep_topk
+    # is large enough; pool_residual_mass_r* cannot see it, because it compares the
+    # pool against the already-truncated support.
+    cumulative = 0.0
+    for step in sorted(truncation_totals):
+        per_step = truncation_totals[step] / max(1, n_blocks)
+        cumulative = 1.0 - (1.0 - cumulative) * (1.0 - per_step)
+        stats[f"walk_truncation_step{step}"] = float(per_step)
+        if step in scales:
+            stats[f"walk_truncation_cum_r{step}"] = float(cumulative)
     for scale_idx, scale in enumerate(scales):
         stats[f"pool_residual_mass_r{scale}"] = float(
             residual_mass[scale_idx] / max(1, n_items)
@@ -499,6 +533,7 @@ _METADATA_KEYS = (
     "scale_weights",
     "pool_size",
     "hard_neg_pool",
+    "walk_keep_topk",
     "lazy_walk",
     "artifact_version",
     "teacher_fingerprint",
@@ -525,10 +560,18 @@ def build_or_load_heatgeo_artifact(
     pool_size: int,
     hard_neg_pool: int,
     source_ids: Sequence[int] | None = None,
+    walk_keep_topk: int | None = None,
 ) -> dict:
     n_items = int(teacher_embeddings.size(0))
     scales = _as_tuple(diffusion_scales)
     weights = _normalized_weights(scale_weights, len(scales))
+    # Columns kept per row at each walk step. This bounds how much of the broad
+    # scales' tail survives, so it belongs in the metadata: changing it changes the
+    # targets, and reusing a cache built at a different value would compare runs
+    # against different objectives.
+    if walk_keep_topk is None:
+        walk_keep_topk = max(pool_size * 8, 1024)
+    walk_keep_topk = int(min(max(walk_keep_topk, pool_size), max(n_items, 1)))
 
     if source_ids is None:
         source_array = np.zeros(n_items, dtype=np.int64)
@@ -548,6 +591,7 @@ def build_or_load_heatgeo_artifact(
         "scale_weights": tuple(round(float(w), 8) for w in weights),
         "pool_size": int(pool_size),
         "hard_neg_pool": int(hard_neg_pool),
+        "walk_keep_topk": int(walk_keep_topk),
         "lazy_walk": True,
         "artifact_version": ARTIFACT_VERSION,
         "teacher_fingerprint": _fingerprint(teacher_embeddings),
@@ -571,7 +615,12 @@ def build_or_load_heatgeo_artifact(
 
     if str(artifact_path.parent):
         os.makedirs(artifact_path.parent, exist_ok=True)
-    topk_for_graph = min(n_items - 1, max(graph_k, hard_neg_pool, pool_size))
+    # Hard negatives are drawn from this list *after* removing everything already in
+    # the diffusion pool, so a list of size hard_neg_pool can never yield
+    # hard_neg_pool negatives -- on the 13.5k corpus it half-filled (102/200) and the
+    # config knob was silently capped at ~100. The list has to be big enough for both
+    # consumers.
+    topk_for_graph = min(n_items - 1, max(graph_k, hard_neg_pool + pool_size))
     top_indices, top_scores = _compute_topk_cosine(teacher_embeddings, k=topk_for_graph)
     row_neighbors, row_probs, row_scores, fallback_flags = _build_transition(
         top_indices=top_indices,
@@ -596,6 +645,7 @@ def build_or_load_heatgeo_artifact(
         pool_size=pool_size,
         hard_neg_pool=hard_neg_pool,
         source_ids=source_array,
+        keep_topk=walk_keep_topk,
     )
     graph_stats.update(pool_stats)
     graph_stats.update(
@@ -643,8 +693,21 @@ def _print_graph_summary(
                 f"HeatGeo target r={scale}: support={graph_stats[f'target_support_r{scale}']:.1f}, "
                 f"KL(p||uniform_on_support)={graph_stats[key]:.4f}, "
                 f"top1={graph_stats[f'target_top1_r{scale}']:.4f}, "
-                f"residual_mass_outside_pool={graph_stats.get(f'pool_residual_mass_r{scale}', 0.0):.2e}"
+                f"residual_mass_outside_pool={graph_stats.get(f'pool_residual_mass_r{scale}', 0.0):.2e}, "
+                f"walk_truncation={graph_stats.get(f'walk_truncation_cum_r{scale}', 0.0):.2e}"
             )
+    worst_truncation = max(
+        (graph_stats.get(f"walk_truncation_cum_r{scale}", 0.0) for scale in scales),
+        default=0.0,
+    )
+    if worst_truncation > 0.05:
+        print(
+            f"WARNING: HeatGeo lazy walk drops {worst_truncation:.1%} of the mass at the "
+            f"broadest scale before renormalizing (walk_keep_topk="
+            f"{int(graph_stats.get('walk_keep_topk', 0))}). Truncate-then-renormalize "
+            f"makes the walk sharper than it really is, which pulls the scales toward "
+            f"each other -- raise walk_keep_topk until this is under a few percent."
+        )
     cross_keys = [key for key in graph_stats if key.startswith("target_cross_kl_")]
     for key in sorted(cross_keys):
         print(f"HeatGeo {key}={graph_stats[key]:.4f}")

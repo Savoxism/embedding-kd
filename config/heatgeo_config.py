@@ -43,6 +43,19 @@ class HeatGeoConfig(BaseConfig):
     # cached, so this is free. This is also what replaced the old pointwise anchor
     # term: comparing student cosines to teacher cosines is not invariant to a linear
     # map of the student space, so that term could never calibrate anything.
+    #
+    # Adding r=0 was not by itself enough: while the diffusion scales still softmaxed
+    # over the whole shared pool, r=0 spent its weight undoing their false zeros
+    # rather than adding information. The two sides disagreed by 0.42 nats (61% of the
+    # maximum), which was 94% of a 0.45-nat irreducible floor, and the objective
+    # saturated inside one epoch. The criterion now gives them separate column
+    # domains: diffusion ranks within the anchor's own draw, r=0 calibrates across the
+    # full pool.
+    #
+    # NOTE on scale: scale_weights is normalized to sum 1 before direct_weight is
+    # concatenated and the whole vector renormalized, so direct_weight is relative to
+    # a diffusion total of 1. 1.0 means r=0 carries HALF the loss; 0.5 -> 33%,
+    # 2.0 -> 67%. It is not a neutral value.
     direct_weight = 1.0
     # Over a ~1k-column pool the teacher cosine spread is ~0.5, so 0.05 (the graph
     # value) would put essentially all mass on the single nearest column. 0.10 keeps
@@ -64,8 +77,19 @@ class HeatGeoConfig(BaseConfig):
     # Sparse diffusion support kept per anchor, and the same-source nearest-neighbour
     # pool that hard negatives are drawn from. Both are precomputed once; the
     # candidate set itself is not.
-    pool_size = 128
+    # r=4's support hit 127.7 of 128 on the 13.5k corpus and 18.6% of its mass fell
+    # outside the pool -- the pool, not the walk, was the binding constraint on the
+    # broadest scale. Watch pool_residual_mass_r* and raise this until r=4's support
+    # stops sitting at the cap.
+    pool_size = 256
     hard_neg_pool = 200
+    # Columns kept per row at each lazy-walk step. Truncate-then-renormalize hides the
+    # dropped mass from the row sums but not from the distribution: it deletes the tail
+    # and inflates the head, so the broad scales come out sharper than they are and the
+    # scales collapse toward each other. At 512 the r=4 target also lost 18.6% of its
+    # mass to the pool cutoff. Watch walk_truncation_cum_r* in the build log; keep it
+    # under a few percent.
+    walk_keep_topk = 2048
 
     # ---- per-epoch candidate sampling ---------------------------------------
     # Freezing one candidate set per anchor meant every epoch after the first

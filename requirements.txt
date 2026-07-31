@@ -16,6 +16,12 @@ sentencepiece>=0.1.99
 pandas>=1.5.0
 numpy>=1.24.0
 
+# Data visualization
+matplotlib==3.11.1
+seaborn==0.13.2
+pillow==12.3.0
+pyparsing==3.3.2
+
 # Machine Learning & Metrics
 scikit-learn>=1.2.0
 scipy>=1.10.0

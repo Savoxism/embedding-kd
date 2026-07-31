@@ -216,15 +216,18 @@ class HeatGeoCandidateSampler:
         )
         if present.any():
             teacher_probs[:, present] = self.pool_probs[:, idx, gather[present]]
+        # A scale with no mass on the drawn set is left as all-zeros, not filled with
+        # a uniform distribution. Uniform is not "no opinion": it is the assertion
+        # that the anchor is equally close to all candidate_size candidates, random
+        # cross-domain negatives included, and its KL term is a ~log(candidate_size)
+        # constant that dominates the anchor's loss. The criterion skips zero-target
+        # scales, which is the correct "this scale has nothing to say here".
         totals = teacher_probs.sum(axis=-1, keepdims=True)
-        flat = totals[:, 0] <= 0.0
         teacher_probs = np.divide(
             teacher_probs,
             np.maximum(totals, 1e-12),
             out=teacher_probs,
         )
-        if flat.any():
-            teacher_probs[flat] = 1.0 / candidate_arr.size
 
         return candidate_arr, teacher_probs
 

@@ -108,13 +108,17 @@ def assert_module_parameters_finite(module: nn.Module, module_name: str) -> None
 
 
 def grads_are_finite(optim) -> bool:
+    # Accumulated on device and read back once. Testing each gradient in a Python
+    # `if` forces a host sync per parameter, which is ~200 stalls per step on a
+    # BERT-base student -- for a check that is almost always True.
+    finite_status = None
     for group in optim.param_groups:
         for p in group["params"]:
             if p.grad is None:
                 continue
-            if not torch.isfinite(p.grad).all():
-                return False
-    return True
+            current = torch.isfinite(p.grad).all()
+            finite_status = current if finite_status is None else finite_status & current
+    return finite_status is None or bool(finite_status.item())
 
 
 class KnowledgeDistiller:
@@ -584,6 +588,7 @@ class KnowledgeDistiller:
                     pool_size=getattr(cfg, "pool_size", 128),
                     hard_neg_pool=getattr(cfg, "hard_neg_pool", 200),
                     source_ids=self._heatgeo_source_ids(df),
+                    walk_keep_topk=getattr(cfg, "walk_keep_topk", None),
                 )
 
             # Free teacher model to save GPU memory (teacher not needed after caching)
@@ -662,6 +667,12 @@ class KnowledgeDistiller:
             pin_memory=True,
             num_workers=cfg.num_workers,
             persistent_workers=cfg.num_workers > 0 and not resamples_per_epoch,
+            # 13553 rows at batch 16 leaves a remainder of one. Under in-batch sharing
+            # that step scores its single anchor against candidate_size columns instead
+            # of ~batch_size * candidate_size, which is a structurally different
+            # objective taking a real gradient step -- and it is also the step whose
+            # diagnostics land in the progress bar.
+            drop_last=cfg.distill_method == "heatgeo",
         )
 
         print(f"Training samples: {len(self.train_ds)}")
@@ -1342,6 +1353,12 @@ class KnowledgeDistiller:
         metric_totals = {}
         epoch_step_times = []
         peak_memory_mb = 0.0
+        # Per-step diagnostics, buffered here and written once at the end of the epoch.
+        # Epoch means alone cannot show *when* inside an epoch a curve flattened, and
+        # the HeatGeo objective saturated inside epoch 1 on the previous run -- five
+        # points per curve is a summary, not a diagnosis. Buffering keeps this to one
+        # file write per epoch rather than one per step.
+        step_records: list[dict] = []
 
         pbar = tqdm(self.train_loader, desc=f"Epoch {epoch + 1}/{self.config.epochs}")
 
@@ -1367,12 +1384,33 @@ class KnowledgeDistiller:
                 wandb.log(log_payload, step=self.global_step)
 
             bs = batch["input_ids1_stu"].size(0)
-            total_loss += loss.item() * bs
+            loss_value = loss.item()
+            total_loss += loss_value * bs
             n_items += bs
             avg_loss = total_loss / max(1, n_items)
             for key, value in metrics.items():
                 if isinstance(value, (int, float)):
                     metric_totals[key] = metric_totals.get(key, 0.0) + float(value) * bs
+
+            step_record = {
+                "epoch": epoch + 1,
+                "global_step": self.global_step,
+                "step": step,
+                "batch_size": int(bs),
+                "loss": float(loss_value),
+                "step_seconds": float(dt),
+                # train_step() has already called scheduler.step(), so this is the rate
+                # the *next* step will use.
+                "lr_next": float(self.optimizer.param_groups[0]["lr"]),
+            }
+            step_record.update(
+                {
+                    key: float(value)
+                    for key, value in metrics.items()
+                    if isinstance(value, (int, float))
+                }
+            )
+            step_records.append(step_record)
 
             mem_info = {}
             for dev_id in range(torch.cuda.device_count()):
@@ -1414,6 +1452,7 @@ class KnowledgeDistiller:
             )
 
         print(f"Done train_epoch {epoch + 1}")
+        self.log_step_records(step_records)
         epoch_means = {key: value / max(1, n_items) for key, value in metric_totals.items()}
 
         # The progress bar shows the *last* step's diagnostics, and the last batch is
@@ -1656,6 +1695,23 @@ class KnowledgeDistiller:
         }
         self.print_evaluation_table(split, results)
         return results
+
+    def log_step_records(self, records: list[dict]):
+        """Append one JSONL line per training step to `step_metrics.jsonl`.
+
+        Written separately from metrics.jsonl, which stays one record per epoch: the
+        two have different row counts and different consumers, and mixing them would
+        force every reader of the epoch table to filter.
+        """
+        if not records or not self.config.save_dir:
+            return
+        os.makedirs(self.config.save_dir, exist_ok=True)
+        path = os.path.join(self.config.save_dir, "step_metrics.jsonl")
+        with open(path, "a", encoding="utf-8") as handle:
+            handle.writelines(
+                json.dumps(record, default=float, sort_keys=True) + "\n"
+                for record in records
+            )
 
     def log_experiment_record(self, record: dict[str, Any]):
         if not self.config.save_dir:

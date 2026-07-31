@@ -86,6 +86,23 @@ class HeatGeoDistillation(nn.Module):
     false zero. It costs nothing (the teacher embeddings are already cached), and it
     supplies the absolute calibration the objective needs.
 
+    **Separate column domains, and why adding r=0 was not enough on its own.**
+    Adding r=0 alongside diffusion scales that still softmax over the whole shared
+    pool does not remove the false zeros -- it adds a term that argues with them. The
+    diffusion scales keep pushing ~900 of ~965 columns down; r=0 spends its weight
+    pulling the same columns back up. On the 13.5k-row run the two sides disagreed by
+    JS = 0.42 nats, 61% of the maximum possible for a two-way split, and that
+    disagreement accounted for 94% of an irreducible loss floor of 0.45. Against a
+    total loss of 0.84 that left only 0.39 nats reachable, the student closed 99.4% of
+    it inside one epoch, and every benchmark was flat from epoch 1 onward.
+
+    The fix is to give the two families different column sets. Diffusion scales
+    softmax over the anchor's *own* candidate draw, where their zeros are real
+    teacher judgements (a hard negative genuinely carries no diffusion mass); r=0
+    softmaxes over the full shared pool, where every column carries real teacher mass.
+    Neither term has an opinion the other contradicts: diffusion ranks within the
+    neighbourhood, r=0 calibrates across the batch.
+
     **Why there is no pointwise anchor term.** An earlier version added
     lambda_anchor * (1 - cos(W_a s_i, t_i)) with a free linear map W_a. That term is
     invariant to any invertible transform of the student space -- W_a simply absorbs
@@ -169,7 +186,7 @@ class HeatGeoDistillation(nn.Module):
         teacher_probs: torch.Tensor,
         candidate_idx: torch.Tensor,
         anchor_idx: torch.Tensor,
-    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         batch_size, n_scales, candidate_size = teacher_probs.shape
         flat_idx = candidate_idx.reshape(-1)
         unique_idx, inverse = torch.unique(flat_idx, return_inverse=True)
@@ -202,8 +219,17 @@ class HeatGeoDistillation(nn.Module):
         )
         target.scatter_add_(2, scatter_index, teacher_probs)
 
+        # Which pool columns belong to this anchor's own candidate draw. The diffusion
+        # scales only have an opinion inside this set; everything else in the shared
+        # pool was drawn for a different anchor and carries target 0 for reasons that
+        # have nothing to do with the teacher.
+        own_mask = torch.zeros(
+            batch_size, pool_size, dtype=torch.bool, device=teacher_probs.device
+        )
+        own_mask.scatter_(1, inverse.view(batch_size, candidate_size), True)
+
         self_mask = unique_idx.view(1, -1) == anchor_idx.view(-1, 1)
-        return pool_embeddings, target, self_mask, unique_idx
+        return pool_embeddings, target, self_mask, own_mask, unique_idx
 
     @torch.no_grad()
     def _direct_target(
@@ -260,7 +286,13 @@ class HeatGeoDistillation(nn.Module):
 
         share = self.share_in_batch and candidate_idx is not None and anchor_idx is not None
         if share:
-            pool_embeddings, target, self_mask, column_idx = self._build_shared_pool(
+            (
+                pool_embeddings,
+                target,
+                self_mask,
+                own_mask,
+                column_idx,
+            ) = self._build_shared_pool(
                 candidate_embeddings, teacher_probs, candidate_idx, anchor_idx
             )
             pool_norm = F.normalize(pool_embeddings, p=2, dim=-1, eps=self.eps_norm)
@@ -276,8 +308,17 @@ class HeatGeoDistillation(nn.Module):
             )
             similarity = torch.einsum("bd,bcd->bc", anchor_norm, candidate_norm)
             target = teacher_probs
-            self_mask = torch.zeros_like(similarity, dtype=torch.bool)
             column_idx = candidate_idx
+            # Without sharing every column already belongs to this anchor, so the
+            # two domains coincide. The anchor is still masked explicitly rather than
+            # assumed absent: it is excluded upstream by construction, but nothing
+            # here enforces it, and an anchor scored against itself lands at cos = 1
+            # with the sharpest temperature behind it.
+            own_mask = torch.ones_like(similarity, dtype=torch.bool)
+            if column_idx is not None and anchor_idx is not None:
+                self_mask = column_idx == anchor_idx.view(-1, 1)
+            else:
+                self_mask = torch.zeros_like(similarity, dtype=torch.bool)
 
         weights = self._resolved(self.scale_weights, n_scales)
         temps = self._resolved(self.scale_temps, n_scales)
@@ -299,11 +340,29 @@ class HeatGeoDistillation(nn.Module):
         )
         target_entropy = -(target * log_target).sum(dim=-1)
 
+        # Column domain per scale. The diffusion targets are the graph's mass
+        # renormalized over *this anchor's* draw, so outside that draw their zeros are
+        # an artefact of who else happened to be in the batch, not a teacher judgement.
+        # Softmaxing them over the whole shared pool turns those artefacts into a
+        # gradient that pushes ~900 of ~965 cosines down, and the direct scale then
+        # spends its weight pulling the same columns back up. Measured on the 13.5k
+        # run, the two halves disagreed by 0.42 nats -- 61% of the maximum possible --
+        # and that disagreement was 94% of the irreducible loss floor, which is why
+        # the objective saturated after one epoch.
+        #
+        # Restricting the diffusion softmax to the anchor's own columns makes the
+        # gradient on every other column exactly zero, so the diffusion scales rank
+        # within the neighbourhood and the direct scale owns absolute calibration
+        # across the full pool. Complementary instead of opposed.
+        diffusion_mask = self_mask | ~own_mask
+
         kl_per_scale = []
         log_probs_per_scale = []
         for scale_idx in range(n_scales):
+            is_direct = self.direct_active and scale_idx == 0
             logits = similarity / temps[scale_idx]
-            logits = logits.masked_fill(self_mask, float("-inf"))
+            logits = logits.masked_fill(self_mask if is_direct else diffusion_mask,
+                                        float("-inf"))
             log_probs = F.log_softmax(logits, dim=-1)
             log_probs_per_scale.append(log_probs)
             scale_target = target[:, scale_idx, :]
@@ -328,11 +387,12 @@ class HeatGeoDistillation(nn.Module):
             total_loss=total_loss,
             loss_diff=loss_diff,
             kl_per_scale=kl_per_scale,
-            log_probs_sharpest=log_probs_per_scale[0],
+            log_probs_per_scale=log_probs_per_scale,
             target=target,
             target_entropy=target_entropy,
             weights=weights,
             self_mask=self_mask,
+            diffusion_mask=diffusion_mask,
             temps=temps,
         )
         return total_loss, metrics
@@ -343,11 +403,12 @@ class HeatGeoDistillation(nn.Module):
         total_loss: torch.Tensor,
         loss_diff: torch.Tensor,
         kl_per_scale: torch.Tensor,
-        log_probs_sharpest: torch.Tensor,
+        log_probs_per_scale: list[torch.Tensor],
         target: torch.Tensor,
         target_entropy: torch.Tensor,
         weights: torch.Tensor,
         self_mask: torch.Tensor,
+        diffusion_mask: torch.Tensor,
         temps: torch.Tensor,
     ) -> dict[str, float]:
         """Loss value alone cannot distinguish "learned the geometry" from "went uniform".
@@ -355,33 +416,68 @@ class HeatGeoDistillation(nn.Module):
         It also cannot distinguish "still learning" from "sitting on the irreducible
         floor", which is why the Jensen-Shannon term and the excess above it are
         logged next to the raw loss.
-        """
-        probs_student = log_probs_sharpest.exp()
-        n_columns = (~self_mask).sum(dim=-1).clamp_min(1).float()
-        student_entropy = -(
-            probs_student * torch.where(
-                probs_student > 0,
-                log_probs_sharpest,
-                torch.zeros_like(log_probs_sharpest),
-            )
-        ).sum(dim=-1)
-        uniform_entropy = n_columns.log().clamp_min(1e-12)
 
-        # Irreducible floor: JS_omega(p_1..p_R) = H(pbar) - sum_r omega_r H(p_r).
-        # Exactly the minimum of L_diff when all scales share one temperature; a
-        # lower bound (and a scale-disagreement statistic) when they do not.
-        mixture = (target * weights.view(1, -1, 1)).sum(dim=1)
+        Unsuffixed metrics describe the *sharpest diffusion* scale, over the anchor's
+        own candidate columns. An earlier version indexed scale 0, which stopped being
+        that scale the moment the direct target was prepended to the stack: the curves
+        kept their names and silently started reporting the direct scale at a
+        different temperature over a 15x larger column set. The direct scale now
+        reports under its own `*_direct` names.
+        """
+        offset = 1 if getattr(self, "direct_active", False) else 0
+        k = min(self.diag_topk, target.size(-1))
+
+        def _distribution_stats(
+            log_probs: torch.Tensor, scale_target: torch.Tensor, mask: torch.Tensor
+        ) -> tuple[torch.Tensor, ...]:
+            probs_student = log_probs.exp()
+            student_entropy = -(
+                probs_student
+                * torch.where(probs_student > 0, log_probs, torch.zeros_like(log_probs))
+            ).sum(dim=-1)
+            # Two columns is the smallest set on which a softmax has any freedom, so
+            # it is the smallest denominator for which the ratio means anything.
+            n_columns = (~mask).sum(dim=-1).float()
+            uniform_entropy = n_columns.clamp_min(2.0).log()
+            teacher_top = scale_target.topk(k, dim=-1).indices
+            return (
+                student_entropy.mean(),
+                (student_entropy / uniform_entropy).mean(),
+                probs_student.max(dim=-1).values.mean(),
+                scale_target.max(dim=-1).values.mean(),
+                probs_student.gather(-1, teacher_top).sum(dim=-1).mean(),
+                n_columns.mean(),
+            )
+
+        # Irreducible floor of the *diffusion group*: sum_r w_r KL(p_r||q) >= W *
+        # JS_v(p_r), with W the group's total weight and v_r = w_r/W. The direct scale
+        # is excluded: it no longer shares a column domain with the diffusion scales,
+        # so a single q cannot be substituted into both, and on its own its floor is
+        # zero. Folding it in was what made js_floor read 0.45 nats while the diffusion
+        # scales genuinely disagreed by 0.05 -- the gap was the two halves of the
+        # objective fighting, reported as if it were a property of the targets.
+        diff_target = target[:, offset:, :]
+        diff_weights = weights[offset:].view(1, -1)
+        # Scales with no mass on this anchor's draw contribute KL 0 and must not dilute
+        # the mixture either; their weight is dropped for that anchor only.
+        has_mass = diff_target.sum(dim=-1) > 0
+        w_eff = diff_weights * has_mass.to(diff_weights.dtype)
+        w_total = w_eff.sum(dim=-1, keepdim=True)
+        w_norm = w_eff / w_total.clamp_min(1e-12)
+
+        mixture = (diff_target * w_norm.unsqueeze(-1)).sum(dim=1)
         log_mixture = torch.where(
             mixture > 0, mixture.clamp_min(1e-12).log(), torch.zeros_like(mixture)
         )
         mixture_entropy = -(mixture * log_mixture).sum(dim=-1)
-        weighted_entropy = (target_entropy * weights.view(1, -1)).sum(dim=-1)
-        js_floor = (mixture_entropy - weighted_entropy).clamp_min(0.0)
+        group_entropy = (target_entropy[:, offset:] * w_norm).sum(dim=-1)
+        js_floor = (
+            w_total.squeeze(-1) * (mixture_entropy - group_entropy).clamp_min(0.0)
+        )
 
-        sharpest = target[:, 0, :]
-        k = min(self.diag_topk, sharpest.size(-1))
-        teacher_top = sharpest.topk(k, dim=-1).indices
-        mass_on_teacher_top = probs_student.gather(-1, teacher_top).sum(dim=-1).mean()
+        # Full-stack weighted entropy: loss_diff = CE - H holds over every scale that
+        # is actually in the loss, direct included.
+        weighted_entropy = (target_entropy * weights.view(1, -1)).sum(dim=-1)
 
         scalars = [
             total_loss.detach(),
@@ -390,12 +486,15 @@ class HeatGeoDistillation(nn.Module):
             (loss_diff - js_floor.mean()).detach(),
             (loss_diff + weighted_entropy.mean()).detach(),
             weighted_entropy.mean(),
-            student_entropy.mean(),
-            (student_entropy / uniform_entropy).mean(),
-            probs_student.max(dim=-1).values.mean(),
-            sharpest.max(dim=-1).values.mean(),
-            mass_on_teacher_top,
-            n_columns.mean(),
+            # `target_entropy` above is the whole weighted stack, because that is what
+            # loss_cross_entropy needs. It is therefore the one metric here that is not
+            # scoped to the sharpest diffusion scale, and comparing it against
+            # student_entropy compares two different column domains. This is the
+            # teacher entropy that student_entropy is actually the counterpart of.
+            target_entropy[:, offset].mean(),
+            *_distribution_stats(
+                log_probs_per_scale[offset], target[:, offset, :], diffusion_mask
+            ),
         ]
         names = [
             "loss_total",
@@ -404,6 +503,7 @@ class HeatGeoDistillation(nn.Module):
             "loss_excess",
             "loss_cross_entropy",
             "target_entropy",
+            "teacher_entropy_scale",
             "student_entropy",
             "student_entropy_ratio",
             "student_top1",
@@ -411,6 +511,23 @@ class HeatGeoDistillation(nn.Module):
             f"student_mass_on_teacher_top{k}",
             "candidates_per_anchor",
         ]
+        if offset:
+            scalars.append(target_entropy[:, 0].mean())
+            scalars.extend(
+                _distribution_stats(log_probs_per_scale[0], target[:, 0, :], self_mask)
+            )
+            names.extend(
+                [
+                    "teacher_entropy_direct",
+                    "student_entropy_direct",
+                    "student_entropy_ratio_direct",
+                    "student_top1_direct",
+                    "target_top1_direct",
+                    f"student_mass_on_teacher_top{k}_direct",
+                    "pool_columns_direct",
+                ]
+            )
+
         per_scale = list(kl_per_scale.mean(dim=0).detach())
         # One device sync for all logged scalars instead of one sync per scalar.
         values = torch.stack(
@@ -418,16 +535,18 @@ class HeatGeoDistillation(nn.Module):
         ).tolist()
         metrics = dict(zip(names, values[: len(names)]))
         per_scale_values = values[len(names) :]
-        offset = 0
-        if getattr(self, "direct_active", False):
+        if offset:
             metrics["kl_direct"] = per_scale_values[0]
-            offset = 1
         for scale_idx, value in enumerate(per_scale_values[offset:]):
             metrics[f"kl_scale{scale_idx}"] = value
-        # The excess above the JS floor is the exact residual only when one shared
-        # student distribution serves every scale; the direct scale always breaks
-        # that, so this reports what actually held for this batch.
+        # js_floor bounds the diffusion group only, and only under a tied student
+        # temperature. With distinct tau_r the true minimum is lower, so loss_excess
+        # is an upper bound on what is left to learn -- it reaching 0 means the
+        # objective is spent, but it can also go negative.
         metrics["excess_is_exact"] = float(
-            bool(temps.numel() == 1 or torch.allclose(temps, temps[0]))
+            bool(
+                temps.numel() - offset <= 1
+                or torch.allclose(temps[offset:], temps[offset])
+            )
         )
         return metrics
