@@ -33,7 +33,10 @@ def _assert_finite_tensors(named_tensors: Sequence[tuple[str, torch.Tensor]]) ->
 class HeatGeoDistillation(nn.Module):
     r"""Multi-resolution diffusion matching.
 
-    L = sum_r omega_r KL(p^T_r || p^S_r),  p^S_r(j) = softmax_j(cos(s_i,s_j) / tau_r)
+    L = L_diff + lambda_SGC L_SGC
+
+    L_diff = sum_r omega_r KL(p^T_r || p^S_r),
+    p^S_r(j) = softmax_j(cos(s_i,s_j) / tau_r)
 
     **Why the student distribution is scale-dependent.** With one shared student
     distribution p^S the objective collapses exactly onto a single-scale one:
@@ -103,6 +106,21 @@ class HeatGeoDistillation(nn.Module):
     Neither term has an opinion the other contradicts: diffusion ranks within the
     neighbourhood, r=0 calibrates across the batch.
 
+    **Similarity Gauge Calibration (SGC).** Every softmax term is invariant to a
+    row-wise translation of its similarities:
+
+        softmax((c_i + a_i) / tau) = softmax(c_i / tau).
+
+    L_diff therefore identifies relative heat flow but leaves one scalar similarity
+    origin per anchor unconstrained. SGC fixes only that missing degree of freedom.
+    Using the direct teacher distribution q_i over the already-scored columns,
+
+        L_SGC = mean_i Huber(sum_j q_ij c^S_ij - sum_j q_ij c^T_ij).
+
+    It adds no parameters, projections, pair construction, or model forward pass.
+    Teacher weighting keeps the calibration focused on semantically relevant columns
+    instead of letting the many easy in-batch negatives dominate the mean.
+
     **Why there is no pointwise anchor term.** An earlier version added
     lambda_anchor * (1 - cos(W_a s_i, t_i)) with a free linear map W_a. That term is
     invariant to any invertible transform of the student space -- W_a simply absorbs
@@ -128,6 +146,8 @@ class HeatGeoDistillation(nn.Module):
         direct_weight: float = 1.0,
         direct_temp: float = 0.10,
         direct_student_temp: float = 0.10,
+        sgc_weight: float = 0.0,
+        sgc_huber_delta: float = 0.10,
     ):
         super().__init__()
         self.student_dim = student_dim
@@ -136,8 +156,19 @@ class HeatGeoDistillation(nn.Module):
         self.eps_norm = eps_norm
         self.diag_topk = diag_topk
         self.share_in_batch = share_in_batch
+        self.sgc_weight = float(sgc_weight)
+        self.sgc_huber_delta = float(sgc_huber_delta)
+        if self.sgc_weight < 0.0:
+            raise ValueError(f"sgc_weight must be non-negative, got {sgc_weight}")
+        if self.sgc_huber_delta <= 0.0:
+            raise ValueError(
+                f"sgc_huber_delta must be positive, got {sgc_huber_delta}"
+            )
 
         self.use_direct = teacher_embeddings is not None and direct_weight > 0.0
+        self.use_sgc = self.sgc_weight > 0.0
+        if self.use_sgc and not self.use_direct:
+            raise ValueError("SGC requires the direct teacher scale")
         if self.use_direct:
             if direct_temp <= 0.0 or direct_student_temp <= 0.0:
                 raise ValueError("direct temperatures must be positive")
@@ -238,21 +269,43 @@ class HeatGeoDistillation(nn.Module):
         column_idx: torch.Tensor,
         self_mask: torch.Tensor,
         shared: bool,
-    ) -> torch.Tensor:
+    ) -> tuple[torch.Tensor, torch.Tensor]:
         """Teacher similarity over every scored column, not just the graph pool."""
         bank = self.teacher_bank
         t_anchor = bank.index_select(0, anchor_idx).float()
         if shared:
             t_columns = bank.index_select(0, column_idx).float()
-            logits = t_anchor @ t_columns.t()
+            cosine = t_anchor @ t_columns.t()
         else:
             batch_size, candidate_size = column_idx.shape
             t_columns = bank.index_select(0, column_idx.reshape(-1)).float()
             t_columns = t_columns.view(batch_size, candidate_size, -1)
-            logits = torch.einsum("bd,bcd->bc", t_anchor, t_columns)
-        logits = logits / self.direct_temp
+            cosine = torch.einsum("bd,bcd->bc", t_anchor, t_columns)
+        logits = cosine / self.direct_temp
         logits = logits.masked_fill(self_mask, float("-inf"))
-        return F.softmax(logits, dim=-1)
+        return F.softmax(logits, dim=-1), cosine
+
+    def _sgc_loss(
+        self,
+        student_similarity: torch.Tensor,
+        teacher_similarity: torch.Tensor,
+        teacher_weights: torch.Tensor,
+    ) -> tuple[torch.Tensor, tuple[torch.Tensor, ...]]:
+        weights = teacher_weights.detach().float()
+        student_origin = (weights * student_similarity.float()).sum(dim=-1)
+        teacher_origin = (weights * teacher_similarity.float()).sum(dim=-1)
+        gap = student_origin - teacher_origin
+        loss = F.smooth_l1_loss(
+            gap,
+            torch.zeros_like(gap),
+            beta=self.sgc_huber_delta,
+        )
+        stats = (
+            gap.abs().mean().detach(),
+            student_origin.mean().detach(),
+            teacher_origin.mean().detach(),
+        )
+        return loss, stats
 
     def forward(
         self,
@@ -327,8 +380,24 @@ class HeatGeoDistillation(nn.Module):
         # it, every column outside the anchor's diffusion pool carries target 0 and
         # is pushed toward maximal dissimilarity regardless of what the teacher says.
         self.direct_active = self.use_direct and anchor_idx is not None and column_idx is not None
+        if self.use_sgc and not self.direct_active:
+            raise ValueError(
+                "anchor_idx and candidate_idx are required when SGC is active"
+            )
+        loss_sgc = anchor_norm.sum() * 0.0
+        sgc_stats = (
+            loss_sgc.detach(),
+            loss_sgc.detach(),
+            loss_sgc.detach(),
+        )
         if self.direct_active:
-            direct = self._direct_target(anchor_idx, column_idx, self_mask, share)
+            direct, teacher_similarity = self._direct_target(
+                anchor_idx, column_idx, self_mask, share
+            )
+            if self.use_sgc:
+                loss_sgc, sgc_stats = self._sgc_loss(
+                    similarity, teacher_similarity, direct
+                )
             target = torch.cat([direct.unsqueeze(1).to(target.dtype), target], dim=1)
             weights = torch.cat([self.direct_weight.to(weights.dtype), weights])
             temps = torch.cat([self.direct_student_temp.to(temps.dtype), temps])
@@ -378,10 +447,14 @@ class HeatGeoDistillation(nn.Module):
         kl_per_scale = torch.stack(kl_per_scale, dim=1)
         loss_diff = (kl_per_scale * weights.view(1, -1)).sum(dim=-1).mean()
         _assert_finite_tensors((("loss_diff", loss_diff),))
-        # The diffusion term is the whole objective now. `loss_total` stays a
-        # separate logged metric so runs from before the anchor term was dropped
-        # remain comparable on the same dashboard key.
-        total_loss = loss_diff
+        sgc_weighted = self.sgc_weight * loss_sgc
+        total_loss = loss_diff + sgc_weighted
+        _assert_finite_tensors(
+            (
+                ("loss_sgc", loss_sgc),
+                ("loss_total", total_loss),
+            )
+        )
 
         metrics = self._diagnostics(
             total_loss=total_loss,
@@ -394,6 +467,27 @@ class HeatGeoDistillation(nn.Module):
             self_mask=self_mask,
             diffusion_mask=diffusion_mask,
             temps=temps,
+        )
+        sgc_values = torch.stack(
+            [
+                loss_sgc.detach(),
+                sgc_weighted.detach(),
+                *sgc_stats,
+            ]
+        ).float().tolist()
+        metrics.update(
+            dict(
+                zip(
+                    (
+                        "loss_sgc",
+                        "loss_sgc_weighted",
+                        "sgc_abs_origin_gap",
+                        "sgc_student_origin",
+                        "sgc_teacher_origin",
+                    ),
+                    sgc_values,
+                )
+            )
         )
         return total_loss, metrics
 

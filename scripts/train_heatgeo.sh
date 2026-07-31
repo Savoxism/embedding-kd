@@ -23,6 +23,7 @@ BATCH_SIZE="${BATCH_SIZE:-4}"
 EPOCHS="${EPOCHS:-5}"
 LR="${LR:-2e-5}"
 MAX_LENGTH="${MAX_LENGTH:-256}"
+SGC_WEIGHT="${SGC_WEIGHT:-0.05}"
 SAVE_DIR="${SAVE_DIR:-models/heatgeo/qwen3_4b_to_bert_base}"
 WEIGHTS_DIR="${WEIGHTS_DIR:-}"
 
@@ -36,6 +37,7 @@ COMMAND=(
     --epochs "$EPOCHS"
     --lr "$LR"
     --max_length "$MAX_LENGTH"
+    --sgc_weight "$SGC_WEIGHT"
     --save_dir "$SAVE_DIR"
 )
 

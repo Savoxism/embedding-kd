@@ -64,6 +64,13 @@ class HeatGeoConfig(BaseConfig):
     direct_temp = 0.10
     direct_student_temp = 0.10
 
+    # ---- similarity gauge calibration ---------------------------------------
+    # Softmax KL cannot see an anchor-wise constant shift of all cosine scores.
+    # SGC matches one teacher-weighted mean cosine per anchor to fix only this
+    # missing scalar, without imposing the teacher's full metric geometry.
+    sgc_weight = 0.05
+    sgc_huber_delta = 0.10
+
     # ---- teacher graph -------------------------------------------------------
     graph_k = 200
     # graph_temp sets how much ranking information the diffusion targets carry. At 0.1
@@ -81,7 +88,7 @@ class HeatGeoConfig(BaseConfig):
     # outside the pool -- the pool, not the walk, was the binding constraint on the
     # broadest scale. Watch pool_residual_mass_r* and raise this until r=4's support
     # stops sitting at the cap.
-    pool_size = 256
+    pool_size = 512
     hard_neg_pool = 200
     # Columns kept per row at each lazy-walk step. Truncate-then-renormalize hides the
     # dropped mass from the row sums but not from the distribution: it deletes the tail

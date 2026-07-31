@@ -94,14 +94,15 @@ The main HeatGeo objective is:
 $$
 \mathcal L
 =
-w_{\mathrm{task}}\mathcal L_{\mathrm{InfoNCE}}
+\mathcal L_{\mathrm{diff}}
 +
-\lambda_{\mathrm{diff}}\mathcal L_{\mathrm{diff}}
-+
-\lambda_{\mathrm{spec}}\mathcal L_{\mathrm{spec}}
-+
-\lambda_{\mathrm{anchor}}\mathcal L_{\mathrm{anchor}}
+\lambda_{\mathrm{SGC}}\mathcal L_{\mathrm{SGC}}
 $$
+
+Here, $\mathcal L_{\mathrm{diff}}$ matches the teacher's direct and multi-scale
+heat-flow distributions. Similarity Gauge Calibration (SGC) fixes the single
+anchor-wise cosine offset that softmax matching cannot identify, using a
+teacher-weighted Huber loss over columns already scored by HeatGeo.
 
 The default config is in `config/heatgeo_config.py`.
 
@@ -125,6 +126,13 @@ You can override settings without editing the file:
 
 ```bash
 BATCH_SIZE=2 EPOCHS=5 WANDB_MODE=online bash scripts/train_heatgeo.sh
+```
+
+SGC can be swept or disabled without editing the config:
+
+```bash
+SGC_WEIGHT=0 bash scripts/train_heatgeo.sh
+SGC_WEIGHT=0.05 bash scripts/train_heatgeo.sh
 ```
 
 To disable W&B:

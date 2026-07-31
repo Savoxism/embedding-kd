@@ -89,6 +89,12 @@ def parse_args():
         help='DTW KD loss weight'
     )
     parser.add_argument(
+        '--sgc_weight',
+        type=float,
+        default=None,
+        help='HeatGeo similarity gauge calibration weight'
+    )
+    parser.add_argument(
         '--task_type',
         choices=['single_cls', 'pair_cls', 'pair_reg'],
         default=None,
@@ -192,6 +198,8 @@ def get_config(method: str, args):
         config.w_task = args.w_task
     if args.alpha_dtw is not None:
         config.alpha_dtw = args.alpha_dtw
+    if args.sgc_weight is not None:
+        config.sgc_weight = args.sgc_weight
     if args.task_type is not None:
         config.task_type = args.task_type
     

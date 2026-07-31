@@ -200,6 +200,8 @@ class KnowledgeDistiller:
                 direct_weight=getattr(config, "direct_weight", 1.0),
                 direct_temp=getattr(config, "direct_temp", 0.10),
                 direct_student_temp=getattr(config, "direct_student_temp", 0.10),
+                sgc_weight=getattr(config, "sgc_weight", 0.0),
+                sgc_huber_delta=getattr(config, "sgc_huber_delta", 0.10),
             ).to(self.device_s)
             # The criterion is parameter-free: everything it owns is a buffer, and
             # add_param_group rejects an empty parameter list.
@@ -218,6 +220,12 @@ class KnowledgeDistiller:
                     f"bank={tuple(self.criterion.teacher_bank.shape)} "
                     f"({self.criterion.teacher_bank.numel() * 2 / 1024**2:.0f} MB)"
                 )
+                if self.criterion.use_sgc:
+                    print(
+                        "HeatGeo SGC active: "
+                        f"weight={self.criterion.sgc_weight:.3g}, "
+                        f"huber_delta={self.criterion.sgc_huber_delta:.3g}"
+                    )
             else:
                 print(
                     "WARNING: HeatGeo direct scale disabled. Every column outside an "
@@ -1475,7 +1483,11 @@ class KnowledgeDistiller:
         # have nothing to do with training. Print the example-weighted epoch means.
         if epoch_means:
             headline = [
+                "loss_total",
                 "loss_diff",
+                "loss_sgc",
+                "loss_sgc_weighted",
+                "sgc_abs_origin_gap",
                 "js_floor",
                 "loss_excess",
                 "target_entropy",
