@@ -70,6 +70,12 @@ from src.heatgeo import HeatGeoCandidateSampler, build_or_load_heatgeo_artifact
 from src.loss import info_nce
 from src.pooling import last_token_pool
 
+# The distillation corpus (data/train_set/merged_3_data_5k_each.csv) is drawn from
+# EMOTION, WiC and STS-B, so those three benchmarks are in-distribution and the
+# remaining ones are held out. Reporting them as one number would let an
+# in-distribution gain stand in for transfer, so the table averages them apart.
+IOD_BENCHMARKS = frozenset({"emotion", "wic", "stsb"})
+
 
 def is_finite(x: torch.Tensor) -> bool:
     return torch.is_tensor(x) and torch.isfinite(x).all().item()
@@ -117,7 +123,9 @@ def grads_are_finite(optim) -> bool:
             if p.grad is None:
                 continue
             current = torch.isfinite(p.grad).all()
-            finite_status = current if finite_status is None else finite_status & current
+            finite_status = (
+                current if finite_status is None else finite_status & current
+            )
     return finite_status is None or bool(finite_status.item())
 
 
@@ -468,7 +476,9 @@ class KnowledgeDistiller:
             return np.zeros(len(df), dtype=np.int64)
         codes = pd.factorize(df[column].astype(str))[0].astype(np.int64)
         counts = pd.Series(codes).value_counts().to_dict()
-        print(f"HeatGeo sources: {len(counts)} distinct, sizes={sorted(counts.values(), reverse=True)}")
+        print(
+            f"HeatGeo sources: {len(counts)} distinct, sizes={sorted(counts.values(), reverse=True)}"
+        )
         return codes
 
     def setup_data(self):
@@ -1344,7 +1354,9 @@ class KnowledgeDistiller:
         # spends the rest of the run overfitting a frozen 32-way problem.
         if hasattr(self.train_ds, "set_epoch"):
             sampling_epoch = (
-                epoch if getattr(self.config, "resample_candidates_per_epoch", True) else 0
+                epoch
+                if getattr(self.config, "resample_candidates_per_epoch", True)
+                else 0
             )
             self.train_ds.set_epoch(sampling_epoch)
 
@@ -1453,7 +1465,9 @@ class KnowledgeDistiller:
 
         print(f"Done train_epoch {epoch + 1}")
         self.log_step_records(step_records)
-        epoch_means = {key: value / max(1, n_items) for key, value in metric_totals.items()}
+        epoch_means = {
+            key: value / max(1, n_items) for key, value in metric_totals.items()
+        }
 
         # The progress bar shows the *last* step's diagnostics, and the last batch is
         # usually a short remainder -- with 13553 items and batch 16 it holds a single
@@ -1461,9 +1475,15 @@ class KnowledgeDistiller:
         # have nothing to do with training. Print the example-weighted epoch means.
         if epoch_means:
             headline = [
-                "loss_diff", "js_floor", "loss_excess", "target_entropy",
-                "student_entropy", "student_entropy_ratio", "student_top1",
-                "target_top1", "candidates_per_anchor",
+                "loss_diff",
+                "js_floor",
+                "loss_excess",
+                "target_entropy",
+                "student_entropy",
+                "student_entropy_ratio",
+                "student_top1",
+                "target_top1",
+                "candidates_per_anchor",
             ]
             shown = [k for k in headline if k in epoch_means]
             shown += sorted(k for k in epoch_means if k.startswith("kl_scale"))
@@ -1591,6 +1611,40 @@ class KnowledgeDistiller:
                 details.append(f"{label}={100.0 * float(value):.2f}")
         return " ".join(details)
 
+    @staticmethod
+    def _benchmark_group_averages(
+        scores_by_benchmark: dict[str, float],
+    ) -> dict[str, dict[str, Any]]:
+        """Average the primary scores over IOD, OOD and all benchmarks.
+
+        Every benchmark contributes its own primary metric (macro-F1, AP or
+        Spearman), all on a 0-1 scale, so the groups are unweighted means over
+        benchmarks rather than over examples.
+        """
+        groups = {
+            "avg_iod": (
+                "AVG (IOD)",
+                sorted(name for name in scores_by_benchmark if name in IOD_BENCHMARKS),
+            ),
+            "avg_ood": (
+                "AVG (OOD)",
+                sorted(
+                    name for name in scores_by_benchmark if name not in IOD_BENCHMARKS
+                ),
+            ),
+            "avg_all": ("AVG (ALL)", sorted(scores_by_benchmark)),
+        }
+        return {
+            key: {
+                "label": label,
+                "score": sum(scores_by_benchmark[name] for name in members)
+                / len(members),
+                "members": members,
+            }
+            for key, (label, members) in groups.items()
+            if members
+        }
+
     def print_evaluation_table(
         self,
         split: str,
@@ -1602,34 +1656,38 @@ class KnowledgeDistiller:
             "sts": "spearman",
         }
         rows = []
+        scores_by_benchmark: dict[str, float] = {}
         for family in ("classification", "pair", "sts"):
-            family_scores = []
             for path, raw_values in results.get(family, {}).items():
                 values = (
                     {"spearman": raw_values} if family == "sts" else dict(raw_values)
                 )
                 metric_name = primary_metrics[family]
                 score = float(values[metric_name])
-                family_scores.append(score)
+                benchmark = self._benchmark_name(path, split)
+                scores_by_benchmark[benchmark] = score
                 rows.append(
                     (
                         family,
-                        self._benchmark_name(path, split),
+                        benchmark,
                         metric_name,
                         f"{100.0 * score:.2f}",
                         self._metric_details(values),
                     )
                 )
-            if family_scores:
-                rows.append(
-                    (
-                        family,
-                        "MEAN",
-                        primary_metrics[family],
-                        f"{100.0 * sum(family_scores) / len(family_scores):.2f}",
-                        "",
-                    )
+
+        averages = self._benchmark_group_averages(scores_by_benchmark)
+        divider_index = len(rows)
+        for group in averages.values():
+            rows.append(
+                (
+                    "summary",
+                    group["label"],
+                    "mean",
+                    f"{100.0 * group['score']:.2f}",
+                    " ".join(group["members"]),
                 )
+            )
 
         title = (
             f"VALIDATION - EPOCH {self.current_epoch + 1}"
@@ -1652,11 +1710,15 @@ class KnowledgeDistiller:
             )
         )
         print(separator)
-        for row in rows:
+        for position, row in enumerate(rows):
+            if position == divider_index:
+                print(separator)
             print(
                 " | ".join(row[index].ljust(widths[index]) for index in range(len(row)))
             )
         print("=" * len(separator) + "\n")
+
+        return {key: group["score"] for key, group in averages.items()}
 
     def evaluate(self, split: str = "validation"):
         if split not in {"validation", "test"}:
@@ -1693,7 +1755,7 @@ class KnowledgeDistiller:
             "pair": pair,
             "sts": sts,
         }
-        self.print_evaluation_table(split, results)
+        results["summary"] = self.print_evaluation_table(split, results)
         return results
 
     def log_step_records(self, records: list[dict]):
