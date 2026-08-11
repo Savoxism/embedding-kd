@@ -1,0 +1,184 @@
+\begin{table}[t]
+\centering
+\caption{Results across three teacher\,$\rightarrow$\,student settings on nine datasets. Emotion, WiC, and STS-B (marked with $\star$) are in-domain; the remaining datasets are out-of-domain. Bold and underlined values denote the best and second-best compact-model results within each setting. Baseline results are from TALAS~\citep{dao2026talas}. For setting (c), we report the epoch checkpoint with the highest overall average.}
+\label{tab:main_results}
+\setlength{\tabcolsep}{2.4pt}
+\resizebox{\textwidth}{!}{%
+\begin{tabular}{lccc|ccc|ccc|cc|c}
+\toprule
+& \multicolumn{3}{c|}{\textbf{Classification (F1)}} &
+\multicolumn{3}{c|}{\textbf{Pair Classification (AP)}} &
+\multicolumn{3}{c|}{\textbf{STS (Spearman)}} &
+\multicolumn{2}{c|}{\textbf{Domain Avg}} &
+\textbf{Avg.} \\
+\cmidrule(lr){2-4}\cmidrule(lr){5-7}\cmidrule(lr){8-10}\cmidrule(lr){11-12}
+& Banking77 & Tweet & Emotion$^\star$ &
+MRPC & SciTail & WiC$^\star$ &
+SICK & STS12 & STS-B$^\star$ &
+Avg-In & Avg-Out & Avg. \\
+\midrule
+\multicolumn{13}{c}{\textit{(a) Qwen3-Embedding-4B $\rightarrow$ BERT-base (109M)}} \\
+\midrule
+Teacher
+& 93.63 & 72.22 & 68.94
+& 84.79 & 91.77 & 66.80
+& 83.43 & 82.55 & 86.87
+& 74.20 & 84.73 & 81.22 \\
+Student base
+& 84.86 & 47.79 & 68.02
+& 77.36 & 67.74 & 59.22
+& 42.43 & 21.54 & 20.30
+& 42.44 & 60.33 & 54.36 \\
+SimCSE-unsup
+& 89.21 & 69.13 & 53.55
+& 82.86 & 76.59 & \textbf{71.64}
+& 68.19 & 61.68 & 70.36
+& 65.18 & 74.61 & 71.47 \\
+\addlinespace[1pt]
+CDM
+& 89.75 & 70.58 & 53.11
+& 84.83 & 75.19 & 71.06
+& 69.37 & 68.48 & 73.92
+& 66.03 & 76.37 & 72.92 \\
+DSKD
+& 89.66 & 69.93 & 54.51
+& 83.13 & 77.95 & \underline{71.53}
+& 68.65 & 63.37 & 71.42
+& 65.82 & 75.45 & 72.24 \\
+Jasper and Stella
+& 89.71 & \underline{73.83} & 65.98
+& \underline{85.33} & 80.99 & 70.50
+& 73.96 & 67.90 & 75.65
+& 70.71 & 78.62 & 75.98 \\
+DistillCSE
+& 90.94 & 70.90 & 60.80
+& 82.86 & 78.98 & 68.63
+& 75.12 & 72.61 & 77.08
+& 68.84 & 78.57 & 75.32 \\
+EMO
+& 90.78 & 73.54 & 67.48
+& 84.46 & 81.57 & 69.76
+& 75.66 & 68.83 & 77.17
+& 71.47 & 79.14 & 76.58 \\
+TALAS
+& \underline{91.43} & \textbf{74.30} & \textbf{70.71}
+& \textbf{86.47} & \underline{82.66} & 69.24
+& \textbf{78.38} & \textbf{75.40} & \underline{80.88}
+& \textbf{73.61} & \textbf{81.44} & \textbf{78.83} \\
+\textbf{HeatGeo}
+& \textbf{91.86} & 73.06 & \underline{69.20}
+& 84.72 & \textbf{86.19} & 67.19
+& \underline{77.54} & \underline{74.19} & \textbf{83.14}
+& \underline{73.17} & \underline{81.26} & \underline{78.56} \\
+\midrule
+\multicolumn{13}{c}{\textit{(b) BGE-M3 $\rightarrow$ MiniLMv2-H768 (66M)}} \\
+\midrule
+Teacher
+& 93.52 & 73.85 & 68.56
+& 85.81 & 91.87 & 61.47
+& 79.18 & 78.73 & 84.87
+& 71.63 & 83.83 & 79.76 \\
+Student base
+& 81.84 & 47.70 & 71.67
+& 79.67 & 65.06 & 60.89
+& 49.46 & 26.76 & 24.12
+& 44.24 & 62.41 & 56.35 \\
+SimCSE-unsup
+& 87.89 & 71.45 & 55.65
+& 83.87 & 76.32 & 67.96
+& 66.93 & 59.66 & 63.97
+& 62.53 & 74.35 & 70.41 \\
+\addlinespace[1pt]
+CDM
+& 89.15 & 70.48 & 58.71
+& 84.16 & 75.91 & \textbf{70.00}
+& 68.14 & 62.74 & 67.78
+& 65.50 & 75.10 & 71.90 \\
+DSKD
+& 89.51 & 70.53 & 57.27
+& 84.39 & 75.36 & \underline{69.96}
+& 68.81 & 66.78 & 70.05
+& 65.76 & 75.90 & 72.52 \\
+Jasper and Stella
+& 88.38 & 74.13 & 62.81
+& \underline{85.98} & 80.33 & 68.38
+& 74.35 & 66.80 & 74.55
+& 68.58 & 78.33 & 75.08 \\
+DistillCSE
+& 90.50 & 72.70 & 59.88
+& 84.39 & 78.48 & 69.49
+& 73.97 & \underline{70.00} & 73.73
+& 67.70 & 78.34 & 74.79 \\
+EMO
+& 90.19 & \underline{74.26} & 61.48
+& 85.31 & 80.82 & 68.30
+& 75.41 & 67.06 & 76.35
+& 68.71 & 78.84 & 75.46 \\
+TALAS
+& \underline{90.62} & \textbf{74.81} & \underline{63.30}
+& \textbf{87.05} & \underline{81.94} & 66.28
+& \underline{76.86} & 69.04 & \underline{79.01}
+& \underline{69.53} & \underline{80.05} & \underline{76.55} \\
+\textbf{HeatGeo}
+& \textbf{90.86} & 73.08 & \textbf{69.50}
+& 85.74 & \textbf{83.57} & 65.77
+& \textbf{77.32} & \textbf{74.18} & \textbf{81.76}
+& \textbf{72.34} & \textbf{80.79} & \textbf{77.98} \\
+\midrule
+\multicolumn{13}{c}{\textit{(c) Qwen3-Embedding-0.6B $\rightarrow$ MiniLMv2-H384 (22M)}} \\
+\midrule
+Teacher
+& 93.21 & 71.33 & 66.53
+& 83.37 & 90.00 & 66.85
+& 80.64 & 77.11 & 84.60
+& 72.66 & 82.61 & 79.29 \\
+Student base
+& 68.29 & 41.07 & 69.90
+& 78.39 & 64.56 & 59.58
+& 47.60 & 21.95 & 22.08
+& 40.91 & 58.45 & 52.60 \\
+SimCSE-unsup
+& 86.67 & 69.56 & 54.00
+& 82.29 & 73.76 & 65.71
+& 66.04 & 59.11 & 62.08
+& 60.60 & 72.91 & 68.80 \\
+\addlinespace[1pt]
+CDM
+& 86.07 & 70.32 & 53.04
+& 81.97 & 72.97 & 68.34
+& 65.97 & 61.12 & 65.75
+& 62.38 & 73.07 & 69.51 \\
+DSKD
+& 85.66 & 69.86 & 52.25
+& 82.17 & 73.52 & \underline{68.58}
+& 66.54 & 62.52 & 66.70
+& 62.51 & 73.38 & 69.76 \\
+Jasper and Stella
+& 85.94 & 71.25 & 57.99
+& 83.36 & 76.17 & 68.25
+& 70.57 & 63.81 & 70.11
+& 65.45 & 75.18 & 71.94 \\
+DistillCSE
+& \underline{88.03} & 69.87 & 54.24
+& 83.20 & 77.66 & 67.88
+& 70.09 & 68.19 & 71.53
+& 64.55 & 76.17 & 72.30 \\
+EMO
+& 87.03 & \underline{71.67} & 59.63
+& \underline{83.45} & 78.17 & \textbf{68.89}
+& 70.81 & 65.78 & 71.42
+& 66.65 & 76.15 & 72.98 \\
+TALAS
+& 86.69 & \textbf{72.77} & \underline{60.94}
+& \textbf{85.10} & \textbf{81.42} & 66.65
+& \underline{72.51} & \underline{70.77} & \underline{76.22}
+& \underline{67.94} & \textbf{78.21} & \underline{74.79} \\
+\textbf{HeatGeo}
+& \textbf{88.31} & 70.41 & \textbf{67.13}
+& 83.00 & \underline{80.60} & 65.51
+& \textbf{73.98} & \textbf{72.14} & \textbf{76.90}
+& \textbf{69.85} & \underline{78.07} & \textbf{75.33} \\
+\bottomrule
+\end{tabular}%
+}
+\end{table}

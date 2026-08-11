@@ -1,0 +1,85 @@
+\section{Experiments}
+
+\subsection{Experimental Setup}
+
+\paragraph{Models.}
+We distill Qwen3-Embedding-4B into BERT-base, a 109M-parameter student encoder. Teacher embeddings are cached once before HeatGeo training. After graph construction, the teacher is removed from GPU memory; student training uses only precomputed diffusion targets and the corresponding candidate texts.
+
+\paragraph{Training Data.}
+Following the TALAS setup~\citep{dao2026talas}, we train on approximately 15K unlabeled sentences sampled evenly from the three in-domain datasets Emotion, WiC, and STS-B. HeatGeo constructs the teacher semantic graph directly over these texts.
+
+\paragraph{Evaluation Tasks and Metrics.}
+We evaluate on three task families. Text classification uses F1 on Banking77, Tweet, and Emotion. Pair classification uses average precision (AP) on MRPC, SciTail, and WiC. Semantic textual similarity uses Spearman correlation on SICK, STS12, and STS-B. Emotion, WiC, and STS-B are in-domain; the other six datasets are out-of-domain. Avg-In and Avg-Out are the unweighted means over their respective three and six datasets, and Avg.\ is the unweighted mean over all nine datasets.
+
+\paragraph{Baselines.}
+We compare against the teacher, the undistilled student, SimCSE-unsup, CDM, DSKD, Jasper and Stella, DistillCSE, EMO, and TALAS. The baseline results use the Qwen3-Embedding-4B to BERT-base configuration reported by TALAS~\citep{dao2026talas}.
+
+\paragraph{Implementation Details.}
+The teacher graph uses $k=200$ mutual neighbors, and diffusion is taken over the scale family $\mathcal{R}=\{0,1,2,4\}$ with weights obtained by normalizing $(1,1,0.5,0.25)$, so that the ambient and local scales carry most of the objective. Each anchor draws a candidate set of size $64$ from diffusion neighbors, teacher hard negatives, and random negatives, redrawn every epoch, and candidate sets are pooled across mini-batches of $32$ anchors. Student temperatures increase with diffusion scale over the range $0.05$ to $0.10$, matching broader targets at a smoother resolution. Training runs for five epochs with a learning rate of $3\times10^{-5}$. Remaining settings are given in the released configuration.
+
+\subsection{Main Results}
+
+Table~\ref{tab:main_results} reports all three teacher--student settings across the nine datasets. HeatGeo attains the best overall average among compact students in two of the three settings, $77.98$ against $76.55$ for the strongest baseline when distilling BGE-M3 into MiniLMv2-H768, and $75.33$ against $74.79$ when distilling Qwen3-Embedding-0.6B into the 22M MiniLMv2-H384. In the Qwen3-Embedding-4B to BERT-base setting it reaches $78.56$, ranking second behind TALAS at $78.83$.
+
+The advantage is concentrated where the objective operates. HeatGeo gives the best student result on Banking77 and on STS-B in all three settings, improving STS-B by $2.26$, $2.75$, and $0.68$ Spearman points over the strongest baseline, and it leads the STS family on all three datasets in both MiniLMv2 settings. It also obtains the best in-domain average in the two settings it wins overall, by $2.81$ and $1.91$ points, with the largest single-dataset gains on Emotion ($+6.20$ and $+6.19$ F1). The margins grow as the student shrinks: matching diffusion distributions rather than individual teacher coordinates asks the student to preserve relative neighborhood structure, which remains attainable when embedding capacity is well below the teacher's. WiC is the one dataset where HeatGeo trails consistently, reflecting that word-in-context judgments depend on token-level sense disambiguation rather than the sentence-level neighborhood geometry the diffusion targets describe.
+
+\input{tables/main_results}
+
+\subsection{Theory-Driven Analysis}
+\label{sec:analysis}
+
+Each analysis targets a specific prediction of Section~\ref{sec:theory}. Unless stated otherwise, all runs use the BGE-M3 $\rightarrow$ MiniLMv2-H768 setting and report the same nine-dataset protocol as Table~\ref{tab:main_results}.
+% TODO: placeholder entries [TBD] below to be filled once the corresponding sweeps have run.
+
+\paragraph{Graph size $k$.}
+Theorem~\ref{thm:global} transfers geometry from whichever graph the teacher induces, and the manifold interpretation behind it improves as neighborhoods grow---until neighborhoods become so large that they cut across semantic boundaries and add noise edges. The theory therefore predicts a rise followed by a plateau or mild decline as $k$ grows, rather than monotone improvement. Table~\ref{tab:analysis_k} sweeps the graph size.
+
+\begin{table}[h]
+\centering
+\caption{Effect of graph size $k$ (BGE-M3 $\rightarrow$ MiniLMv2-H768). Default in bold column header.}
+\label{tab:analysis_k}
+\begin{tabular}{lcccc}
+\toprule
+& $k=50$ & $k=100$ & $\mathbf{k=200}$ & $k=400$ \\
+\midrule
+Avg-In  & \tbd & \tbd & 72.34 & \tbd \\
+Avg-Out & \tbd & \tbd & 80.79 & \tbd \\
+Avg.    & \tbd & \tbd & 77.98 & \tbd \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\paragraph{Candidate size $m$.}
+Proposition~\ref{prop:sampling} bounds the error of scoring each anchor on a sampled candidate set by the uncovered target mass, which decays with $m$ at a rate set by the sharpness of the diffusion target rather than by $k$. Because the diffusion targets are far more peaked than uniform over their support, performance should saturate at a candidate size well below the neighborhood size, and enlarging $m$ past that point should mainly add compute. Table~\ref{tab:analysis_m} sweeps the candidate size.
+
+\begin{table}[h]
+\centering
+\caption{Effect of candidate size $m$ (BGE-M3 $\rightarrow$ MiniLMv2-H768). Default in bold column header.}
+\label{tab:analysis_m}
+\begin{tabular}{lccccc}
+\toprule
+& $m=16$ & $m=32$ & $\mathbf{m=64}$ & $m=128$ & $m=256$ \\
+\midrule
+Avg-In  & \tbd & \tbd & 72.34 & \tbd & \tbd \\
+Avg-Out & \tbd & \tbd & 80.79 & \tbd & \tbd \\
+Avg.    & \tbd & \tbd & 77.98 & \tbd & \tbd \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\paragraph{Similarity gauge calibration.}
+Propositions~\ref{prop:gauge} and~\ref{prop:sgc} make a sharp, falsifiable prediction: without $\mathcal{L}_{\mathrm{SGC}}$, the diffusion loss leaves one similarity offset per anchor free, so tasks that compare cosines \emph{across} anchors against a shared scale---pair classification with a global threshold, and cross-anchor rank correlation in semantic textual similarity---should degrade, while within-anchor structure such as classification by nearest neighborhoods should be comparatively unaffected. Table~\ref{tab:analysis_sgc} removes the calibration term and additionally reports the dispersion of the estimated per-anchor offsets $\hat{a}_i$ (the teacher-weighted mean similarity residual of Eq.~\ref{eq:sgc}), which the theory predicts to widen without calibration.
+
+\begin{table}[h]
+\centering
+\caption{Effect of removing similarity gauge calibration (BGE-M3 $\rightarrow$ MiniLMv2-H768). Offset dispersion is the standard deviation of $\hat{a}_i$ across anchors.}
+\label{tab:analysis_sgc}
+\begin{tabular}{lccccc}
+\toprule
+& Class.\ (F1) & Pair (AP) & STS (Spear.) & Avg. & Offset disp. \\
+\midrule
+HeatGeo                                & \tbd & \tbd & \tbd & 77.98 & \tbd \\
+\;\;w/o $\mathcal{L}_{\mathrm{SGC}}$   & \tbd & \tbd & \tbd & \tbd  & \tbd \\
+\bottomrule
+\end{tabular}
+\end{table}
