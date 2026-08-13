@@ -1,6 +1,14 @@
 import argparse
 import sys
-from config import CDMConfig, DSKDConfig, EMOConfig, StellaConfig, TALASConfig, BaseConfig
+from config import (
+    BaseConfig,
+    CDMConfig,
+    DSKDConfig,
+    EMOConfig,
+    HeatGeoConfig,
+    StellaConfig,
+    TALASConfig,
+)
 from distiller import KnowledgeDistiller
 
 
@@ -13,7 +21,7 @@ def parse_args():
         '--method',
         type=str,
         default='cdm',
-        choices=['cdm', 'dskd', 'emo', 'stella', 'talas'],
+        choices=['cdm', 'dskd', 'emo', 'stella', 'talas', 'heatgeo'],
         help='Distillation method to use'
     )
     
@@ -80,12 +88,30 @@ def parse_args():
         default=None,
         help='DTW KD loss weight'
     )
+    parser.add_argument(
+        '--sgc_weight',
+        type=float,
+        default=None,
+        help='HeatGeo similarity gauge calibration weight'
+    )
+    parser.add_argument(
+        '--task_type',
+        choices=['single_cls', 'pair_cls', 'pair_reg'],
+        default=None,
+        help='Training task contract'
+    )
     
     parser.add_argument(
         '--save_dir',
         type=str,
         default=None,
         help='Directory to save checkpoints'
+    )
+    parser.add_argument(
+        '--weights_dir',
+        type=str,
+        default=None,
+        help='Optional durable directory for per-epoch student weights'
     )
     
     parser.add_argument(
@@ -105,6 +131,30 @@ def parse_args():
         default=None,
         help='Number of dataloader workers'
     )
+    parser.add_argument(
+        '--no_wandb',
+        action='store_true',
+        help='Disable Weights & Biases logging'
+    )
+    parser.add_argument(
+        '--wandb_project',
+        type=str,
+        default=None,
+        help='Weights & Biases project name'
+    )
+    parser.add_argument(
+        '--wandb_run_name',
+        type=str,
+        default=None,
+        help='Weights & Biases run name'
+    )
+    parser.add_argument(
+        '--wandb_mode',
+        type=str,
+        default=None,
+        choices=['online', 'offline', 'disabled'],
+        help='Weights & Biases mode'
+    )
     
     return parser.parse_args()
 
@@ -120,6 +170,8 @@ def get_config(method: str, args):
         config = StellaConfig()
     elif method == 'talas':
         config = TALASConfig()
+    elif method == 'heatgeo':
+        config = HeatGeoConfig()
     else:
         config = BaseConfig()
     
@@ -146,9 +198,15 @@ def get_config(method: str, args):
         config.w_task = args.w_task
     if args.alpha_dtw is not None:
         config.alpha_dtw = args.alpha_dtw
+    if args.sgc_weight is not None:
+        config.sgc_weight = args.sgc_weight
+    if args.task_type is not None:
+        config.task_type = args.task_type
     
     if args.save_dir is not None:
         config.save_dir = args.save_dir
+    if args.weights_dir is not None:
+        config.weights_dir = args.weights_dir
     
     if args.seed is not None:
         config.seed = args.seed
@@ -156,6 +214,14 @@ def get_config(method: str, args):
         config.debug_align = True
     if args.num_workers is not None:
         config.num_workers = args.num_workers
+    if args.no_wandb:
+        config.use_wandb = False
+    if args.wandb_project is not None:
+        config.wandb_project = args.wandb_project
+    if args.wandb_run_name is not None:
+        config.wandb_run_name = args.wandb_run_name
+    if args.wandb_mode is not None:
+        config.wandb_mode = args.wandb_mode
     
     return config
 

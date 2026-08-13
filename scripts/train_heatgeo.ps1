@@ -1,21 +1,21 @@
 Write-Host "======================================"
-Write-Host "Training with EMO method"
+Write-Host "Training with HeatGeo method"
 Write-Host "======================================"
 
 $env:CUDA_VISIBLE_DEVICES = "0,1"
 $env:TOKENIZERS_PARALLELISM = "false"
 
-$METHOD = "emo"
-$TRAIN_DATA = "..\data\test_debug.csv"
-$STUDENT_MODEL="..\model_hub\MiniLMv2-L6-H384-distilled-from-BERT-Base\MiniLM-L6-H384-distilled-from-BERT-Base"
-$TEACHER_MODEL = "Qwen/Qwen3-Embedding-0.6B"
-$BATCH_SIZE = 4
+$METHOD = "heatgeo"
+$TRAIN_DATA = "../data/train_set/merged_3_data_5k_each.csv"
+$STUDENT_MODEL = "google-bert/bert-base-uncased"
+$TEACHER_MODEL = "Qwen/Qwen3-Embedding-4B"
+$BATCH_SIZE = 16
 $EPOCHS = 5
-$LR = 1e-5
+$LR = 2e-5
 $MAX_LENGTH = 256
-$SAVE_DIR = "checkpoints/emo"
+$SAVE_DIR = "checkpoints/heatgeo"
 
-python ../main.py `
+python3 ../main.py `
     --method $METHOD `
     --train_data $TRAIN_DATA `
     --student_model $STUDENT_MODEL `
@@ -25,7 +25,3 @@ python ../main.py `
     --lr $LR `
     --max_length $MAX_LENGTH `
     --save_dir $SAVE_DIR
-
-Write-Host ""
-Write-Host "Training completed!"
-Write-Host "======================================"

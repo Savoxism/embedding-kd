@@ -14,16 +14,16 @@ class EMOConfig(BaseConfig):
     
     w_task = 0.5
     alpha_kd = 0.5
-    att_loss_weight = 0.1
+    att_loss_weight = 1.0
     ot_loss_weight = 1.0
     
-    k_layers = 1
+    k_layers = 2
     alpha_ot = 0.1
     max_iter_ot = 100
     
-    batch_size = 32
+    batch_size = 4
     epochs = 5
-    learning_rate = 5e-5
+    learning_rate = 1e-5
     min_lr = 2e-6
     warmup_ratio = 0.1
     temperature = 0.05
