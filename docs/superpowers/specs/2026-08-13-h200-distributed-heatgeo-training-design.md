@@ -43,11 +43,12 @@ Each log is named:
 |---|---:|---|---|---|
 | `qwen3_4b_to_bert_base` | 1 | `Qwen/Qwen3-Embedding-4B` | `google-bert/bert-base-uncased` | last token |
 | `bge_m3_to_minilmv2_h768` | 2 | `BAAI/bge-m3` | `nreimers/MiniLMv2-L6-H768-distilled-from-BERT-Large` | CLS |
-| `qwen3_0_6b_to_minilmv2_h384` | 6 | `Qwen/Qwen3-Embedding-0.6B` | `nreimers/MiniLMv2-L6-H384-distilled-from-BERT-Large` | last token |
+| `qwen3_0_6b_to_minilmv2_h384` | 3 | `Qwen/Qwen3-Embedding-0.6B` | `nreimers/MiniLMv2-L6-H384-distilled-from-BERT-Large` | last token |
 
-GPU 6 replaces the originally requested GPU 3 because GPU 3 is occupied by a
-VLLM process using approximately 132 GiB. The launcher rechecks available VRAM
-immediately before starting every job.
+GPU 3 was occupied during the initial audit, so GPU 6 was first selected as a
+fallback. GPU 6 became occupied before launch while GPU 3 became free, so the
+final run used the originally requested GPU 3. The launcher rechecks available
+VRAM immediately before starting every job.
 
 All jobs use the current HeatGeo/SGC objective with:
 
@@ -85,13 +86,15 @@ not contain a `module.` prefix.
 
 ## Migration and Runtime
 
-Code and data are copied with `rsync`. Git internals, local virtual environments,
-model outputs, artifacts, caches, logs, and bytecode are excluded. The server
-uses a project-local `.venv`; no package is installed into global Python.
+Code and data are copied from the committed tree with `git archive` streamed
+over SSH because the remote does not provide `rsync`. Git internals, local
+virtual environments, model outputs, artifacts, caches, logs, and bytecode are
+excluded. The server uses a project-local `.venv`; no package is installed into
+global Python.
 
 One launcher script defines all model-pair-specific values, creates the output
-directories, checks GPU free memory, and starts each task with `nohup` plus
-`torchrun`. A manifest records task name, physical GPU, PID, log path, model
+directories, checks GPU free memory, and starts each task with `setsid`,
+`nohup`, and `torchrun`. A manifest records task name, physical GPU, PID, log path, model
 path, and artifact path.
 
 ## Failure Handling
@@ -115,10 +118,10 @@ Before launch:
 1. local unit tests and Python compilation pass;
 2. a CPU/single-process distributed test verifies environment initialization,
    rank-zero gating, and DDP state-dict unwrapping;
-3. the migrated tree matches the local source under the rsync exclusions;
+3. the migrated tree matches the committed local source;
 4. the project virtual environment imports PyTorch/Transformers and sees CUDA;
 5. a one-process `torchrun` smoke check succeeds;
-6. GPUs 1, 2, and 6 each have at least 100 GiB free.
+6. GPUs 1, 2, and 3 each have at least 100 GiB free.
 
 After launch, each job must have a live PID, a growing timestamped log, the
 expected `CUDA_VISIBLE_DEVICES` assignment, and its own model/artifact paths.
