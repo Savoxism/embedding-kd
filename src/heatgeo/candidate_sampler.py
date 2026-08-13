@@ -262,3 +262,88 @@ class HeatGeoCandidateSampler:
             torch.from_numpy(candidate_arr).long(),
             torch.from_numpy(teacher_probs).float(),
         )
+
+
+class RandomHardDirectCandidateSampler:
+    """Fresh 32/24/8 random-hard draws for the direct-only objective."""
+
+    def __init__(
+        self,
+        artifact: dict,
+        candidate_size: int,
+        random_candidate_k: int,
+        hard_neg_k: int,
+        random_neg_k: int,
+        seed: int,
+    ):
+        self.hard_neg_indices = artifact["hard_neg_indices"].numpy()
+        self.n_items = int(self.hard_neg_indices.shape[0])
+        self.candidate_size = int(candidate_size)
+        self.random_candidate_k = int(random_candidate_k)
+        self.hard_neg_k = int(hard_neg_k)
+        self.random_neg_k = int(random_neg_k)
+        self.seed = int(seed)
+        self.epoch = 0
+
+        quota = self.random_candidate_k + self.hard_neg_k + self.random_neg_k
+        if quota != self.candidate_size:
+            raise ValueError(
+                "random-hard quotas must equal candidate_size: "
+                f"random_candidate={self.random_candidate_k} + hard={self.hard_neg_k} "
+                f"+ random_negative={self.random_neg_k} = {quota}, "
+                f"candidate_size={self.candidate_size}"
+            )
+        if self.n_items - 1 < self.candidate_size:
+            raise ValueError(
+                f"corpus has only {self.n_items - 1} non-anchor rows but "
+                f"candidate_size={self.candidate_size}"
+            )
+
+    def set_epoch(self, epoch: int) -> None:
+        self.epoch = int(epoch)
+
+    def _rng(self, idx: int) -> np.random.Generator:
+        return np.random.default_rng(
+            np.random.SeedSequence([self.seed, self.epoch, idx])
+        )
+
+    def _draw_random(
+        self, rng: np.random.Generator, seen: set[int], count: int
+    ) -> list[int]:
+        drawn: list[int] = []
+        while len(drawn) < count:
+            block = rng.integers(0, self.n_items, size=max(4 * count, 16))
+            for node in block:
+                node = int(node)
+                if node in seen:
+                    continue
+                drawn.append(node)
+                seen.add(node)
+                if len(drawn) == count:
+                    break
+        return drawn
+
+    def sample(self, idx: int) -> np.ndarray:
+        if idx < 0 or idx >= self.n_items:
+            raise IndexError(f"anchor index {idx} is outside [0, {self.n_items})")
+        rng = self._rng(idx)
+        hard_pool = self.hard_neg_indices[idx]
+        hard_pool = hard_pool[(hard_pool >= 0) & (hard_pool != idx)]
+        hard_pool = np.asarray(list(dict.fromkeys(hard_pool.tolist())), dtype=np.int64)
+        if hard_pool.size < self.hard_neg_k:
+            raise ValueError(
+                f"anchor {idx} has {hard_pool.size} unique hard candidates but "
+                f"hard_neg_k={self.hard_neg_k}"
+            )
+
+        hard = rng.choice(hard_pool, size=self.hard_neg_k, replace=False).tolist()
+        seen = {int(idx), *(int(node) for node in hard)}
+        random_candidates = self._draw_random(
+            rng, seen, self.random_candidate_k
+        )
+        random_negatives = self._draw_random(rng, seen, self.random_neg_k)
+        candidates = [*random_candidates, *hard, *random_negatives]
+        return np.asarray(candidates, dtype=np.int64)
+
+    def sample_torch(self, idx: int) -> torch.Tensor:
+        return torch.from_numpy(self.sample(idx)).long()

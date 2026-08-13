@@ -67,7 +67,12 @@ from src.evaluation.evaluation_automodel import (
     test_pair_tasks,
     test_sts_tasks,
 )
-from src.heatgeo import HeatGeoCandidateSampler, build_or_load_heatgeo_artifact
+from src.heatgeo import (
+    HeatGeoCandidateSampler,
+    RandomHardDirectCandidateSampler,
+    build_or_load_hard_negative_artifact,
+    build_or_load_heatgeo_artifact,
+)
 from src.loss import info_nce
 from src.pooling import last_token_pool
 
@@ -190,6 +195,9 @@ class KnowledgeDistiller:
             self.scheduler = self._build_scheduler()
             print("EMO criterion initialized and added to optimizer")
         elif config.distill_method == "heatgeo":
+            sampling_mode = getattr(config, "candidate_sampling_mode", "diffusion")
+            if sampling_mode not in {"diffusion", "random_hard_direct"}:
+                raise ValueError(f"unknown HeatGeo sampling mode: {sampling_mode}")
             self.criterion = HeatGeoDistillation(
                 student_dim=self.model_student.config.hidden_size,
                 teacher_dim=self.teacher_cls_all.shape[-1],
@@ -205,13 +213,16 @@ class KnowledgeDistiller:
                 direct_student_temp=getattr(config, "direct_student_temp", 0.10),
                 sgc_weight=getattr(config, "sgc_weight", 0.0),
                 sgc_huber_delta=getattr(config, "sgc_huber_delta", 0.10),
+                use_diffusion_loss=sampling_mode == "diffusion",
             ).to(self.device_s)
             # The criterion is parameter-free: everything it owns is a buffer, and
             # add_param_group rejects an empty parameter list.
             self.scheduler = self._build_scheduler()
             print(
                 "HeatGeo criterion initialized "
-                f"(scale_temps={self.criterion.scale_temps.tolist()}, "
+                f"(sampling_mode={sampling_mode}, "
+                f"diffusion_loss={'enabled' if self.criterion.use_diffusion_loss else 'disabled'}, "
+                f"scale_temps={self.criterion.scale_temps.tolist()}, "
                 f"share_in_batch={self.criterion.share_in_batch})"
             )
             if self.criterion.use_direct:
@@ -235,7 +246,7 @@ class KnowledgeDistiller:
                     "anchor's diffusion pool then carries target 0, which is a "
                     "gradient driving that cosine down regardless of the teacher."
                 )
-            if self.criterion.temps_tied:
+            if self.criterion.use_diffusion_loss and self.criterion.temps_tied:
                 print(
                     "WARNING: all scale_temps are equal. sum_r w_r KL(p_r||p^S) then "
                     "equals CE(sum_r w_r p_r, p^S) + const, so the diffusion scales "
@@ -634,32 +645,46 @@ class KnowledgeDistiller:
             self.teacher_cls_all = teacher_cls_list
 
             if cfg.distill_method == "heatgeo":
-                artifact_kwargs = {
-                    "teacher_embeddings": teacher_cls_list,
-                    "cache_path": cfg.heatgeo_cache_path,
-                    "log_dir": getattr(cfg, "heatgeo_log_dir", "logs/heatgeo"),
-                    "graph_k": getattr(cfg, "graph_k", 50),
-                    "graph_temp": getattr(cfg, "graph_temp", 0.1),
-                    "diffusion_scales": getattr(
-                        cfg, "diffusion_scales", (1, 2, 4)
-                    ),
-                    "scale_weights": getattr(
-                        cfg, "scale_weights", (1.0, 0.5, 0.25)
-                    ),
-                    "pool_size": getattr(cfg, "pool_size", 128),
-                    "hard_neg_pool": getattr(cfg, "hard_neg_pool", 200),
-                    "source_ids": self._heatgeo_source_ids(df),
-                    "walk_keep_topk": getattr(cfg, "walk_keep_topk", None),
-                }
-                if self.is_main_process:
-                    self.heatgeo_artifact = build_or_load_heatgeo_artifact(
-                        **artifact_kwargs
+                sampling_mode = getattr(
+                    cfg, "candidate_sampling_mode", "diffusion"
+                )
+                source_ids = self._heatgeo_source_ids(df)
+                if sampling_mode == "diffusion":
+                    artifact_builder = build_or_load_heatgeo_artifact
+                    artifact_kwargs = {
+                        "teacher_embeddings": teacher_cls_list,
+                        "cache_path": cfg.heatgeo_cache_path,
+                        "log_dir": getattr(cfg, "heatgeo_log_dir", "logs/heatgeo"),
+                        "graph_k": getattr(cfg, "graph_k", 50),
+                        "graph_temp": getattr(cfg, "graph_temp", 0.1),
+                        "diffusion_scales": getattr(
+                            cfg, "diffusion_scales", (1, 2, 4)
+                        ),
+                        "scale_weights": getattr(
+                            cfg, "scale_weights", (1.0, 0.5, 0.25)
+                        ),
+                        "pool_size": getattr(cfg, "pool_size", 128),
+                        "hard_neg_pool": getattr(cfg, "hard_neg_pool", 200),
+                        "source_ids": source_ids,
+                        "walk_keep_topk": getattr(cfg, "walk_keep_topk", None),
+                    }
+                elif sampling_mode == "random_hard_direct":
+                    artifact_builder = build_or_load_hard_negative_artifact
+                    artifact_kwargs = {
+                        "teacher_embeddings": teacher_cls_list,
+                        "cache_path": cfg.heatgeo_cache_path,
+                        "hard_neg_pool": getattr(cfg, "hard_neg_pool", 200),
+                        "source_ids": source_ids,
+                    }
+                else:
+                    raise ValueError(
+                        f"unknown HeatGeo sampling mode: {sampling_mode}"
                     )
+                if self.is_main_process:
+                    self.heatgeo_artifact = artifact_builder(**artifact_kwargs)
                 self.distributed.barrier()
                 if not self.is_main_process:
-                    self.heatgeo_artifact = build_or_load_heatgeo_artifact(
-                        **artifact_kwargs
-                    )
+                    self.heatgeo_artifact = artifact_builder(**artifact_kwargs)
 
             # Free teacher model to save GPU memory (teacher not needed after caching)
             del self.model_teacher
@@ -669,17 +694,32 @@ class KnowledgeDistiller:
             print("Teacher model freed from GPU memory")
 
             if cfg.distill_method == "heatgeo":
-                self.heatgeo_sampler = HeatGeoCandidateSampler(
-                    artifact=self.heatgeo_artifact,
-                    candidate_size=getattr(cfg, "candidate_size", 32),
-                    diffusion_quota=getattr(cfg, "diffusion_quota", 20),
-                    hard_neg_k=getattr(cfg, "hard_neg_k", 8),
-                    random_neg_k=getattr(cfg, "random_neg_k", 4),
-                    scale_weights=getattr(cfg, "scale_weights", (1.0, 0.5, 0.25)),
-                    seed=cfg.seed,
-                    deterministic_topm=getattr(cfg, "deterministic_topm", 4),
-                    stochastic=getattr(cfg, "stochastic_candidates", True),
+                sampling_mode = getattr(
+                    cfg, "candidate_sampling_mode", "diffusion"
                 )
+                if sampling_mode == "diffusion":
+                    self.heatgeo_sampler = HeatGeoCandidateSampler(
+                        artifact=self.heatgeo_artifact,
+                        candidate_size=getattr(cfg, "candidate_size", 32),
+                        diffusion_quota=getattr(cfg, "diffusion_quota", 20),
+                        hard_neg_k=getattr(cfg, "hard_neg_k", 8),
+                        random_neg_k=getattr(cfg, "random_neg_k", 4),
+                        scale_weights=getattr(
+                            cfg, "scale_weights", (1.0, 0.5, 0.25)
+                        ),
+                        seed=cfg.seed,
+                        deterministic_topm=getattr(cfg, "deterministic_topm", 4),
+                        stochastic=getattr(cfg, "stochastic_candidates", True),
+                    )
+                else:
+                    self.heatgeo_sampler = RandomHardDirectCandidateSampler(
+                        artifact=self.heatgeo_artifact,
+                        candidate_size=getattr(cfg, "candidate_size", 64),
+                        random_candidate_k=getattr(cfg, "random_candidate_k", 32),
+                        hard_neg_k=getattr(cfg, "hard_neg_k", 24),
+                        random_neg_k=getattr(cfg, "random_neg_k", 8),
+                        seed=cfg.seed,
+                    )
                 anchor_texts = df[self.heatgeo_anchor_column].astype(str).tolist()
                 self.train_ds = TextPairWithTeacherAndHeatGeo(
                     anchor_texts=anchor_texts,
@@ -699,14 +739,24 @@ class KnowledgeDistiller:
                     corpus_texts=anchor_texts,
                     encode_chunk_size=getattr(cfg, "encode_chunk_size", 256),
                 )
+                if sampling_mode == "diffusion":
+                    composition = (
+                        f"diffusion={self.heatgeo_sampler.diffusion_quota}, "
+                        f"hard={self.heatgeo_sampler.hard_neg_k}, "
+                        f"random={self.heatgeo_sampler.random_neg_k}, "
+                        f"stochastic={self.heatgeo_sampler.stochastic}"
+                    )
+                else:
+                    composition = (
+                        f"random_candidate={self.heatgeo_sampler.random_candidate_k}, "
+                        f"hard={self.heatgeo_sampler.hard_neg_k}, "
+                        f"random_negative={self.heatgeo_sampler.random_neg_k}"
+                    )
                 print(
                     "HeatGeo candidate sampling: "
+                    f"mode={sampling_mode}, "
                     f"candidate_size={self.heatgeo_sampler.candidate_size} "
-                    f"(diffusion={self.heatgeo_sampler.diffusion_quota}, "
-                    f"hard={self.heatgeo_sampler.hard_neg_k}, "
-                    f"random={self.heatgeo_sampler.random_neg_k}), "
-                    f"stochastic={self.heatgeo_sampler.stochastic}, "
-                    f"resample_per_epoch="
+                    f"({composition}), resample_per_epoch="
                     f"{getattr(cfg, 'resample_candidates_per_epoch', True)}"
                 )
             else:
@@ -910,7 +960,7 @@ class KnowledgeDistiller:
                 loss, metrics = self.criterion(
                     anchor_embeddings=S_cls1,
                     candidate_embeddings=S_candidates,
-                    teacher_probs=batch_s["teacher_probs"],
+                    teacher_probs=batch_s.get("teacher_probs"),
                     candidate_idx=batch_s.get("candidate_idx"),
                     anchor_idx=batch_s.get("idx"),
                 )
@@ -1567,6 +1617,7 @@ class KnowledgeDistiller:
         if epoch_means and self.is_main_process:
             headline = [
                 "loss_total",
+                "loss_direct",
                 "loss_diff",
                 "loss_sgc",
                 "loss_sgc_weighted",

@@ -86,3 +86,60 @@ def test_forward_adds_weighted_sgc_and_weight_zero_is_compatible():
     assert torch.isclose(
         baseline_total, torch.tensor(baseline_metrics["loss_diff"])
     )
+
+
+def test_direct_only_forward_is_finite_and_backpropagates():
+    torch.manual_seed(11)
+    teacher_embeddings = F.normalize(torch.randn(8, 3), dim=-1)
+    criterion = HeatGeoDistillation(
+        student_dim=3,
+        teacher_dim=3,
+        scale_weights=(1.0,),
+        share_in_batch=True,
+        teacher_embeddings=teacher_embeddings,
+        direct_weight=1.0,
+        direct_temp=0.10,
+        direct_student_temp=0.10,
+        sgc_weight=0.05,
+        use_diffusion_loss=False,
+    )
+    anchors = torch.randn(2, 3, requires_grad=True)
+    candidates = torch.randn(8, 3, requires_grad=True)
+    candidate_idx = torch.tensor([[2, 3, 4, 5], [0, 4, 6, 7]])
+    anchor_idx = torch.tensor([0, 1])
+
+    loss, metrics = criterion(
+        anchor_embeddings=anchors,
+        candidate_embeddings=candidates,
+        teacher_probs=None,
+        candidate_idx=candidate_idx,
+        anchor_idx=anchor_idx,
+    )
+    loss.backward()
+
+    assert torch.isfinite(loss)
+    assert metrics["diffusion_loss_active"] == 0.0
+    assert metrics["loss_direct"] >= 0.0
+    assert torch.isfinite(anchors.grad).all()
+    assert torch.isfinite(candidates.grad).all()
+
+
+def test_direct_only_requires_candidate_and_anchor_indices():
+    criterion = HeatGeoDistillation(
+        student_dim=3,
+        teacher_dim=3,
+        scale_weights=(1.0,),
+        teacher_embeddings=F.normalize(torch.randn(5, 3), dim=-1),
+        use_diffusion_loss=False,
+    )
+
+    try:
+        criterion(
+            anchor_embeddings=torch.randn(1, 3),
+            candidate_embeddings=torch.randn(2, 3),
+            teacher_probs=None,
+        )
+    except ValueError as exc:
+        assert "candidate_idx and anchor_idx" in str(exc)
+    else:
+        raise AssertionError("direct-only mode accepted missing corpus indices")

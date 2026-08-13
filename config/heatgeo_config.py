@@ -3,6 +3,9 @@ from .base_config import BaseConfig
 
 class HeatGeoConfig(BaseConfig):
     distill_method = "heatgeo"
+    # Keep diffusion as the historical default; random_hard_direct is an explicit
+    # ablation that skips graph construction and the local diffusion KL.
+    candidate_sampling_mode = "diffusion"
 
     student_model_name = "google-bert/bert-base-uncased"
     student_dtype = "float32"
@@ -104,6 +107,9 @@ class HeatGeoConfig(BaseConfig):
     # cause of the eval saturating at epoch 1. Quotas must sum to <= candidate_size.
     candidate_size = 64
     diffusion_quota = 32
+    # Used only by random_hard_direct. Together with hard_neg_k and random_neg_k,
+    # this must exactly fill candidate_size.
+    random_candidate_k = 32
     # Hard negatives were a liability while their target was a false zero: same-source,
     # top-200 teacher cosine, and the loss drove them apart anyway. With the direct
     # scale they carry their real teacher mass (~27% of it in a controlled probe, vs

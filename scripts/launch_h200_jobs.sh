@@ -30,6 +30,26 @@ mkdir -p "${MODEL_ROOT}" "${ARTIFACT_ROOT}" "${LOG_ROOT}"
 MANIFEST="${LOG_ROOT}/launch_${RUN_STAMP}.tsv"
 printf 'task\tphysical_gpu\tpid\tlog\tmodel_dir\tartifact_dir\n' > "${MANIFEST}"
 
+select_free_gpu() {
+    nvidia-smi \
+        --query-gpu=index,memory.free \
+        --format=csv,noheader,nounits \
+        | awk -F, -v minimum="${MIN_FREE_MB}" '
+            {
+                gsub(/[[:space:]]/, "", $1)
+                gsub(/[[:space:]]/, "", $2)
+                if ($2 >= minimum && $2 > best_free) {
+                    best_gpu = $1
+                    best_free = $2
+                }
+            }
+            END {
+                if (best_gpu == "") exit 1
+                print best_gpu
+            }
+        '
+}
+
 launch_job() {
     local task="$1"
     local physical_gpu="$2"
@@ -37,6 +57,8 @@ launch_job() {
     local student="$4"
     local teacher_pooling="$5"
     local master_port="$6"
+    local sampling_mode="${7:-diffusion}"
+    local artifact_file="${8:-heatgeo_graph.pt}"
     local free_mb
     local model_dir="${MODEL_ROOT}/${task}/${RUN_STAMP}"
     local artifact_dir="${ARTIFACT_ROOT}/${task}"
@@ -53,7 +75,10 @@ launch_job() {
         return 1
     fi
 
-    mkdir -p "${model_dir}/weights" "${artifact_dir}/graph_logs"
+    mkdir -p "${model_dir}/weights" "${artifact_dir}"
+    if [[ "${sampling_mode}" == "diffusion" ]]; then
+        mkdir -p "${artifact_dir}/graph_logs"
+    fi
     local command=(
         "${TORCHRUN}"
         --nnodes=1
@@ -71,11 +96,12 @@ launch_job() {
         --lr 3e-5
         --max_length 256
         --sgc_weight 0.05
+        --heatgeo_sampling_mode "${sampling_mode}"
         --num_workers 4
         --save_dir "${model_dir}"
         --weights_dir "${model_dir}/weights"
         --cache_path "${artifact_dir}/teacher_embeddings.pt"
-        --heatgeo_cache_path "${artifact_dir}/heatgeo_graph.pt"
+        --heatgeo_cache_path "${artifact_dir}/${artifact_file}"
         --heatgeo_log_dir "${artifact_dir}/graph_logs"
         --no_wandb
     )
@@ -85,6 +111,13 @@ launch_job() {
         echo "timestamp=${RUN_STAMP}"
         echo "physical_gpu=${physical_gpu}"
         echo "gpu_free_mb_before_launch=${free_mb}"
+        echo "sampling_mode=${sampling_mode}"
+        if [[ "${sampling_mode}" == "random_hard_direct" ]]; then
+            echo "candidate_composition=32_random+24_hard+8_random_negative"
+            echo "diffusion_loss=disabled"
+        else
+            echo "diffusion_loss=enabled"
+        fi
         echo "hf_hub_disable_xet=${DISABLE_XET}"
         printf 'command='
         printf '%q ' "${command[@]}"
@@ -143,7 +176,7 @@ is_requested() {
 
 for requested in "${REQUESTED_TASKS[@]}"; do
     case "${requested}" in
-        qwen3_4b_to_bert_base|bge_m3_to_minilmv2_h768|qwen3_0_6b_to_minilmv2_h384) ;;
+        qwen3_4b_to_bert_base|bge_m3_to_minilmv2_h768|qwen3_0_6b_to_minilmv2_h384|bge_m3_to_minilmv2_h768_random_hard_direct) ;;
         *)
             echo "Unknown task: ${requested}" >&2
             exit 1
@@ -172,6 +205,24 @@ if is_requested qwen3_0_6b_to_minilmv2_h384; then
         Qwen/Qwen3-Embedding-0.6B \
         nreimers/MiniLMv2-L6-H384-distilled-from-BERT-Large \
         last_token 29516 || failures=$((failures + 1))
+fi
+if is_requested bge_m3_to_minilmv2_h768_random_hard_direct; then
+    random_hard_gpu="${BGE_RANDOM_GPU:-}"
+    if [[ -z "${random_hard_gpu}" ]]; then
+        if ! random_hard_gpu="$(select_free_gpu)"; then
+            echo "No GPU has at least ${MIN_FREE_MB} MiB free" >&2
+            failures=$((failures + 1))
+            random_hard_gpu=""
+        fi
+    fi
+    if [[ -n "${random_hard_gpu}" ]]; then
+        launch_job \
+            bge_m3_to_minilmv2_h768_random_hard_direct "${random_hard_gpu}" \
+            BAAI/bge-m3 \
+            nreimers/MiniLMv2-L6-H768-distilled-from-BERT-Large \
+            cls 29517 random_hard_direct hard_negative_pool.pt \
+            || failures=$((failures + 1))
+    fi
 fi
 
 echo "Launch manifest: ${MANIFEST}"

@@ -104,6 +104,12 @@ def parse_args():
         help='HeatGeo similarity gauge calibration weight'
     )
     parser.add_argument(
+        '--heatgeo_sampling_mode',
+        choices=['diffusion', 'random_hard_direct'],
+        default=None,
+        help='HeatGeo candidate sampling and objective mode'
+    )
+    parser.add_argument(
         '--task_type',
         choices=['single_cls', 'pair_cls', 'pair_reg'],
         default=None,
@@ -132,7 +138,7 @@ def parse_args():
         '--heatgeo_cache_path',
         type=str,
         default=None,
-        help='HeatGeo graph artifact path'
+        help='HeatGeo graph or hard-negative artifact path'
     )
     parser.add_argument(
         '--heatgeo_log_dir',
@@ -229,6 +235,8 @@ def get_config(method: str, args):
         config.alpha_dtw = args.alpha_dtw
     if args.sgc_weight is not None:
         config.sgc_weight = args.sgc_weight
+    if args.heatgeo_sampling_mode is not None:
+        config.candidate_sampling_mode = args.heatgeo_sampling_mode
     if args.task_type is not None:
         config.task_type = args.task_type
     

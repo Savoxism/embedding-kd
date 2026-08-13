@@ -148,6 +148,7 @@ class HeatGeoDistillation(nn.Module):
         direct_student_temp: float = 0.10,
         sgc_weight: float = 0.0,
         sgc_huber_delta: float = 0.10,
+        use_diffusion_loss: bool = True,
     ):
         super().__init__()
         self.student_dim = student_dim
@@ -156,6 +157,7 @@ class HeatGeoDistillation(nn.Module):
         self.eps_norm = eps_norm
         self.diag_topk = diag_topk
         self.share_in_batch = share_in_batch
+        self.use_diffusion_loss = bool(use_diffusion_loss)
         self.sgc_weight = float(sgc_weight)
         self.sgc_huber_delta = float(sgc_huber_delta)
         if self.sgc_weight < 0.0:
@@ -167,6 +169,10 @@ class HeatGeoDistillation(nn.Module):
 
         self.use_direct = teacher_embeddings is not None and direct_weight > 0.0
         self.use_sgc = self.sgc_weight > 0.0
+        if not self.use_diffusion_loss and not self.use_direct:
+            raise ValueError(
+                "direct-only mode requires teacher_embeddings and direct_weight > 0"
+            )
         if self.use_sgc and not self.use_direct:
             raise ValueError("SGC requires the direct teacher scale")
         if self.use_direct:
@@ -262,6 +268,37 @@ class HeatGeoDistillation(nn.Module):
         self_mask = unique_idx.view(1, -1) == anchor_idx.view(-1, 1)
         return pool_embeddings, target, self_mask, own_mask, unique_idx
 
+    def _build_direct_columns(
+        self,
+        candidate_embeddings: torch.Tensor,
+        candidate_idx: torch.Tensor,
+        anchor_idx: torch.Tensor,
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, bool]:
+        batch_size, candidate_size = candidate_idx.shape
+        flat_embeddings = candidate_embeddings.reshape(
+            batch_size * candidate_size, -1
+        )
+        if self.share_in_batch:
+            flat_idx = candidate_idx.reshape(-1)
+            unique_idx, inverse = torch.unique(flat_idx, return_inverse=True)
+            representative = torch.zeros(
+                unique_idx.numel(), dtype=torch.long, device=flat_idx.device
+            )
+            representative.scatter_(
+                0,
+                inverse,
+                torch.arange(
+                    flat_idx.numel(), device=flat_idx.device, dtype=torch.long
+                ),
+            )
+            columns = flat_embeddings.index_select(0, representative)
+            self_mask = unique_idx.view(1, -1) == anchor_idx.view(-1, 1)
+            return columns, self_mask, unique_idx, True
+
+        columns = flat_embeddings.view(batch_size, candidate_size, -1)
+        self_mask = candidate_idx == anchor_idx.view(-1, 1)
+        return columns, self_mask, candidate_idx, False
+
     @torch.no_grad()
     def _direct_target(
         self,
@@ -307,14 +344,148 @@ class HeatGeoDistillation(nn.Module):
         )
         return loss, stats
 
+    def _forward_direct_only(
+        self,
+        anchor_embeddings: torch.Tensor,
+        candidate_embeddings: torch.Tensor,
+        candidate_idx: torch.Tensor | None,
+        anchor_idx: torch.Tensor | None,
+    ) -> tuple[torch.Tensor, dict[str, float]]:
+        if candidate_idx is None or anchor_idx is None:
+            raise ValueError(
+                "candidate_idx and anchor_idx are required in direct-only mode"
+            )
+        if candidate_idx.ndim != 2 or anchor_idx.ndim != 1:
+            raise ValueError("candidate_idx must be [B, C] and anchor_idx must be [B]")
+        if candidate_idx.size(0) != anchor_embeddings.size(0):
+            raise ValueError("candidate_idx batch size does not match anchor embeddings")
+        expected_rows = candidate_idx.numel()
+        if candidate_embeddings.reshape(-1, candidate_embeddings.size(-1)).size(0) != expected_rows:
+            raise ValueError(
+                f"candidate embeddings contain the wrong number of rows: "
+                f"expected {expected_rows}"
+            )
+
+        _assert_finite_tensors(
+            (
+                ("anchor_embeddings", anchor_embeddings),
+                ("candidate_embeddings", candidate_embeddings),
+            )
+        )
+        anchor_norm = F.normalize(
+            anchor_embeddings, p=2, dim=-1, eps=self.eps_norm
+        )
+        columns, self_mask, column_idx, shared = self._build_direct_columns(
+            candidate_embeddings, candidate_idx, anchor_idx
+        )
+        column_norm = F.normalize(columns, p=2, dim=-1, eps=self.eps_norm)
+        if shared:
+            similarity = anchor_norm @ column_norm.t()
+        else:
+            similarity = torch.einsum("bd,bcd->bc", anchor_norm, column_norm)
+
+        direct, teacher_similarity = self._direct_target(
+            anchor_idx, column_idx, self_mask, shared
+        )
+        logits = similarity / self.direct_student_temp.to(similarity.dtype)
+        logits = logits.masked_fill(self_mask, float("-inf"))
+        log_probs = F.log_softmax(logits, dim=-1)
+        log_direct = torch.where(
+            direct > 0, direct.clamp_min(1e-12).log(), torch.zeros_like(direct)
+        )
+        contribution = torch.where(
+            direct > 0,
+            direct * (log_direct - log_probs),
+            torch.zeros_like(direct),
+        )
+        loss_direct = contribution.sum(dim=-1).mean()
+
+        loss_sgc = anchor_norm.sum() * 0.0
+        zero = loss_sgc.detach()
+        sgc_stats = (zero, zero, zero)
+        if self.use_sgc:
+            loss_sgc, sgc_stats = self._sgc_loss(
+                similarity, teacher_similarity, direct
+            )
+        loss_sgc_weighted = self.sgc_weight * loss_sgc
+        total_loss = loss_direct + loss_sgc_weighted
+        _assert_finite_tensors(
+            (
+                ("loss_direct", loss_direct),
+                ("loss_sgc", loss_sgc),
+                ("loss_total", total_loss),
+            )
+        )
+
+        with torch.no_grad():
+            student_probs = log_probs.exp()
+            teacher_entropy = -(direct * log_direct).sum(dim=-1).mean()
+            student_entropy = -(
+                student_probs
+                * torch.where(
+                    student_probs > 0, log_probs, torch.zeros_like(log_probs)
+                )
+            ).sum(dim=-1).mean()
+            available = (~self_mask).sum(dim=-1).float()
+            entropy_ratio = student_entropy / available.clamp_min(2.0).log().mean()
+            k = min(self.diag_topk, direct.size(-1))
+            teacher_top = direct.topk(k, dim=-1).indices
+            scalars = torch.stack(
+                [
+                    total_loss.detach(),
+                    loss_direct.detach(),
+                    loss_sgc.detach(),
+                    loss_sgc_weighted.detach(),
+                    *sgc_stats,
+                    teacher_entropy,
+                    student_entropy,
+                    entropy_ratio,
+                    student_probs.max(dim=-1).values.mean(),
+                    direct.max(dim=-1).values.mean(),
+                    student_probs.gather(-1, teacher_top).sum(dim=-1).mean(),
+                    available.mean(),
+                ]
+            ).float().tolist()
+        names = (
+            "loss_total",
+            "loss_direct",
+            "loss_sgc",
+            "loss_sgc_weighted",
+            "sgc_abs_origin_gap",
+            "sgc_student_origin",
+            "sgc_teacher_origin",
+            "teacher_entropy_direct",
+            "student_entropy_direct",
+            "student_entropy_ratio_direct",
+            "student_top1_direct",
+            "target_top1_direct",
+            f"student_mass_on_teacher_top{k}_direct",
+            "pool_columns_direct",
+        )
+        metrics = dict(zip(names, scalars))
+        metrics["kl_direct"] = metrics["loss_direct"]
+        metrics["candidates_per_anchor"] = float(candidate_idx.size(1))
+        metrics["diffusion_loss_active"] = 0.0
+        self.direct_active = True
+        return total_loss, metrics
+
     def forward(
         self,
         anchor_embeddings: torch.Tensor,
         candidate_embeddings: torch.Tensor,
-        teacher_probs: torch.Tensor,
+        teacher_probs: torch.Tensor | None,
         candidate_idx: torch.Tensor | None = None,
         anchor_idx: torch.Tensor | None = None,
     ) -> tuple[torch.Tensor, dict[str, float]]:
+        if not self.use_diffusion_loss:
+            return self._forward_direct_only(
+                anchor_embeddings,
+                candidate_embeddings,
+                candidate_idx,
+                anchor_idx,
+            )
+        if teacher_probs is None:
+            raise ValueError("teacher_probs is required when diffusion loss is active")
         _assert_finite_tensors(
             (
                 ("anchor_embeddings", anchor_embeddings),

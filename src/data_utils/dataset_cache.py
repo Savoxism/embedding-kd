@@ -127,12 +127,17 @@ class TextPairWithTeacherAndHeatGeo(Dataset):
         # *texts* here shipped candidate_size strings per item through shared
         # memory and re-tokenized every one of them; HeatGeoCollate holds the
         # corpus tokenized once and looks them up by index instead.
-        candidate_idx, teacher_probs = self.sampler.sample_torch(idx)
+        sampled = self.sampler.sample_torch(idx)
+        if isinstance(sampled, tuple):
+            candidate_idx, teacher_probs = sampled
+        else:
+            candidate_idx, teacher_probs = sampled, None
         item = {
             "idx": idx,
             "candidate_idx": candidate_idx,
-            "teacher_probs": teacher_probs,
         }
+        if teacher_probs is not None:
+            item["teacher_probs"] = teacher_probs
         if self.labels is not None:
             item["label"] = int(self.labels[idx])
         return item
@@ -215,9 +220,11 @@ class HeatGeoCollate:
         candidate_idx = torch.stack(
             [item["candidate_idx"] for item in batch], dim=0
         ).long()
-        teacher_probs = torch.stack(
-            [item["teacher_probs"] for item in batch], dim=0
-        ).float()
+        teacher_probs = None
+        if "teacher_probs" in batch[0]:
+            teacher_probs = torch.stack(
+                [item["teacher_probs"] for item in batch], dim=0
+            ).float()
         ys = [item["label"] for item in batch] if "label" in batch[0] else None
 
         unique_idx, inverse = torch.unique(candidate_idx.reshape(-1), return_inverse=True)
@@ -248,8 +255,9 @@ class HeatGeoCollate:
             "attention_mask1_stu": anchor_mask,
             "candidate_chunks": candidate_chunks,
             "candidate_inverse": candidate_inverse,
-            "teacher_probs": teacher_probs,
         }
+        if teacher_probs is not None:
+            out["teacher_probs"] = teacher_probs
         if ys is not None:
             out["labels"] = torch.tensor(ys, dtype=torch.long)
         return out
