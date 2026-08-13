@@ -19,6 +19,10 @@ if ! command -v nvidia-smi >/dev/null 2>&1; then
     echo "nvidia-smi is required" >&2
     exit 1
 fi
+if ! command -v tmux >/dev/null 2>&1; then
+    echo "tmux is required to keep jobs alive after SSH disconnects" >&2
+    exit 1
+fi
 
 mkdir -p "${MODEL_ROOT}" "${ARTIFACT_ROOT}" "${LOG_ROOT}"
 MANIFEST="${LOG_ROOT}/launch_${RUN_STAMP}.tsv"
@@ -35,6 +39,7 @@ launch_job() {
     local model_dir="${MODEL_ROOT}/${task}/${RUN_STAMP}"
     local artifact_dir="${ARTIFACT_ROOT}/${task}"
     local log_path="${LOG_ROOT}/${task}_${RUN_STAMP}.log"
+    local tmux_session="heatgeo_${task}_${RUN_STAMP}"
 
     free_mb="$(
         nvidia-smi -i "${physical_gpu}" \
@@ -83,21 +88,31 @@ launch_job() {
         printf '\n'
     } > "${log_path}"
 
-    (
-        cd "${PROJECT_ROOT}"
-        nohup env \
-            CUDA_DEVICE_ORDER=PCI_BUS_ID \
-            CUDA_VISIBLE_DEVICES="${physical_gpu}" \
-            TOKENIZERS_PARALLELISM=false \
-            PYTHONUNBUFFERED=1 \
-            WANDB_MODE=disabled \
-            "${command[@]}" >> "${log_path}" 2>&1 < /dev/null &
-        echo $! > "${model_dir}/launcher.pid"
-    )
+    local detached_command
+    printf -v detached_command '%q ' \
+        env \
+        CUDA_DEVICE_ORDER=PCI_BUS_ID \
+        CUDA_VISIBLE_DEVICES="${physical_gpu}" \
+        TOKENIZERS_PARALLELISM=false \
+        PYTHONUNBUFFERED=1 \
+        WANDB_MODE=disabled \
+        "${command[@]}"
+    printf -v detached_command \
+        'exec %s >> %q 2>&1 < /dev/null' \
+        "${detached_command}" "${log_path}"
+
+    if ! tmux new-session -d -s "${tmux_session}" -c "${PROJECT_ROOT}" \
+        bash -lc "${detached_command}"; then
+        echo "Failed to create tmux session ${tmux_session}" >&2
+        return 1
+    fi
     local pid
-    pid="$(cat "${model_dir}/launcher.pid")"
+    pid="$(tmux display-message -p -t "${tmux_session}:0.0" '#{pane_pid}')"
+    echo "${pid}" > "${model_dir}/launcher.pid"
+    echo "${tmux_session}" > "${model_dir}/tmux.session"
     sleep 3
-    if ! kill -0 "${pid}" 2>/dev/null; then
+    if ! tmux has-session -t "${tmux_session}" 2>/dev/null || \
+        ! kill -0 "${pid}" 2>/dev/null; then
         echo "${task} exited during startup; see ${log_path}" >&2
         tail -n 30 "${log_path}" >&2 || true
         return 1
