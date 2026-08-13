@@ -102,7 +102,7 @@ launch_job() {
         "${detached_command}" "${log_path}"
 
     if ! tmux new-session -d -s "${tmux_session}" -c "${PROJECT_ROOT}" \
-        bash -lc "${detached_command}"; then
+        "${detached_command}"; then
         echo "Failed to create tmux session ${tmux_session}" >&2
         return 1
     fi
