@@ -10,6 +10,7 @@ MODEL_ROOT="${PROJECT_ROOT}/models"
 ARTIFACT_ROOT="${PROJECT_ROOT}/artifacts"
 LOG_ROOT="${PROJECT_ROOT}/logs"
 MIN_FREE_MB="${MIN_FREE_MB:-100000}"
+DISABLE_XET="${HF_HUB_DISABLE_XET:-0}"
 REQUESTED_TASKS=("$@")
 
 if [[ ! -x "${TORCHRUN}" ]]; then
@@ -84,6 +85,7 @@ launch_job() {
         echo "timestamp=${RUN_STAMP}"
         echo "physical_gpu=${physical_gpu}"
         echo "gpu_free_mb_before_launch=${free_mb}"
+        echo "hf_hub_disable_xet=${DISABLE_XET}"
         printf 'command='
         printf '%q ' "${command[@]}"
         printf '\n'
@@ -103,6 +105,7 @@ launch_job() {
         TOKENIZERS_PARALLELISM=false \
         PYTHONUNBUFFERED=1 \
         WANDB_MODE=disabled \
+        HF_HUB_DISABLE_XET="${DISABLE_XET}" \
         "${command[@]}" >> "${log_path}" 2>&1 < /dev/null &
     local pid
     sleep 3
