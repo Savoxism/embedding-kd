@@ -1,7 +1,7 @@
 # Random-Hard Direct Distillation for BGE-M3 to MiniLM-H768
 
 Date: 2026-08-13
-Status: Approved design; implementation pending
+Status: Implemented and deployed
 
 ## Goal
 
@@ -226,3 +226,17 @@ Implementation is complete when:
   loss, and model/artifact/log paths match the isolated layout above;
 - the five-epoch run completes successfully and leaves final student weights plus
   evaluation metrics in its timestamped model directory and log.
+
+## Deployment result
+
+Implemented in commit `b6f6f8a` and deployed to `H200_Tensara` on GPU 4 as run
+`20260813-045123`. All 13 local and remote tests passed. The run completed five
+epochs without non-finite loss or gradient skips, produced a hard-only artifact
+with a full `200/200` hard pool for every anchor, and did not create a diffusion
+graph.
+
+Final epoch-5 validation averages were IOD 70.58, OOD 83.28, and overall 79.05.
+Final published-test averages were IOD 69.46, OOD 79.93, and overall 76.44. Durable
+outputs are stored under the timestamped `models` directory, with the teacher cache
+and hard-negative artifact under the task's `artifacts` directory and the complete
+timestamped run log under `logs`.
