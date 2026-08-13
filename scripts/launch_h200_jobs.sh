@@ -10,6 +10,7 @@ MODEL_ROOT="${PROJECT_ROOT}/models"
 ARTIFACT_ROOT="${PROJECT_ROOT}/artifacts"
 LOG_ROOT="${PROJECT_ROOT}/logs"
 MIN_FREE_MB="${MIN_FREE_MB:-100000}"
+MAX_IDLE_UTIL="${MAX_IDLE_UTIL:-5}"
 DISABLE_XET="${HF_HUB_DISABLE_XET:-0}"
 REQUESTED_TASKS=("$@")
 
@@ -30,24 +31,46 @@ mkdir -p "${MODEL_ROOT}" "${ARTIFACT_ROOT}" "${LOG_ROOT}"
 MANIFEST="${LOG_ROOT}/launch_${RUN_STAMP}.tsv"
 printf 'task\tphysical_gpu\tpid\tlog\tmodel_dir\tartifact_dir\n' > "${MANIFEST}"
 
-select_free_gpu() {
+select_idle_gpus() {
+    local needed="$1"
+    local active_gpu_uuids
+    active_gpu_uuids="$(
+        nvidia-smi \
+            --query-compute-apps=gpu_uuid \
+            --format=csv,noheader,nounits 2>/dev/null || true
+    )"
     nvidia-smi \
-        --query-gpu=index,memory.free \
+        --query-gpu=index,uuid,memory.free,utilization.gpu \
         --format=csv,noheader,nounits \
-        | awk -F, -v minimum="${MIN_FREE_MB}" '
+        | awk -F, \
+            -v minimum="${MIN_FREE_MB}" \
+            -v max_util="${MAX_IDLE_UTIL}" \
+            -v active_uuids="${active_gpu_uuids}" '
+            BEGIN {
+                active_count = split(active_uuids, values, /[[:space:]]+/)
+                for (i = 1; i <= active_count; i++) active[values[i]] = 1
+            }
             {
                 gsub(/[[:space:]]/, "", $1)
                 gsub(/[[:space:]]/, "", $2)
-                if ($2 >= minimum && $2 > best_free) {
-                    best_gpu = $1
-                    best_free = $2
+                gsub(/[[:space:]]/, "", $3)
+                gsub(/[[:space:]]/, "", $4)
+                if ($3 >= minimum && $4 <= max_util && !($2 in active)) {
+                    print $1 "\t" $3
                 }
             }
-            END {
-                if (best_gpu == "") exit 1
-                print best_gpu
-            }
-        '
+        ' \
+        | sort -t $'\t' -k2,2nr \
+        | awk -v needed="${needed}" 'NR <= needed { print $1 }'
+}
+
+select_free_gpu() {
+    local selected
+    selected="$(select_idle_gpus 1)"
+    if [[ -z "${selected}" ]]; then
+        return 1
+    fi
+    printf '%s\n' "${selected}"
 }
 
 launch_job() {
@@ -59,6 +82,7 @@ launch_job() {
     local master_port="$6"
     local sampling_mode="${7:-diffusion}"
     local artifact_file="${8:-heatgeo_graph.pt}"
+    local save_every="${9:-1}"
     local free_mb
     local model_dir="${MODEL_ROOT}/${task}/${RUN_STAMP}"
     local artifact_dir="${ARTIFACT_ROOT}/${task}"
@@ -93,6 +117,7 @@ launch_job() {
         --teacher_pooling "${teacher_pooling}"
         --batch_size 32
         --epochs 5
+        --save_every "${save_every}"
         --lr 3e-5
         --max_length 256
         --sgc_weight 0.05
@@ -112,6 +137,7 @@ launch_job() {
         echo "physical_gpu=${physical_gpu}"
         echo "gpu_free_mb_before_launch=${free_mb}"
         echo "sampling_mode=${sampling_mode}"
+        echo "save_every=${save_every}"
         if [[ "${sampling_mode}" == "random_hard_direct" ]]; then
             echo "candidate_composition=32_random+24_hard+8_random_negative"
             echo "diffusion_loss=disabled"
@@ -176,13 +202,40 @@ is_requested() {
 
 for requested in "${REQUESTED_TASKS[@]}"; do
     case "${requested}" in
-        qwen3_4b_to_bert_base|bge_m3_to_minilmv2_h768|qwen3_0_6b_to_minilmv2_h384|bge_m3_to_minilmv2_h768_random_hard_direct) ;;
+        qwen3_4b_to_bert_base|bge_m3_to_minilmv2_h768|qwen3_0_6b_to_minilmv2_h384|bge_m3_to_minilmv2_h768_random_hard_direct|qwen3_4b_to_bert_base_random_hard_direct|qwen3_0_6b_to_minilmv2_h384_random_hard_direct) ;;
         *)
             echo "Unknown task: ${requested}" >&2
             exit 1
             ;;
     esac
 done
+
+qwen4_random_gpu=""
+qwen06_random_gpu=""
+if is_requested qwen3_4b_to_bert_base_random_hard_direct || \
+    is_requested qwen3_0_6b_to_minilmv2_h384_random_hard_direct; then
+    idle_gpu_snapshot="$(select_idle_gpus 2)"
+    if is_requested qwen3_4b_to_bert_base_random_hard_direct && \
+        is_requested qwen3_0_6b_to_minilmv2_h384_random_hard_direct; then
+        if [[ "$(printf '%s\n' "${idle_gpu_snapshot}" | awk 'NF { count++ } END { print count + 0 }')" -lt 2 ]]; then
+            echo "Need two distinct idle GPUs with at least ${MIN_FREE_MB} MiB free and utilization <= ${MAX_IDLE_UTIL}%" >&2
+            exit 1
+        fi
+        qwen4_random_gpu="$(printf '%s\n' "${idle_gpu_snapshot}" | sed -n '1p')"
+        qwen06_random_gpu="$(printf '%s\n' "${idle_gpu_snapshot}" | sed -n '2p')"
+    else
+        selected_random_gpu="$(printf '%s\n' "${idle_gpu_snapshot}" | sed -n '1p')"
+        if [[ -z "${selected_random_gpu}" ]]; then
+            echo "No idle GPU has at least ${MIN_FREE_MB} MiB free and utilization <= ${MAX_IDLE_UTIL}%" >&2
+            exit 1
+        fi
+        if is_requested qwen3_4b_to_bert_base_random_hard_direct; then
+            qwen4_random_gpu="${selected_random_gpu}"
+        else
+            qwen06_random_gpu="${selected_random_gpu}"
+        fi
+    fi
+fi
 
 failures=0
 if is_requested qwen3_4b_to_bert_base; then
@@ -223,6 +276,22 @@ if is_requested bge_m3_to_minilmv2_h768_random_hard_direct; then
             cls 29517 random_hard_direct hard_negative_pool.pt \
             || failures=$((failures + 1))
     fi
+fi
+if is_requested qwen3_4b_to_bert_base_random_hard_direct; then
+    launch_job \
+        qwen3_4b_to_bert_base_random_hard_direct "${qwen4_random_gpu}" \
+        Qwen/Qwen3-Embedding-4B \
+        google-bert/bert-base-uncased \
+        last_token 29518 random_hard_direct hard_negative_pool.pt 3 \
+        || failures=$((failures + 1))
+fi
+if is_requested qwen3_0_6b_to_minilmv2_h384_random_hard_direct; then
+    launch_job \
+        qwen3_0_6b_to_minilmv2_h384_random_hard_direct "${qwen06_random_gpu}" \
+        Qwen/Qwen3-Embedding-0.6B \
+        nreimers/MiniLMv2-L6-H384-distilled-from-BERT-Large \
+        last_token 29519 random_hard_direct hard_negative_pool.pt 3 \
+        || failures=$((failures + 1))
 fi
 
 echo "Launch manifest: ${MANIFEST}"

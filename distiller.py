@@ -83,6 +83,11 @@ from src.pooling import last_token_pool
 IOD_BENCHMARKS = frozenset({"emotion", "wic", "stsb"})
 
 
+def should_save_epoch(epoch_index: int, save_every: int) -> bool:
+    """Return whether a zero-based epoch is due for a periodic save."""
+    return (epoch_index + 1) % save_every == 0
+
+
 def is_finite(x: torch.Tensor) -> bool:
     return torch.is_tensor(x) and torch.isfinite(x).all().item()
 
@@ -1978,7 +1983,7 @@ class KnowledgeDistiller:
                     {"stage": 1, "train": self.last_epoch_metrics}
                 )
 
-                if (epoch + 1) % cfg.save_every == 0:
+                if should_save_epoch(epoch, cfg.save_every):
                     self.save_checkpoint(epoch, {"loss": avg_loss})
 
             print("\n" + "=" * 70)
@@ -2040,7 +2045,7 @@ class KnowledgeDistiller:
                     }
                 )
 
-                if (epoch + 1) % cfg.save_every == 0:
+                if should_save_epoch(epoch, cfg.save_every):
                     self.save_checkpoint(epoch, {"loss": avg_loss})
 
             print("\n" + "=" * 70)
@@ -2111,7 +2116,7 @@ class KnowledgeDistiller:
                     }
                 )
 
-                if (epoch + 1) % cfg.save_every == 0:
+                if should_save_epoch(epoch, cfg.save_every):
                     try:
                         self.save_checkpoint(epoch, {"loss": avg_loss})
                     except Exception as e:

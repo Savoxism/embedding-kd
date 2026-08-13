@@ -39,8 +39,8 @@ Use the project `.venv` only:
 .venv/bin/python -m pytest -q
 .venv/bin/python -m compileall -q main.py config heatgeo distiller.py
 bash -n scripts/launch_h200_jobs.sh
-.venv/bin/python -m torch.distributed.run --standalone --nproc_per_node=2 \
-  scripts/ddp_smoke.py
+.venv/bin/python -m torch.distributed.run --nnodes=1 --nproc_per_node=2 \
+  --master_addr=127.0.0.1 --master_port=29621 scripts/distributed_smoke.py
 ```
 
 The remote equivalents run from

@@ -73,6 +73,12 @@ def parse_args():
         help='Number of training epochs'
     )
     parser.add_argument(
+        '--save_every',
+        type=int,
+        default=None,
+        help='Save a periodic checkpoint every N epochs (must be positive)'
+    )
+    parser.add_argument(
         '--lr',
         type=float,
         default=None,
@@ -224,6 +230,10 @@ def get_config(method: str, args):
         config.batch_size = args.batch_size
     if args.epochs is not None:
         config.epochs = args.epochs
+    if args.save_every is not None:
+        if args.save_every <= 0:
+            raise ValueError("--save_every must be a positive integer")
+        config.save_every = args.save_every
     if args.lr is not None:
         config.learning_rate = args.lr
     if args.max_length is not None:
