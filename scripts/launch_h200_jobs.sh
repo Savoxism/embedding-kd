@@ -10,6 +10,7 @@ MODEL_ROOT="${PROJECT_ROOT}/models"
 ARTIFACT_ROOT="${PROJECT_ROOT}/artifacts"
 LOG_ROOT="${PROJECT_ROOT}/logs"
 MIN_FREE_MB="${MIN_FREE_MB:-100000}"
+REQUESTED_TASKS=("$@")
 
 if [[ ! -x "${TORCHRUN}" ]]; then
     echo "Missing project torchrun: ${TORCHRUN}" >&2
@@ -123,22 +124,52 @@ launch_job() {
     echo "Started ${task} on physical GPU ${physical_gpu}: pid=${pid}, log=${log_path}"
 }
 
+is_requested() {
+    local task="$1"
+    local requested
+    if (( ${#REQUESTED_TASKS[@]} == 0 )); then
+        return 0
+    fi
+    for requested in "${REQUESTED_TASKS[@]}"; do
+        if [[ "${requested}" == "${task}" ]]; then
+            return 0
+        fi
+    done
+    return 1
+}
+
+for requested in "${REQUESTED_TASKS[@]}"; do
+    case "${requested}" in
+        qwen3_4b_to_bert_base|bge_m3_to_minilmv2_h768|qwen3_0_6b_to_minilmv2_h384) ;;
+        *)
+            echo "Unknown task: ${requested}" >&2
+            exit 1
+            ;;
+    esac
+done
+
 failures=0
-launch_job \
-    qwen3_4b_to_bert_base 1 \
-    Qwen/Qwen3-Embedding-4B \
-    google-bert/bert-base-uncased \
-    last_token 29511 || failures=$((failures + 1))
-launch_job \
-    bge_m3_to_minilmv2_h768 2 \
-    BAAI/bge-m3 \
-    nreimers/MiniLMv2-L6-H768-distilled-from-BERT-Large \
-    cls 29512 || failures=$((failures + 1))
-launch_job \
-    qwen3_0_6b_to_minilmv2_h384 6 \
-    Qwen/Qwen3-Embedding-0.6B \
-    nreimers/MiniLMv2-L6-H384-distilled-from-BERT-Large \
-    last_token 29516 || failures=$((failures + 1))
+if is_requested qwen3_4b_to_bert_base; then
+    launch_job \
+        qwen3_4b_to_bert_base 1 \
+        Qwen/Qwen3-Embedding-4B \
+        google-bert/bert-base-uncased \
+        last_token 29511 || failures=$((failures + 1))
+fi
+if is_requested bge_m3_to_minilmv2_h768; then
+    launch_job \
+        bge_m3_to_minilmv2_h768 2 \
+        BAAI/bge-m3 \
+        nreimers/MiniLMv2-L6-H768-distilled-from-BERT-Large \
+        cls 29512 || failures=$((failures + 1))
+fi
+if is_requested qwen3_0_6b_to_minilmv2_h384; then
+    launch_job \
+        qwen3_0_6b_to_minilmv2_h384 3 \
+        Qwen/Qwen3-Embedding-0.6B \
+        nreimers/MiniLMv2-L6-H384-distilled-from-BERT-Large \
+        last_token 29516 || failures=$((failures + 1))
+fi
 
 echo "Launch manifest: ${MANIFEST}"
 if (( failures > 0 )); then
