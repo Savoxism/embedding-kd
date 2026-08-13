@@ -1,6 +1,7 @@
 #
 logs
 models
+artifacts
 cache
 wandb
 

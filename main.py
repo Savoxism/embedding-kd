@@ -1,5 +1,8 @@
 import argparse
+import os
 import sys
+
+import torch
 from config import (
     BaseConfig,
     CDMConfig,
@@ -49,6 +52,12 @@ def parse_args():
         type=str,
         default=None,
         help='Teacher model name or path'
+    )
+    parser.add_argument(
+        '--teacher_pooling',
+        choices=['last_token', 'mean', 'cls'],
+        default=None,
+        help='Pooling used when caching teacher sentence embeddings'
     )
     
     parser.add_argument(
@@ -112,6 +121,24 @@ def parse_args():
         type=str,
         default=None,
         help='Optional durable directory for per-epoch student weights'
+    )
+    parser.add_argument(
+        '--cache_path',
+        type=str,
+        default=None,
+        help='Teacher embedding cache path'
+    )
+    parser.add_argument(
+        '--heatgeo_cache_path',
+        type=str,
+        default=None,
+        help='HeatGeo graph artifact path'
+    )
+    parser.add_argument(
+        '--heatgeo_log_dir',
+        type=str,
+        default=None,
+        help='HeatGeo graph diagnostics directory'
     )
     
     parser.add_argument(
@@ -184,6 +211,8 @@ def get_config(method: str, args):
         config.student_model_name = args.student_model
     if args.teacher_model is not None:
         config.teacher_model_name = args.teacher_model
+    if args.teacher_pooling is not None:
+        config.pooling_method = args.teacher_pooling
     
     if args.batch_size is not None:
         config.batch_size = args.batch_size
@@ -207,6 +236,12 @@ def get_config(method: str, args):
         config.save_dir = args.save_dir
     if args.weights_dir is not None:
         config.weights_dir = args.weights_dir
+    if args.cache_path is not None:
+        config.cache_path = args.cache_path
+    if args.heatgeo_cache_path is not None:
+        config.heatgeo_cache_path = args.heatgeo_cache_path
+    if args.heatgeo_log_dir is not None:
+        config.heatgeo_log_dir = args.heatgeo_log_dir
     
     if args.seed is not None:
         config.seed = args.seed
@@ -231,12 +266,13 @@ def main():
     
     config = get_config(args.method, args)
     
-    print("\n" + "="*70)
-    print(f"Configuration for {args.method.upper()} method:")
-    print("="*70)
-    for k, v in config.to_dict().items():
-        print(f"  {k:25s} : {v}")
-    print("="*70 + "\n")
+    if int(os.environ.get("RANK", "0")) == 0:
+        print("\n" + "="*70)
+        print(f"Configuration for {args.method.upper()} method:")
+        print("="*70)
+        for k, v in config.to_dict().items():
+            print(f"  {k:25s} : {v}")
+        print("="*70 + "\n")
     
     try:
         distiller = KnowledgeDistiller(config)
@@ -244,6 +280,8 @@ def main():
         print(f"Error creating distiller: {e}")
         import traceback
         traceback.print_exc()
+        if torch.distributed.is_initialized():
+            torch.distributed.destroy_process_group()
         sys.exit(1)
     
     try:
@@ -256,6 +294,8 @@ def main():
         import traceback
         traceback.print_exc()
         sys.exit(1)
+    finally:
+        distiller.close()
 
 
 if __name__ == '__main__':

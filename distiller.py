@@ -14,7 +14,7 @@ import torch
 import torch.nn.functional as F
 from torch import nn, optim
 from torch.amp import GradScaler, autocast
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader, DistributedSampler
 from tqdm import tqdm
 from transformers import AutoModel, AutoTokenizer, get_scheduler
 from transformers import __version__ as transformers_version
@@ -53,6 +53,7 @@ from src.data_utils.dataset_cache import (
     TextPairWithTeacher,
     TextPairWithTeacherAndHeatGeo,
 )
+from src.distributed_utils import DistributedContext, unwrap_model
 
 # Use evaluation_automodel for AutoModel (not evaluation_model_define which is for Stella)
 from src.evaluation.evaluation_automodel import (
@@ -132,6 +133,8 @@ def grads_are_finite(optim) -> bool:
 class KnowledgeDistiller:
     def __init__(self, config):
         self.config = config
+        self.distributed = DistributedContext.initialize()
+        self.is_main_process = self.distributed.is_main_process
         self.wandb_run = None
         self.global_step = 0
         self.current_epoch = 0
@@ -242,6 +245,19 @@ class KnowledgeDistiller:
         else:
             self.criterion = None
 
+        if self.distributed.world_size > 1:
+            if config.distill_method != "heatgeo":
+                raise NotImplementedError(
+                    "Multi-process DDP is currently supported for HeatGeo only"
+                )
+            self.model_student = self.distributed.wrap_model(
+                self.model_student, self.device_s
+            )
+            print(
+                f"Student wrapped with DDP: rank={self.distributed.rank}, "
+                f"world_size={self.distributed.world_size}"
+            )
+
         # Projection layer (will be initialized in first forward)
         self.proj_s2t = None
 
@@ -251,15 +267,29 @@ class KnowledgeDistiller:
         self.warmup_steps = 10
 
     def setup_seed(self, seed: int):
-        random.seed(seed)
-        np.random.seed(seed)
-        torch.manual_seed(seed)
+        process_seed = seed + self.distributed.rank
+        random.seed(process_seed)
+        np.random.seed(process_seed)
+        torch.manual_seed(process_seed)
         if torch.cuda.is_available():
-            torch.cuda.manual_seed_all(seed)
-        print(f"Done setup_seed with seed={seed}")
+            torch.cuda.manual_seed_all(process_seed)
+        print(
+            f"Done setup_seed with seed={process_seed} "
+            f"(base={seed}, rank={self.distributed.rank})"
+        )
 
     def setup_devices(self):
-        if torch.cuda.device_count() >= 2:
+        if self.distributed.enabled:
+            if torch.cuda.is_available():
+                device = torch.device("cuda", self.distributed.local_rank)
+            else:
+                device = torch.device("cpu")
+            self.device_s = self.device_t = device
+            print(
+                f"torchrun rank {self.distributed.rank}/{self.distributed.world_size} "
+                f"using {device}"
+            )
+        elif torch.cuda.device_count() >= 2:
             self.device_s = torch.device("cuda:0")  # student
             self.device_t = torch.device("cuda:1")  # teacher
             print(
@@ -278,7 +308,9 @@ class KnowledgeDistiller:
 
     def setup_wandb(self):
         cfg = self.config
-        self.use_wandb = bool(getattr(cfg, "use_wandb", False))
+        self.use_wandb = bool(
+            getattr(cfg, "use_wandb", False) and self.is_main_process
+        )
         if not self.use_wandb:
             return
         if not WANDB_AVAILABLE:
@@ -528,13 +560,14 @@ class KnowledgeDistiller:
         # TALAS and HeatGeo use cached teacher embeddings
         if cfg.distill_method in ("talas", "heatgeo"):
             cache_path = Path(cfg.cache_path)
+            teacher_cls_list = None
 
             # Check if cache exists
             if cache_path.exists():
                 print(f"Loading cached teacher embeddings from: {cache_path}")
                 teacher_cls_list = load_cached_embeddings(str(cache_path))
                 print(f"Loaded {len(teacher_cls_list)} cached embeddings")
-            else:
+            elif self.is_main_process:
                 print("Cache not found. Pre-computing teacher embeddings...")
                 os.makedirs(cache_path.parent, exist_ok=True)
 
@@ -568,6 +601,12 @@ class KnowledgeDistiller:
                 print(
                     f"Cached {len(teacher_cls_list)} teacher embeddings to {cache_path}"
                 )
+            else:
+                print(f"Rank {self.distributed.rank} waiting for teacher cache")
+
+            self.distributed.barrier()
+            if teacher_cls_list is None:
+                teacher_cls_list = load_cached_embeddings(str(cache_path))
 
             # A stale cache computed before dedup still lines up row-for-row with the
             # original frame, so slice it instead of forcing a teacher re-run.
@@ -595,19 +634,32 @@ class KnowledgeDistiller:
             self.teacher_cls_all = teacher_cls_list
 
             if cfg.distill_method == "heatgeo":
-                self.heatgeo_artifact = build_or_load_heatgeo_artifact(
-                    teacher_embeddings=teacher_cls_list,
-                    cache_path=cfg.heatgeo_cache_path,
-                    log_dir=getattr(cfg, "heatgeo_log_dir", "logs/heatgeo"),
-                    graph_k=getattr(cfg, "graph_k", 50),
-                    graph_temp=getattr(cfg, "graph_temp", 0.1),
-                    diffusion_scales=getattr(cfg, "diffusion_scales", (1, 2, 4)),
-                    scale_weights=getattr(cfg, "scale_weights", (1.0, 0.5, 0.25)),
-                    pool_size=getattr(cfg, "pool_size", 128),
-                    hard_neg_pool=getattr(cfg, "hard_neg_pool", 200),
-                    source_ids=self._heatgeo_source_ids(df),
-                    walk_keep_topk=getattr(cfg, "walk_keep_topk", None),
-                )
+                artifact_kwargs = {
+                    "teacher_embeddings": teacher_cls_list,
+                    "cache_path": cfg.heatgeo_cache_path,
+                    "log_dir": getattr(cfg, "heatgeo_log_dir", "logs/heatgeo"),
+                    "graph_k": getattr(cfg, "graph_k", 50),
+                    "graph_temp": getattr(cfg, "graph_temp", 0.1),
+                    "diffusion_scales": getattr(
+                        cfg, "diffusion_scales", (1, 2, 4)
+                    ),
+                    "scale_weights": getattr(
+                        cfg, "scale_weights", (1.0, 0.5, 0.25)
+                    ),
+                    "pool_size": getattr(cfg, "pool_size", 128),
+                    "hard_neg_pool": getattr(cfg, "hard_neg_pool", 200),
+                    "source_ids": self._heatgeo_source_ids(df),
+                    "walk_keep_topk": getattr(cfg, "walk_keep_topk", None),
+                }
+                if self.is_main_process:
+                    self.heatgeo_artifact = build_or_load_heatgeo_artifact(
+                        **artifact_kwargs
+                    )
+                self.distributed.barrier()
+                if not self.is_main_process:
+                    self.heatgeo_artifact = build_or_load_heatgeo_artifact(
+                        **artifact_kwargs
+                    )
 
             # Free teacher model to save GPU memory (teacher not needed after caching)
             del self.model_teacher
@@ -677,10 +729,21 @@ class KnowledgeDistiller:
         # workers would keep serving the epoch-0 sampler state forever, so a dataset
         # whose candidates depend on the epoch must re-fork each epoch.
         resamples_per_epoch = hasattr(self.train_ds, "set_epoch")
+        self.train_sampler = None
+        if self.distributed.world_size > 1:
+            self.train_sampler = DistributedSampler(
+                self.train_ds,
+                num_replicas=self.distributed.world_size,
+                rank=self.distributed.rank,
+                shuffle=True,
+                seed=cfg.seed,
+                drop_last=cfg.distill_method == "heatgeo",
+            )
         self.train_loader = DataLoader(
             self.train_ds,
             batch_size=cfg.batch_size,
-            shuffle=True,
+            shuffle=self.train_sampler is None,
+            sampler=self.train_sampler,
             collate_fn=self.collate_fn,
             pin_memory=True,
             num_workers=cfg.num_workers,
@@ -826,8 +889,9 @@ class KnowledgeDistiller:
                 # the criterion expects; the gather is differentiable, so a candidate
                 # shared by several anchors accumulates all of their gradient.
                 chunk_embeddings = []
+                student_module = unwrap_model(self.model_student)
                 for chunk in batch["candidate_chunks"]:
-                    chunk_out = self.model_student(
+                    chunk_out = student_module(
                         input_ids=chunk["input_ids"].to(
                             self.device_s, non_blocking=True
                         ),
@@ -1356,6 +1420,8 @@ class KnowledgeDistiller:
     def train_epoch(self, epoch: int):
         self.model_student.train()
         self.current_epoch = epoch
+        if self.train_sampler is not None:
+            self.train_sampler.set_epoch(epoch)
 
         # Redraw the candidate sets. Without this the student sees the identical
         # anchor/candidate comparisons every epoch, fits them in the first one, and
@@ -1380,7 +1446,11 @@ class KnowledgeDistiller:
         # file write per epoch rather than one per step.
         step_records: list[dict] = []
 
-        pbar = tqdm(self.train_loader, desc=f"Epoch {epoch + 1}/{self.config.epochs}")
+        pbar = tqdm(
+            self.train_loader,
+            desc=f"Epoch {epoch + 1}/{self.config.epochs}",
+            disable=not self.is_main_process,
+        )
 
         for step, batch in enumerate(pbar):
             self.current_step = step
@@ -1430,7 +1500,8 @@ class KnowledgeDistiller:
                     if isinstance(value, (int, float))
                 }
             )
-            step_records.append(step_record)
+            if self.is_main_process:
+                step_records.append(step_record)
 
             mem_info = {}
             for dev_id in range(torch.cuda.device_count()):
@@ -1464,14 +1535,26 @@ class KnowledgeDistiller:
             else:
                 pbar.set_postfix({"avg_loss": f"{avg_loss:.4f}", **mem_info})
 
-        if len(self.step_times) > 0:
+        metric_names = sorted(metric_totals)
+        reduced = self.distributed.reduce_sums(
+            [float(n_items), total_loss]
+            + [metric_totals[name] for name in metric_names],
+            self.device_s,
+        )
+        n_items = int(reduced[0])
+        total_loss = reduced[1]
+        metric_totals = dict(zip(metric_names, reduced[2:]))
+        avg_loss = total_loss / max(1, n_items)
+
+        if len(self.step_times) > 0 and self.is_main_process:
             epoch_avg = sum(self.step_times) / len(self.step_times)
             print(
                 f"[Epoch {epoch + 1}] Avg step time = {epoch_avg * 1000:.2f} ms "
                 f"({1.0 / epoch_avg:.2f} it/s)"
             )
 
-        print(f"Done train_epoch {epoch + 1}")
+        if self.is_main_process:
+            print(f"Done train_epoch {epoch + 1}")
         self.log_step_records(step_records)
         epoch_means = {
             key: value / max(1, n_items) for key, value in metric_totals.items()
@@ -1481,7 +1564,7 @@ class KnowledgeDistiller:
         # usually a short remainder -- with 13553 items and batch 16 it holds a single
         # anchor, which makes target_entropy/js_floor swing wildly for reasons that
         # have nothing to do with training. Print the example-weighted epoch means.
-        if epoch_means:
+        if epoch_means and self.is_main_process:
             headline = [
                 "loss_total",
                 "loss_diff",
@@ -1517,7 +1600,7 @@ class KnowledgeDistiller:
 
     def save_checkpoint(self, epoch: int, metrics: dict | None = None):
         cfg = self.config
-        if not cfg.save_dir:
+        if not self.is_main_process or not cfg.save_dir:
             return
         if epoch in self._saved_checkpoint_epochs:
             print(
@@ -1528,7 +1611,7 @@ class KnowledgeDistiller:
 
         checkpoint = {
             "epoch": epoch,
-            "model_state_dict": self.model_student.state_dict(),
+            "model_state_dict": unwrap_model(self.model_student).state_dict(),
             "optimizer_state_dict": self.optimizer.state_dict(),
             "scheduler_state_dict": self.scheduler.state_dict(),
             "config": cfg.to_dict() if hasattr(cfg, "to_dict") else cfg,
@@ -1561,6 +1644,8 @@ class KnowledgeDistiller:
         self._saved_checkpoint_epochs.add(epoch)
 
     def save_student_weights(self, epoch: int):
+        if not self.is_main_process:
+            return
         weights_dir = getattr(self.config, "weights_dir", None)
         if not weights_dir:
             return
@@ -1573,7 +1658,7 @@ class KnowledgeDistiller:
             "epoch": epoch + 1,
             "student_model_name": self.config.student_model_name,
             "teacher_model_name": self.config.teacher_model_name,
-            "model_state_dict": self.model_student.state_dict(),
+            "model_state_dict": unwrap_model(self.model_student).state_dict(),
         }
 
         local_dir = Path(self.config.save_dir)
@@ -1733,6 +1818,8 @@ class KnowledgeDistiller:
         return {key: group["score"] for key, group in averages.items()}
 
     def evaluate(self, split: str = "validation"):
+        if not self.is_main_process:
+            return None
         if split not in {"validation", "test"}:
             raise ValueError("split must be 'validation' or 'test'")
         if split == "validation":
@@ -1750,16 +1837,17 @@ class KnowledgeDistiller:
                     "Pair test evaluation requires thresholds selected on validation data"
                 )
 
+        student_model = unwrap_model(self.model_student)
         classification = eval_classification_task(
-            self.model_student, classification_tasks, self.tok_student
+            student_model, classification_tasks, self.tok_student
         )
         pair, selected_thresholds = eval_pair_task(
-            self.model_student,
+            student_model,
             pair_tasks,
             self.tok_student,
             thresholds=thresholds,
         )
-        sts = eval_sts_task(self.model_student, sts_tasks, self.tok_student)
+        sts = eval_sts_task(student_model, sts_tasks, self.tok_student)
         if split == "validation":
             self.pair_validation_thresholds = selected_thresholds
         results = {
@@ -1777,7 +1865,7 @@ class KnowledgeDistiller:
         two have different row counts and different consumers, and mixing them would
         force every reader of the epoch table to filter.
         """
-        if not records or not self.config.save_dir:
+        if not self.is_main_process or not records or not self.config.save_dir:
             return
         os.makedirs(self.config.save_dir, exist_ok=True)
         path = os.path.join(self.config.save_dir, "step_metrics.jsonl")
@@ -1788,7 +1876,7 @@ class KnowledgeDistiller:
             )
 
     def log_experiment_record(self, record: dict[str, Any]):
-        if not self.config.save_dir:
+        if not self.is_main_process or not self.config.save_dir:
             return
         os.makedirs(self.config.save_dir, exist_ok=True)
         path = os.path.join(self.config.save_dir, "metrics.jsonl")
@@ -1982,6 +2070,7 @@ class KnowledgeDistiller:
                             ) from e
                         print(f"Warning: Saving checkpoint failed with error: {e}")
                         print("Continuing training...")
+                self.distributed.barrier()
 
             print("\n" + "=" * 60)
             print("Training completed!")
@@ -2003,3 +2092,7 @@ class KnowledgeDistiller:
                 self.log_experiment_record({"test": test_results})
             except Exception as e:
                 print(f"Warning: Final test evaluation failed with error: {e}")
+            self.distributed.barrier()
+
+    def close(self) -> None:
+        self.distributed.close()
