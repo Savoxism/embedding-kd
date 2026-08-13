@@ -1,7 +1,7 @@
 # Two Remaining Random-Hard Training Runs
 
 Date: 2026-08-13
-Status: Approved design; implementation pending
+Status: Deployed and verified
 
 ## Goal
 
