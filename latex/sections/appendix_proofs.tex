@@ -1,0 +1,172 @@
+\section{Proofs}
+\label{app:proofs}
+
+Throughout, $\lVert v\rVert_1=\sum_j|v_j|$ and $\mathrm{TV}(p,q)=\tfrac12\lVert p-q\rVert_1$. For a nonnegative vector $v$ with $\lVert v\rVert_1>0$ and a subset $C$ of its support, $v|_C$ denotes restriction to $C$ followed by renormalization.
+
+\subsection{Proof of Proposition~\ref{prop:coverage} (neighborhood coverage)}
+\label{app:proof-coverage}
+
+Within an epoch the corpus is partitioned uniformly at random into batches of size $B$. By exchangeability, the batch containing $i$ contains $B-1$ of the remaining $N-1$ examples, uniformly without replacement, so for any fixed $j\neq i$,
+\begin{equation}
+    \Pr[j\in\mathcal{B}] = \frac{B-1}{N-1}.
+\end{equation}
+(i) follows by linearity over the $k$ neighbors. (ii) is Markov's inequality applied to the nonnegative count $|\mathcal{B}\cap\mathcal{N}_k(i)|$: $\Pr[\text{count}\geq1]\leq\mathbb{E}[\text{count}]$. For (iii), epochs are independent, so with $p_e=(B-1)/(N-1)$ the probability that a given neighbor pair co-occurs within $T$ epochs is $1-(1-p_e)^T\leq Tp_e$, and the expected fraction of the $k$ neighbor pairs of anchor $i$ observed within $T$ epochs is the same bound by linearity. \qed
+
+\subsection{Proof of Proposition~\ref{prop:bias} (bias of in-batch targets) and the margin condition}
+\label{app:proof-bias}
+
+Condition on the event $E_0=\{\mathcal{B}\cap\mathcal{N}_k(i)=\emptyset\}$. On $E_0$ the in-batch target $p^{T,\mathcal{B}}_i$ is supported on $\mathcal{B}\setminus\{i\}\subseteq\mathcal{D}\setminus\mathcal{N}_k(i)$, hence assigns mass $0$ to $\mathcal{N}_k(i)$, while $p_{i,0}(\mathcal{N}_k(i))\geq1-\eta$ by Assumption~\ref{asm:conc}. Since $\mathrm{TV}(p,q)\geq|p(A)-q(A)|$ for any event $A$, taking $A=\mathcal{N}_k(i)$ gives $\mathrm{TV}(p^{T,\mathcal{B}}_i,p_{i,0})\geq1-\eta$ on $E_0$. Therefore
+\begin{equation}
+    \mathbb{E}_{\mathcal{B}}\big[\mathrm{TV}\big(p^{T,\mathcal{B}}_i,p_{i,0}\big)\big]
+    \geq (1-\eta)\Pr[E_0]
+    \geq (1-\eta)\Big(1-\tfrac{(B-1)k}{N-1}\Big),
+\end{equation}
+using Proposition~\ref{prop:coverage}(ii). \qed
+
+\paragraph{Margin condition for Assumption~\ref{asm:conc}.}
+Suppose $\min_{j\in\mathcal{N}_k(i)}c^T_{ij}\geq\max_{j\notin\mathcal{N}_k(i)\cup\{i\}}c^T_{ij}+\Delta$. Each non-neighbor's unnormalized weight is at most $e^{-\Delta/\tau_0}$ times each neighbor's, so
+\begin{equation}
+    \frac{p_{i,0}(\mathcal{D}\setminus\mathcal{N}_k(i))}{p_{i,0}(\mathcal{N}_k(i))}
+    \leq \frac{(N-1-k)\,e^{-\Delta/\tau_0}}{k},
+\end{equation}
+and $\eta\leq(N/k)e^{-\Delta/\tau_0}$, which is at most a prescribed $\eta$ whenever $\tau_0\leq\Delta/\log\!\big(N/(k\eta)\big)$.
+
+\subsection{Proof of Lemma~\ref{lem:perturb} (one step to $r$ steps)}
+\label{app:proof-perturb}
+
+Write $\tilde{P}-\tilde{Q}=\tfrac12(P-Q)$ and telescope:
+\begin{equation}
+    \tilde{P}^{r}-\tilde{Q}^{r}
+    =\sum_{s=0}^{r-1}\tilde{P}^{s}\,(\tilde{P}-\tilde{Q})\,\tilde{Q}^{\,r-1-s}.
+\end{equation}
+Fix a row $i$ and a summand $s$. The vector $\mu=\delta_i^{\top}\tilde{P}^{s}$ is a probability vector, so $\mu(\tilde{P}-\tilde{Q})$ is a convex combination of the rows of $\tilde{P}-\tilde{Q}$ and
+\begin{equation}
+    \big\lVert \mu(\tilde{P}-\tilde{Q}) \big\rVert_1
+    \leq \max_j \big\lVert \tfrac12(P_j-Q_j) \big\rVert_1
+    = \max_j \mathrm{TV}(P_j,Q_j)
+    \leq \varepsilon .
+\end{equation}
+Right-multiplication by a row-stochastic matrix does not increase the $\ell_1$ norm: $\lVert\nu \tilde{Q}^{\,r-1-s}\rVert_1\leq\lVert\nu\rVert_1$. Summing the $r$ terms gives $\lVert\delta_i^{\top}(\tilde{P}^{r}-\tilde{Q}^{r})\rVert_1\leq r\varepsilon$, i.e.\ $\mathrm{TV}\leq r\varepsilon/2$. \qed
+
+\subsection{Proof of Lemma~\ref{lem:restrict} (restriction)}
+\label{app:proof-restrict}
+
+Split the $\ell_1$ distance over $C$ and $\bar{C}$. Outside $C$, $\sum_{\bar{C}}|p_j-q_j|\leq p(\bar{C})+q(\bar{C})\leq\delta_T+\delta_S$. Inside $C$, write $p_j=p(C)\,p|_C(j)$ and $q_j=q(C)\,q|_C(j)$:
+\begin{equation}
+    \sum_{C}\big|p_j-q_j\big|
+    \leq p(C)\sum_{C}\big|p|_C(j)-q|_C(j)\big| + \big|p(C)-q(C)\big|
+    \leq 2\,\mathrm{TV}\big(p|_C,q|_C\big)+\delta_T+\delta_S .
+\end{equation}
+Adding the two parts and halving yields the claim. \qed
+
+\subsection{Leakage Control (Remark~\ref{rem:leakage})}
+\label{app:proof-leakage}
+
+We first verify the inequality stated in Remark~\ref{rem:leakage}. Let $\tilde{p}=p|_C$ and $\tilde{q}=q|_C$ denote the restricted teacher and student distributions on the candidate set $C=C^{+}\cup C^{-}$, and suppose $D_{\mathrm{KL}}(\tilde{p}\,\|\,\tilde{q})\leq\varepsilon$ with $\tilde{p}(C^{-})\leq\varepsilon_{\mathrm{neg}}$. The partition $C=C^{+}\cup C^{-}$ induces binary distributions $(\tilde{p}(C^{+}),\tilde{p}(C^{-}))$ and $(\tilde{q}(C^{+}),\tilde{q}(C^{-}))$, and by the data-processing inequality
+\begin{equation}
+    D_{\mathrm{KL}}\big(\tilde{p}\,\|\,\tilde{q}\big)
+    \geq
+    d_{\mathrm{KL}}\big(\tilde{p}(C^{+})\,\|\,\tilde{q}(C^{+})\big),
+\end{equation}
+where $d_{\mathrm{KL}}$ is the binary divergence. Pinsker's inequality for the binary pair gives $|\tilde{p}(C^{+})-\tilde{q}(C^{+})|\leq\sqrt{\varepsilon/2}$, hence
+$\tilde{q}(C^{-})\leq\tilde{p}(C^{-})+\sqrt{\varepsilon/2}\leq\varepsilon_{\mathrm{neg}}+\sqrt{\varepsilon/2}$. \qed
+
+\begin{remark}[From sampled negatives to the full complement]
+\label{rem:leakage-extension}
+The bound above controls the student's mass on the negative columns actually drawn. The random negatives are uniform draws from the complement of the diffusion support, redrawn every epoch, so over training the student's scores are constrained on a fresh uniform sample of the complement at every epoch: by exchangeability, a student that hides a constant fraction of softmax mass on some subset of the complement would place mass on the drawn negatives in expectation proportional to that fraction, contradicting a uniformly small restricted loss. A quantitative uniform-convergence version of this argument (a bound on $\delta_S$ in expectation over the negative-sampling process) is deferred to the final version.
+\end{remark}
+
+\subsection{Proof of Theorem~\ref{thm:global} (local-to-global transfer)}
+\label{app:proof-global}
+
+Fix an anchor $i$. Pinsker's inequality applied to the restricted divergence gives $\mathrm{TV}(p_{i,1}|_{C_i},q_{i,1})\leq\sqrt{\varepsilon/2}$. Lemma~\ref{lem:restrict} with $p=p_{i,1}$, $q$ the student's full row, and $C=C_i$ then bounds the full one-step rows:
+\begin{equation}
+    \mathrm{TV}\big(P^{T}_i,\,P^{S}_i\big)
+    \leq \sqrt{\varepsilon/2}+\delta_T+\delta_S
+    \eqqcolon \varepsilon_{\mathrm{row}} .
+\end{equation}
+Applying Lemma~\ref{lem:perturb} with row-wise bound $\varepsilon_{\mathrm{row}}$ yields, for every $r\geq1$,
+$\max_i\mathrm{TV}\big(\delta_i^{\top}(\tilde{P}^{T})^{r},\delta_i^{\top}(\tilde{P}^{S})^{r}\big)\leq r\,\varepsilon_{\mathrm{row}}/2$. \qed
+
+Corollary~\ref{cor:multiscale} is the same argument applied directly to the scale-$r$ family: Pinsker plus Lemma~\ref{lem:restrict} bound the $r$-step rows without invoking Lemma~\ref{lem:perturb}, so no factor of $r$ appears.
+
+\begin{remark}[Average-case variant]
+Training controls the divergence averaged over anchors rather than its maximum. By Jensen's inequality, $\frac1N\sum_i\mathrm{TV}(p_{i,1}|_{C_i},q_{i,1})\leq\sqrt{\bar{\varepsilon}/2}$ with $\bar{\varepsilon}$ the average restricted divergence, and the telescoping argument of Lemma~\ref{lem:perturb} can be carried out under any fixed initial distribution over anchors, giving the same bounds for anchor-averaged errors.
+\end{remark}
+
+\subsection{Proof of Proposition~\ref{prop:collapse} (collapse)}
+\label{app:proof-collapse}
+
+With one shared student distribution $p^S_i$,
+\begin{equation}
+    \sum_{r}\omega_r D_{\mathrm{KL}}\!\left(p^T_{i,r}\,\|\,p^S_i\right)
+    =\sum_{r}\omega_r\Big[H\big(p^T_{i,r},p^S_i\big)-H\big(p^T_{i,r}\big)\Big]
+    =H\Big(\textstyle\sum_r\omega_r p^T_{i,r},\,p^S_i\Big)-\sum_{r}\omega_r H\big(p^T_{i,r}\big),
+\end{equation}
+using that cross-entropy $H(p,q)=-\sum_j p_j\log q_j$ is linear in its first argument and $\sum_r\omega_r=1$. The subtracted entropy term does not depend on the student. \qed
+
+\subsection{Truncated Walks and Proof of Proposition~\ref{prop:sampling}}
+\label{app:proof-sampling}
+
+The diffusion targets are computed by a truncated walk; its error is additive across steps.
+
+\begin{lemma}[Truncation error]
+\label{lem:truncation}
+If the walk is computed with per-step truncation to the highest-mass columns followed by renormalization, dropping mass fraction $\delta_s$ at step $s$, then after $r$ steps the computed distribution $\hat{p}$ satisfies $\mathrm{TV}(\hat{p},p)\leq\sum_{s\leq r}\delta_s$.
+\end{lemma}
+
+\paragraph{Proof of Lemma~\ref{lem:truncation}.}
+First, for any nonnegative vector $v$ with total mass $1$ and truncation $R(v)$ that zeroes a set of mass $\delta$ and renormalizes,
+\begin{equation}
+    \mathrm{TV}\big(R(v),v\big)
+    =\tfrac12\Big[\sum_{\mathrm{kept}}\Big(\tfrac{v_j}{1-\delta}-v_j\Big)+\sum_{\mathrm{dropped}}v_j\Big]
+    =\tfrac12\big[\delta+\delta\big]=\delta .
+\end{equation}
+Let $v_s$ denote the exact walk after $s$ steps and $\hat{v}_s$ the truncated walk, with $M=\tilde{P}$ the (row-stochastic) step operator and $\delta_s$ the mass fraction dropped at step $s$. Then
+\begin{equation}
+    \mathrm{TV}(\hat{v}_s,v_s)
+    \leq \mathrm{TV}\big(R(\hat{v}_{s-1}M),\hat{v}_{s-1}M\big)
+    +\mathrm{TV}\big(\hat{v}_{s-1}M,v_{s-1}M\big)
+    \leq \delta_s+\mathrm{TV}(\hat{v}_{s-1},v_{s-1}),
+\end{equation}
+using the triangle inequality and that a stochastic matrix does not increase total variation. Induction over $s\leq r$ gives $\mathrm{TV}(\hat{v}_r,v_r)\leq\sum_{s\leq r}\delta_s$. \qed
+
+\paragraph{Proof of Proposition~\ref{prop:sampling}.}
+The identity $\mathrm{TV}(p|_C,p)=p(\bar{C})$ follows from the first display above with $\delta=p(\bar{C})$. For $m$ independent draws from $p$,
+\begin{equation}
+    \mathbb{E}\big[p(\bar{C})\big]
+    =\sum_j p_j\,(1-p_j)^m .
+\end{equation}
+Fix $t>0$ and split the sum: atoms with $p_j\geq t$ contribute at most $(1-t)^m\sum_j p_j\leq e^{-tm}$, and atoms with $p_j<t$ contribute at most $\mathrm{Tail}_p(t)$. Minimizing over $t$ gives the bound. If every atom of the effective support carries mass at least $c/\rho$, take $t=c/\rho$: the tail term vanishes and the bound is $e^{-cm/\rho}$. \qed
+
+\begin{remark}[Sampling without replacement]
+The implementation draws candidates by Gumbel top-$k$, which realizes weighted sampling without replacement~\citep{efraimidis2006weighted,kool2019stochastic}. Draws are distinct, so after $m$ draws the covered mass is at least that of $m$ independent draws in the natural coupling that re-draws duplicates; the bound of Proposition~\ref{prop:sampling} therefore remains valid.
+\end{remark}
+
+\subsection{Proofs of Propositions~\ref{prop:gauge} and~\ref{prop:sgc} (gauge and identifiability)}
+\label{app:proof-gauge}
+
+\paragraph{Invariance.}
+For any temperature $\tau$ and column set $\Omega$, $\mathrm{softmax}\big((c_i+a_i)/\tau\big)_{j\in\Omega}=\mathrm{softmax}\big(c_i/\tau\big)_{j\in\Omega}$, since the constant $e^{a_i/\tau}$ cancels between numerator and normalizer. Every term of $\mathcal{L}_{\mathrm{diff}}$ is a divergence between a fixed teacher target and such a softmax, so the loss is unchanged.
+
+\paragraph{Zero set.}
+Suppose the ambient-scale term vanishes for anchor $i$ on the column set $\Omega$, $|\Omega|\geq2$: then $\mathrm{softmax}(c^S_i/\tau_0)=\mathrm{softmax}(c^T_i/\tau_0)$ on $\Omega$. Taking log-ratios of any two columns $j,j'\in\Omega$,
+\begin{equation}
+    \frac{c^S_{ij}-c^S_{ij'}}{\tau_0}
+    =\log\frac{p_{i,0}(j)}{p_{i,0}(j')}
+    =\frac{c^T_{ij}-c^T_{ij'}}{\tau_0},
+\end{equation}
+so $c^S_{ij}-c^T_{ij}$ is constant in $j$ on $\Omega$; call it $a_i$. This proves Proposition~\ref{prop:gauge}.
+
+\paragraph{Identifiability.}
+Substituting $c^S_{ij}=c^T_{ij}+a_i$ into the calibration residual,
+\begin{equation}
+    \sum_{j}p_{i,0}(j)\big[c^S_{ij}-c^T_{ij}\big]
+    =a_i\sum_j p_{i,0}(j)=a_i ,
+\end{equation}
+so the Huber penalty vanishes if and only if $a_i=0$, in which case $c^S_{ij}=c^T_{ij}$ on the shared columns. Conversely, $c^S\equiv c^T$ on the shared columns makes every divergence and the calibration residual zero. This proves Proposition~\ref{prop:sgc}. \qed
+
+\begin{remark}[Downstream tasks are not gauge-invariant]
+\label{rem:threshold}
+Consider two anchors $i,i'$ and a downstream decision that thresholds cosine similarity at a shared value $\theta$, as in pair classification or a global retrieval cutoff. Offsets $a_i=+\Delta$, $a_{i'}=-\Delta$ leave $\mathcal{L}_{\mathrm{diff}}$ unchanged by Proposition~\ref{prop:gauge}, yet move pairs of $i$ above the threshold and pairs of $i'$ below it, changing the decisions. Rank correlations computed across anchors, as in semantic textual similarity, are affected in the same way. The gauge is therefore task-relevant, and fixing it requires exactly one constraint per anchor.
+\end{remark}

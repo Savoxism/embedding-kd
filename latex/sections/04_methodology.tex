@@ -1,0 +1,145 @@
+\section{Methodology}
+\label{sec:method}
+
+HeatGeo treats the teacher embedding space as a sampled semantic manifold and transfers its geometry through heat diffusion, instantiating the analysis of Section~\ref{sec:theory}. Section~\ref{sec:graph} builds the discrete manifold, Section~\ref{sec:kernels} defines a family of diffusion kernels indexed by diffusion time, and Section~\ref{sec:objective} trains the student to reproduce all of them at once.
+
+\subsection{Teacher Semantic Graph}
+\label{sec:graph}
+
+Let $\mathcal{D}=\{x_i\}_{i=1}^{N}$ be the unlabeled distillation corpus, and let $t_i=T(x_i)$ denote the cached embedding produced by teacher encoder $T$. For each example, we retrieve its top-$k$ neighbors under teacher cosine similarity:
+\begin{equation}
+    \mathcal{N}_k^T(i)
+    =
+    \operatorname{TopK}_{j\neq i}\cos(t_i,t_j).
+\end{equation}
+To reduce noisy one-directional edges and hubness, HeatGeo retains only mutual $k$NN connections:
+\begin{equation}
+    j \in \mathcal{M}_k^T(i)
+    \Longleftrightarrow
+    j \in \mathcal{N}_k^T(i)
+    \ \mathrm{and}\
+    i \in \mathcal{N}_k^T(j).
+\end{equation}
+The weighted adjacency matrix $W^T$ is
+\begin{equation}
+    W_{ij}^{T}
+    =
+    \begin{cases}
+    \exp\!\left(\cos(t_i,t_j)/\tau_g\right),
+        & j \in \mathcal{M}_k^T(i),\\
+    0,  & \mathrm{otherwise},
+    \end{cases}
+\end{equation}
+where $\tau_g$ controls graph sharpness. With diagonal degree matrix $D^T$, the row-normalized transition matrix is
+\begin{equation}
+    P^T=(D^T)^{-1}W^T,
+\end{equation}
+and each row $P_i^T$ defines a one-step semantic random-walk distribution from anchor $x_i$.
+
+\subsection{A Multi-Scale Family of Teacher Kernels}
+\label{sec:kernels}
+
+Diffusion time is the natural scale parameter of a manifold. On a continuous manifold the heat kernel $h_t(u,v)$ interpolates between the ambient metric as $t\to 0$, where $h_t(u,v)\propto\exp(-d(u,v)^2/4t)$ depends only on the distance between the two points, and global connectivity as $t$ grows, where mass has travelled along the manifold and reflects its intrinsic structure. HeatGeo distills this entire interpolation rather than a single point on it, by pairing the graph walks with the ambient kernel they emerge from.
+
+\paragraph{Graph scales ($r\geq 1$).}
+Powers of the lazy walk $\tilde{P}^T=\tfrac12\big(I+P^T\big)$ expose progressively broader semantic regions,
+\begin{equation}
+    P_r^T=\big(\tilde{P}^T\big)^r,
+    \qquad r\in\{1,2,4\},
+\end{equation}
+where the lazy step retains half of the mass in place---the discrete analogue of a heat-semigroup step---and small $r$ preserves sharp local neighborhoods while larger $r$ captures multi-hop connectivity and community structure. Diffusion is computed sparsely by propagating probability mass through graph neighbor lists and retaining the highest-probability columns at each step (Lemma~\ref{lem:truncation}).
+
+\paragraph{Ambient scale ($r=0$).}
+Before any propagation, the teacher metric itself induces a distribution. Writing this small-time limit of the heat kernel in terms of cosine similarity gives
+\begin{equation}
+    \label{eq:ambient}
+    p_{i,0}^{T}(j)
+    =
+    \frac{\exp\!\left(\cos(t_i,t_j)/\tau_0\right)}
+    {\sum_{j'}\exp\!\left(\cos(t_i,t_{j'})/\tau_0\right)}.
+\end{equation}
+This scale is defined for every pair in the corpus, whereas the graph scales are supported on the mutual-$k$NN structure. It is what makes the family an interpolation with two endpoints instead of a set of walks: the graph scales describe how mass \emph{moves} on the manifold, the ambient scale describes the metric it moves on. Because teacher embeddings are already cached for graph construction, Eq.~\ref{eq:ambient} is obtained at no additional cost --- no teacher forward pass, no stored hidden states, and no trainable parameters.
+
+We write $\mathcal{R}=\{0,1,2,4\}$ for the full scale family.
+
+\subsection{Candidate Sets and Batch-Level Sharing}
+\label{sec:candidates}
+
+Distributions over the full corpus are intractable, so each anchor is scored against a candidate set whose induced error Proposition~\ref{prop:sampling} bounds,
+\begin{equation}
+    C_i=C_i^{+}\cup C_i^{h}\cup C_i^{r},
+\end{equation}
+combining high-probability diffusion neighbors $C_i^{+}$, teacher hard negatives $C_i^{h}$ mined from same-source nearest neighbors outside the graph, and random negatives $C_i^{r}$. Candidate sets are redrawn every epoch from precomputed pools, so the student is evaluated against fresh comparisons rather than repeatedly refitting one frozen sample. The graph target at scale $r\geq1$ is the diffusion mass restricted and renormalized over this set,
+\begin{equation}
+    p_{i,r}^{T}(j)
+    =
+    \frac{(P_r^T)_{ij}}
+    {\sum_{j'\in C_i}(P_r^T)_{ij'}},
+    \qquad j\in C_i,
+\end{equation}
+which expresses graded semantic relatedness rather than a binary positive--negative label.
+
+Within a mini-batch $B$, the candidate sets are pooled: every anchor is scored against
+\begin{equation}
+    \mathcal{P}_B=\bigcup_{i\in B}C_i,
+\end{equation}
+deduplicated by corpus index and with the anchor's own column removed. Since $\mathcal{P}_B$ is encoded once for the whole batch, this multiplies the comparisons available per anchor by roughly $|B|$ at unchanged encoding cost, and the shared columns couple anchors so that similarity levels become comparable across the batch --- the property that semantic textual similarity and a single global cosine threshold both depend on. The ambient scale is normalized over $\mathcal{P}_B$, where Eq.~\ref{eq:ambient} assigns teacher mass to every column, and the graph scales are normalized over $C_i$, the support on which the walk from anchor $i$ is defined.
+
+\subsection{Diffusion Objective}
+\label{sec:objective}
+
+Let $s_i=S_{\theta}(x_i)$ be the student embedding of anchor $x_i$. At each scale the student induces a distribution over the corresponding column set $\Omega_{i,r}$ ($\mathcal{P}_B$ for $r=0$, $C_i$ otherwise),
+\begin{equation}
+    \label{eq:student}
+    p_{i,r}^{S}(j)
+    =
+    \frac{\exp\!\left(\cos(s_i,s_j)/\tau_r\right)}
+    {\sum_{j'\in\Omega_{i,r}}\exp\!\left(\cos(s_i,s_{j'})/\tau_r\right)},
+    \qquad j\in\Omega_{i,r},
+\end{equation}
+and HeatGeo minimizes the weighted divergence to the teacher family,
+\begin{equation}
+    \label{eq:ldiff}
+    \mathcal{L}_{\mathrm{diff}}
+    =
+    \frac{1}{|B|}
+    \sum_{i\in B}
+    \sum_{r\in\mathcal{R}}
+    \omega_r
+    D_{\mathrm{KL}}
+    \left(
+        p_{i,r}^{T}\,\|\,p_{i,r}^{S}
+    \right),
+\end{equation}
+with $\omega_r$ normalized scale weights that emphasize the ambient and local scales.
+
+\paragraph{Resolution-dependent student distributions.}
+Eq.~\ref{eq:student} gives each scale its own temperature $\tau_r$, increasing with $r$ so that broader teacher targets are matched at a correspondingly smoother resolution. This is what makes the family informative rather than redundant: by Proposition~\ref{prop:collapse}, a shared student distribution reduces the multi-scale objective to a single-scale one against the mixture $\bar{p}^T_i$, so scales that differ only in the teacher would leave the gradient unchanged. Distinct $\tau_r$ break this equivalence. Matching the same similarities at several resolutions is over-determined, so the student must reproduce the teacher's cosine \emph{gaps} rather than only its ranking, which is precisely the information that graded similarity tasks measure.
+
+\paragraph{Similarity gauge calibration.}
+By Proposition~\ref{prop:gauge}, the diffusion objective determines relative semantic flow but leaves one scalar similarity origin per anchor free, even though downstream use of embeddings compares cosines against a shared scale. HeatGeo fixes exactly this degree of freedom by matching one teacher-weighted mean similarity per anchor,
+\begin{equation}
+    \label{eq:sgc}
+    \mathcal{L}_{\mathrm{SGC}}
+    =
+    \frac{1}{|B|}
+    \sum_{i\in B}
+    \mathrm{Huber}_{\delta}
+    \left(
+        \sum_{j\in\mathcal{P}_B} p_{i,0}^{T}(j)\,
+        \big[\cos(s_i,s_j)-\cos(t_i,t_j)\big]
+    \right),
+\end{equation}
+weighting by the ambient teacher distribution so that calibration follows semantically relevant columns rather than the many easy negatives. Eq.~\ref{eq:sgc} constrains a single scalar per anchor and leaves the geometry to the diffusion terms (Proposition~\ref{prop:sgc}); it introduces no projection head, no pair construction, and no parameters.
+
+\paragraph{Full objective.}
+\begin{equation}
+    \boxed{
+    \mathcal{L}_{\mathrm{HeatGeo}}
+    =
+    \mathcal{L}_{\mathrm{diff}}
+    +
+    \lambda\,\mathcal{L}_{\mathrm{SGC}}
+    }
+\end{equation}
+Training therefore requires only cached teacher embeddings. HeatGeo uses no teacher hidden states, no online teacher forward pass, no task labels, no contrastive or layer-alignment objective, and no change to the student architecture.
