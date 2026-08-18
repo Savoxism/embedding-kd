@@ -2,10 +2,12 @@ import sys
 from types import SimpleNamespace
 
 import numpy as np
+import pytest
 import torch
 
 import main
 from distiller import KnowledgeDistiller
+from src.criterions.heatgeo_distillation import HeatGeoDistillation
 from src.heatgeo.candidate_sampler import HeatGeoCandidateSampler
 
 
@@ -19,7 +21,7 @@ def test_heatgeo_cli_overrides(monkeypatch):
             "heatgeo",
             "--walk_weight",
             "0.8",
-            "--walk_temp",
+            "--graph_temp",
             "0.04",
             "--walk_topk",
             "128",
@@ -41,7 +43,8 @@ def test_heatgeo_cli_overrides(monkeypatch):
     config = main.get_config(args.method, args)
 
     assert config.walk_weight == 0.8
-    assert config.walk_temp == 0.04
+    assert config.graph_temp == 0.04
+    assert not hasattr(config, "walk_temp")
     assert config.walk_topk == 128
     assert config.candidate_size == 96
     assert config.cache_path == "cache/teacher.pt"
@@ -49,6 +52,53 @@ def test_heatgeo_cli_overrides(monkeypatch):
     assert config.pooling_method == "last_token"
     assert config.weights_dir == "weights"
     assert config.final_weights_only is True
+
+
+def test_heatgeo_temperature_ties():
+    criterion = HeatGeoDistillation(
+        student_dim=4,
+        teacher_dim=4,
+        scale_weights=(1.0, 0.5, 0.25),
+        broad_scale_temps=(0.07, 0.10),
+        graph_temp=0.05,
+    )
+    # tau_1 = tau_w = graph_temp: not knobs, derived.
+    assert criterion.walk_temp == pytest.approx(0.05)
+    assert criterion.scale_temps.tolist() == pytest.approx([0.05, 0.07, 0.10])
+
+    for removed in ("scale_temps", "walk_temp", "direct_student_temp"):
+        with pytest.raises(ValueError, match=removed):
+            HeatGeoDistillation(
+                student_dim=4,
+                teacher_dim=4,
+                scale_weights=(1.0,),
+                graph_temp=0.05,
+                **{removed: 0.07},
+            )
+
+
+def test_heatgeo_tied_temperature_makes_teacher_row_attainable():
+    """With tau_1 = graph_temp, a student that reproduces the teacher's cosines
+    reaches loss 0 exactly -- the attainability statement behind the tie."""
+    graph_temp = 0.05
+    torch.manual_seed(0)
+    anchor = torch.nn.functional.normalize(torch.randn(1, 4), dim=-1)
+    candidates = torch.nn.functional.normalize(torch.randn(1, 3, 4), dim=-1)
+    cosines = torch.einsum("bd,bcd->bc", anchor, candidates)
+    teacher_probs = torch.softmax(cosines / graph_temp, dim=-1).unsqueeze(1)
+
+    criterion = HeatGeoDistillation(
+        student_dim=4,
+        teacher_dim=4,
+        scale_weights=(1.0,),
+        graph_temp=graph_temp,
+    )
+    loss, _ = criterion(
+        anchor_embeddings=anchor,
+        candidate_embeddings=candidates,
+        teacher_probs=teacher_probs,
+    )
+    assert loss.item() == pytest.approx(0.0, abs=1e-5)
 
 
 def test_walk_topk_truncates_and_normalizes_transition_rows():

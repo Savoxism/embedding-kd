@@ -96,7 +96,7 @@ All hyperparameters are in `config/heatgeo_config.py`. Key groups:
 |:---|:---|:---|
 | Teacher Graph | `graph_k`, `graph_temp`, `diffusion_scales`, `pool_size` | kNN construction and diffusion |
 | Candidate Sampling | `candidate_size`, `diffusion_quota`, `hard_neg_k`, `random_neg_k` | Per-anchor candidate composition |
-| Walk Distillation | `num_walks`, `walk_length`, `walk_weight`, `walk_temp`, `walk_start_epoch` | Random walk trajectory loss |
+| Walk Distillation | `num_walks`, `walk_length`, `walk_weight`, `walk_start_epoch` | Random walk trajectory loss (its temperature is tied to `graph_temp`) |
 | Training | `batch_size`, `epochs`, `learning_rate`, `min_lr` | Standard training setup |
 | Objectives | `lambda_heatgeo`, `direct_weight`, `lambda_simcse`, `lambda_sim` | Loss component weights |
 

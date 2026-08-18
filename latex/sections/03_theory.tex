@@ -120,6 +120,17 @@ where the second term does not depend on the student parameters.
 
 Cross-entropy is linear in its target, so with one shared student distribution any two scale families with the same mixture produce identical gradients, and multi-scale supervision degenerates into target smoothing. Distinct temperatures $\tau_r$ break the equivalence and force the student to reproduce the teacher's similarity gaps rather than only its ranking.
 
+Distinct temperatures raise the question of which values they may take, and two members of the family turn out to have no freedom at all: whenever a term's target is itself a softmax of teacher cosines at some temperature, matching it at any other temperature changes what zero loss asks of the student.
+
+\begin{proposition}[Temperature ties]
+\label{prop:temptie}
+Let $\Omega$ be a column set with $|\Omega|\geq2$, and consider a term with target $\mathrm{softmax}_{\Omega}(c^T_{i\cdot}/\tau)$ and student distribution $\mathrm{softmax}_{\Omega}(c^S_{i\cdot}/\tau_S)$.
+(i) Over score assignments $c^S_{i\cdot}$ the term has infimum $0$, attained exactly on the affine family $c^S_{ij}=(\tau_S/\tau)\,c^T_{ij}+a_i$ on $\Omega$ --- a shift family when $\tau_S=\tau$ and a rescaling otherwise.
+(ii) Suppose the ambient term at the same row also vanishes, on a set $\Omega_0$ such that $\Omega\cap\Omega_0$ contains columns $j,j'$ with $c^T_{ij}\neq c^T_{ij'}$. Then $\tau_S=\tau$.
+\end{proposition}
+
+Part (ii) is the operative statement: with the ambient scale in the objective, a softmax-of-cosines target must be matched \emph{at its own temperature}, or the two zero sets are disjoint and the objective acquires an artificial floor. This pins two temperatures that would otherwise look like hyperparameters. The sharpest graph scale's target is the transition row itself --- the lazy walk at $r=1$, off-diagonal renormalized --- a softmax of teacher cosines at $\tau_g$, so $\tau_1=\tau_g$. The walk targets of Section~\ref{sec:walk} are transition rows as well, so $\tau_w=\tau_g$, the tie Proposition~\ref{prop:walkgauge} assumes. The ambient scale itself uses the single temperature $\tau_0$ on both sides, the same-temperature convention of knowledge distillation \citep{hinton2015distilling}, which by (i) makes its zero set exactly the shift family of Proposition~\ref{prop:gauge}. The only temperatures left free are those of the broader scales.
+
 \subsection{Sampled Neighborhoods Suffice}
 \label{sec:theory-sampling}
 

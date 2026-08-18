@@ -148,14 +148,51 @@ class HeatGeoDistillation(nn.Module):
     The three column domains are therefore disjoint in what they claim: diffusion
     ranks within the anchor's own draw, the direct scale calibrates across the batch,
     and the walk term ranks within a *non-anchor* node's teacher neighbourhood.
+
+    **Temperature ties.** Three temperatures are not free parameters and are
+    therefore not constructor arguments:
+
+    * ``tau_1 = graph_temp``: the r=1 target after dropping self-mass IS the
+      transition row, a softmax of teacher cosines at graph_temp. Matching it at
+      the same temperature makes zero loss attainable exactly on the shift family
+      cos_S = cos_T + a_i; any other temperature forces the affine family
+      cos_S = (tau_1/graph_temp) cos_T + a_i, which contradicts the direct scale
+      on the same row (it pins unrescaled gaps), so the joint zero set is empty
+      unless the teacher cosines are constant.
+    * ``walk_temp = graph_temp``: the walk targets are transition rows too --
+      the same argument verbatim, and the tie the gauge-reduction proof assumes.
+    * ``direct student temp = direct_temp``: the classic same-temperature
+      convention of distillation (Hinton et al., 2015). Unequal temperatures
+      make the direct target attainable only as a rescaling of teacher cosines,
+      which is the calibration distortion the scale exists to prevent.
+
+    ``broad_scale_temps`` holds the student temperatures of the *remaining*
+    diffusion scales (r > 1, sharpest first); those are genuine design choices.
+    Passing the removed knobs (``scale_temps``, ``walk_temp``,
+    ``direct_student_temp``) raises rather than being silently absorbed.
     """
+
+    _TIED_KNOBS = {
+        "scale_temps": (
+            "the sharpest scale's temperature is tied to graph_temp; pass only "
+            "broad_scale_temps for the scales after it"
+        ),
+        "walk_temp": (
+            "tied to graph_temp: the walk target is a transition row, i.e. a "
+            "softmax of teacher cosines at graph_temp"
+        ),
+        "direct_student_temp": (
+            "tied to direct_temp: the direct scale uses one temperature on both "
+            "the teacher and the student side (Hinton et al., 2015)"
+        ),
+    }
 
     def __init__(
         self,
         student_dim: int,
         teacher_dim: int,
         scale_weights: Sequence[float],
-        scale_temps: Sequence[float] | None = None,
+        broad_scale_temps: Sequence[float] | None = None,
         student_temp: float = 0.07,
         eps_norm: float = 1e-8,
         diag_topk: int = 8,
@@ -163,17 +200,23 @@ class HeatGeoDistillation(nn.Module):
         teacher_embeddings: torch.Tensor | None = None,
         direct_weight: float = 1.0,
         direct_temp: float = 0.10,
-        direct_student_temp: float = 0.10,
         transition_neighbors: torch.Tensor | None = None,
         transition_probs: torch.Tensor | None = None,
         walk_weight: float = 0.5,
-        walk_temp: float = 0.07,
         walk_topk: int | None = None,
+        *,
+        graph_temp: float,
         **kwargs,
     ):
         super().__init__()
+        for name, why in self._TIED_KNOBS.items():
+            if name in kwargs:
+                raise ValueError(f"HeatGeoDistillation no longer accepts {name!r}: {why}")
+        if graph_temp <= 0.0:
+            raise ValueError("graph_temp must be positive")
         self.student_dim = student_dim
         self.teacher_dim = teacher_dim
+        self.graph_temp = float(graph_temp)
         self.student_temp = student_temp
         self.eps_norm = eps_norm
         self.diag_topk = diag_topk
@@ -184,7 +227,9 @@ class HeatGeoDistillation(nn.Module):
         # a neighbourhood, which is only meaningful once the student has one.
         self.use_walk_loss = False
         self.walk_weight = float(walk_weight)
-        self.walk_temp = float(walk_temp)
+        # Tied, not tuned: the walk target is a transition row = softmax of teacher
+        # cosines at graph_temp (see "Temperature ties" in the class docstring).
+        self.walk_temp = self.graph_temp
         self.walk_topk = None if walk_topk is None else int(walk_topk)
         if self.walk_topk is not None and self.walk_topk <= 0:
             raise ValueError("walk_topk must be positive when provided")
@@ -206,8 +251,8 @@ class HeatGeoDistillation(nn.Module):
 
         self.use_direct = teacher_embeddings is not None and direct_weight > 0.0
         if self.use_direct:
-            if direct_temp <= 0.0 or direct_student_temp <= 0.0:
-                raise ValueError("direct temperatures must be positive")
+            if direct_temp <= 0.0:
+                raise ValueError("direct_temp must be positive")
             # Stored normalized and in half precision: the only operation it feeds is
             # a cosine, and at corpus scale this buffer is the largest thing the
             # criterion owns (N x 2560).
@@ -215,12 +260,12 @@ class HeatGeoDistillation(nn.Module):
                 teacher_embeddings.float(), p=2, dim=-1, eps=eps_norm
             ).half()
             self.register_buffer("teacher_bank", normalized, persistent=False)
+            # One temperature for both sides of the direct scale (same-temperature
+            # distillation, Hinton et al. 2015): the student softmax at scale 0 in
+            # forward() reuses this exact value.
             self.direct_temp = float(direct_temp)
             self.register_buffer(
                 "direct_weight", torch.tensor([float(direct_weight)])
-            )
-            self.register_buffer(
-                "direct_student_temp", torch.tensor([float(direct_student_temp)])
             )
         else:
             self.teacher_bank = None
@@ -232,12 +277,19 @@ class HeatGeoDistillation(nn.Module):
         weights = weights / weights.sum().clamp_min(1e-12)
         self.register_buffer("scale_weights", weights)
 
-        if scale_temps is None or len(tuple(scale_temps)) == 0:
-            temps = torch.full_like(weights, float(student_temp))
+        # The sharpest scale is matched at graph_temp -- its target is the
+        # transition row itself -- and only the broader scales carry free student
+        # temperatures. `_resolved` pads by repeating the last entry when the
+        # artifact has more scales than temperatures were given.
+        if broad_scale_temps is None or len(tuple(broad_scale_temps)) == 0:
+            broad = [float(student_temp)]
         else:
-            temps = torch.tensor(list(scale_temps), dtype=torch.float32)
+            broad = [float(t) for t in broad_scale_temps]
+        temps = torch.tensor([self.graph_temp] + broad, dtype=torch.float32)
         if (temps <= 0).any():
-            raise ValueError(f"scale_temps must be positive, got {temps.tolist()}")
+            raise ValueError(
+                f"broad_scale_temps must be positive, got {temps[1:].tolist()}"
+            )
         self.register_buffer("scale_temps", temps)
         self.temps_tied = bool(temps.numel() == 1 or torch.allclose(temps, temps[0]))
 
@@ -527,7 +579,9 @@ class HeatGeoDistillation(nn.Module):
             direct = self._direct_target(anchor_idx, column_idx, self_mask, share)
             target = torch.cat([direct.unsqueeze(1).to(target.dtype), target], dim=1)
             weights = torch.cat([self.direct_weight.to(weights.dtype), weights])
-            temps = torch.cat([self.direct_student_temp.to(temps.dtype), temps])
+            # Same temperature as the teacher side of the direct target: the tie
+            # that makes the target attainable rather than a rescaling exercise.
+            temps = torch.cat([temps.new_full((1,), self.direct_temp), temps])
             n_scales += 1
         weights = weights / weights.sum().clamp_min(1e-12)
 

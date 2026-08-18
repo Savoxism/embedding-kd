@@ -85,7 +85,7 @@ def parse_args():
     parser.add_argument('--num_walks', type=int, default=None)
     parser.add_argument('--walk_length', type=int, default=None)
     parser.add_argument('--walk_weight', type=float, default=None)
-    parser.add_argument('--walk_temp', type=float, default=None)
+    # --walk_temp was removed: the criterion ties it to --graph_temp.
     parser.add_argument('--walk_start_epoch', type=int, default=None)
     parser.add_argument('--walk_topk', type=int, default=None)
     parser.add_argument('--candidate_size', type=int, default=None)
@@ -225,7 +225,6 @@ def get_config(method: str, args):
         'num_walks',
         'walk_length',
         'walk_weight',
-        'walk_temp',
         'walk_start_epoch',
         'walk_topk',
         'candidate_size',

@@ -105,6 +105,23 @@ With one shared student distribution $p^S_i$,
 \end{equation}
 using that cross-entropy $H(p,q)=-\sum_j p_j\log q_j$ is linear in its first argument and $\sum_r\omega_r=1$. The subtracted entropy term does not depend on the student. \qed
 
+\subsection{Proof of Proposition~\ref{prop:temptie} (temperature ties)}
+\label{app:proof-temptie}
+
+(i) If the divergence vanishes, the two softmax distributions coincide on $\Omega$, and taking log-ratios of any two columns $j,j'\in\Omega$ (as in Appendix~\ref{app:proof-gauge}) gives
+\begin{equation}
+    \frac{c^S_{ij}-c^S_{ij'}}{\tau_S}
+    =\frac{c^T_{ij}-c^T_{ij'}}{\tau},
+\end{equation}
+so $c^S_{ij}-(\tau_S/\tau)\,c^T_{ij}$ is constant on $\Omega$; call it $a_i$. Conversely, any score assignment of that form produces identical softmax distributions and zero divergence, so the infimum $0$ is attained exactly on the stated family.
+
+(ii) The ambient term carries the same temperature $\tau_0$ on both sides, so its vanishing gives, by the shift case of (i) (equivalently Proposition~\ref{prop:gauge}), $c^S_{ij}=c^T_{ij}+b_i$ on $\Omega_0$. Combining with (i) on the overlap,
+\begin{equation}
+    \Big(1-\frac{\tau_S}{\tau}\Big)\,c^T_{ij}=a_i-b_i
+    \qquad\text{for every } j\in\Omega\cap\Omega_0,
+\end{equation}
+and evaluating at two columns with $c^T_{ij}\neq c^T_{ij'}$ forces $\tau_S=\tau$. \qed
+
 \subsection{Truncated Walks and Proof of Proposition~\ref{prop:sampling}}
 \label{app:proof-sampling}
 

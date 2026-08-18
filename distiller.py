@@ -198,7 +198,7 @@ class KnowledgeDistiller:
                         student_dim=self.model_student.config.hidden_size,
                         teacher_dim=self.teacher_cls_all.shape[-1],
                         scale_weights=config.scale_weights,
-                        scale_temps=getattr(config, "scale_temps", None),
+                        broad_scale_temps=getattr(config, "broad_scale_temps", None),
                         student_temp=config.student_temp,
                         eps_norm=getattr(config, "eps_norm", 1e-8),
                         diag_topk=getattr(config, "diag_topk", 8),
@@ -206,10 +206,11 @@ class KnowledgeDistiller:
                         teacher_embeddings=self.teacher_cls_all[:, l_idx, :],
                         direct_weight=getattr(config, "direct_weight", 1.0),
                         direct_temp=getattr(config, "direct_temp", 0.10),
-                        direct_student_temp=getattr(config, "direct_student_temp", 0.10),
                         walk_weight=getattr(config, "walk_weight", 0.5),
-                        walk_temp=getattr(config, "walk_temp", 0.07),
                         walk_topk=getattr(config, "walk_topk", None),
+                        # The tie tau_1 = tau_w = graph_temp lives in the criterion;
+                        # this is the temperature the transition rows were built at.
+                        graph_temp=config.graph_temp,
                         transition_neighbors=getattr(self, "heatgeo_artifact", {}).get("transition_neighbors")
                         if getattr(config, "num_walks", 0) > 0
                         else None,
@@ -241,7 +242,7 @@ class KnowledgeDistiller:
                     student_dim=self.model_student.config.hidden_size,
                     teacher_dim=self.teacher_cls_all.shape[-1],
                     scale_weights=config.scale_weights,
-                    scale_temps=getattr(config, "scale_temps", None),
+                    broad_scale_temps=getattr(config, "broad_scale_temps", None),
                     student_temp=config.student_temp,
                     eps_norm=getattr(config, "eps_norm", 1e-8),
                     diag_topk=getattr(config, "diag_topk", 8),
@@ -249,10 +250,11 @@ class KnowledgeDistiller:
                     teacher_embeddings=self.teacher_cls_all,
                     direct_weight=getattr(config, "direct_weight", 1.0),
                     direct_temp=getattr(config, "direct_temp", 0.10),
-                    direct_student_temp=getattr(config, "direct_student_temp", 0.10),
                     walk_weight=getattr(config, "walk_weight", 0.5),
-                    walk_temp=getattr(config, "walk_temp", 0.07),
                     walk_topk=getattr(config, "walk_topk", None),
+                    # The tie tau_1 = tau_w = graph_temp lives in the criterion;
+                    # this is the temperature the transition rows were built at.
+                    graph_temp=config.graph_temp,
                     transition_neighbors=getattr(self, "heatgeo_artifact", {}).get("transition_neighbors")
                     if getattr(config, "num_walks", 0) > 0
                     else None,
@@ -624,7 +626,9 @@ class KnowledgeDistiller:
                     cache_path=cfg.heatgeo_cache_path,
                     log_dir=getattr(cfg, "heatgeo_log_dir", "logs/heatgeo"),
                     graph_k=getattr(cfg, "graph_k", 50),
-                    graph_temp=getattr(cfg, "graph_temp", 0.1),
+                    # No fallback default: the criterion ties tau_1 and tau_w to this
+                    # value, so the artifact and the loss must read the same source.
+                    graph_temp=cfg.graph_temp,
                     diffusion_scales=getattr(cfg, "diffusion_scales", (1, 2, 4)),
                     scale_weights=getattr(cfg, "scale_weights", (1.0, 0.5, 0.25)),
                     pool_size=getattr(cfg, "pool_size", 128),

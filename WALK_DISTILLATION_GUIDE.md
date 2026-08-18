@@ -18,11 +18,10 @@ In `config/heatgeo_config.py`:
 num_walks = 4          # Walks per anchor per epoch (0 = disabled)
 walk_length = 4        # Steps per walk
 walk_weight = 0.5      # Lambda in L = L_diff + lambda * L_walk
-walk_temp = 0.05       # Student temperature; must equal graph_temp
 walk_start_epoch = 1   # Curriculum: enable from this epoch
 ```
 
-`walk_temp` is tied to `graph_temp` on purpose. The teacher row is itself a softmax of teacher cosines at `graph_temp`, so equal temperatures make the target exactly attainable and give the term an infimum of 0. Detuning it turns the achievable solution set from a shift family into an affine one and breaks the gauge argument.
+There is no `walk_temp` knob: the student temperature of the walk term is tied to `graph_temp` inside `HeatGeoDistillation` (passing `walk_temp` raises). The teacher row is itself a softmax of teacher cosines at `graph_temp`, so equal temperatures make the target exactly attainable and give the term an infimum of 0. Detuning it would turn the achievable solution set from a shift family into an affine one and break the gauge argument, which is why the tie is enforced in code rather than left as a convention.
 
 Set `num_walks = 0` to disable; the run is then bit-identical to diffusion-only HeatGeo.
 

@@ -12,14 +12,22 @@ class HeatGeoConfig(BaseConfig):
     teacher_special_token = "G"
 
     # ---- Objective -----------------------------------------------------------
-    student_temp = 0.07
-    scale_temps = (0.05, 0.07, 0.10)
+    # Temperature ties, enforced by HeatGeoDistillation (it rejects the removed
+    # knobs scale_temps / walk_temp / direct_student_temp):
+    #   tau_1 = graph_temp   the r=1 target IS the transition row, a softmax of
+    #                        teacher cosines at graph_temp -- any other student
+    #                        temperature makes zero loss unattainable;
+    #   tau_w = graph_temp   walk targets are transition rows, same argument;
+    #   direct scale         one temperature (direct_temp) on both teacher and
+    #                        student side (Hinton et al. 2015 convention).
+    # Only the broader diffusion scales keep free student temperatures.
+    student_temp = 0.07               # fallback when broad_scale_temps is unset
+    broad_scale_temps = (0.07, 0.10)  # student temps for r = 2, 4; r = 1 uses graph_temp
     share_in_batch = True
 
     # ---- Direct Scale (r=0) --------------------------------------------------
     direct_weight = 1.0
-    direct_temp = 0.10
-    direct_student_temp = 0.10
+    direct_temp = 0.10                # shared by both sides of the direct scale
 
     # ---- Teacher Graph -------------------------------------------------------
     graph_k = 200
@@ -35,7 +43,7 @@ class HeatGeoConfig(BaseConfig):
     num_walks = 4
     walk_length = 4
     walk_weight = 0.5
-    walk_temp = 0.05   # tied to graph_temp: makes the teacher row exactly attainable
+    # walk_temp is gone: it is tied to graph_temp inside the criterion.
     walk_start_epoch = 1
     walk_topk = None
     
