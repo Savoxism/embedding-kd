@@ -28,25 +28,15 @@ class HeatGeoConfig(BaseConfig):
     scale_weights = (1.0, 0.5, 0.25)
     pool_size = 256
     
-    # ---- Sinkhorn Optimal Transport ------------------------------------------
-    use_sinkhorn = False
-    sinkhorn_alpha = 0.1
-    sinkhorn_max_iter = 50
-    
-    # ---- CoSENT Objective ----------------------------------------------------
-    use_cosent = False
-    cosent_weight = 0.1
-    cosent_tau = 0.07
-    cosent_delta = 0.05
-    cosent_start_epoch = 2
-
-    # ---- Random Walk Trajectory Distillation ---------------------------------
+    # ---- Random Walk Kernel Matching -----------------------------------------
+    # L_walk is a KL against the teacher's own transition row, so it shares the
+    # scale of L_diff and walk_weight is a genuine trade-off rather than a units
+    # conversion. 0 walks disables the term and reproduces the diffusion-only run.
     num_walks = 4
     walk_length = 4
-    walk_weight = 0.8
-    walk_temp = 0.07
+    walk_weight = 0.5
+    walk_temp = 0.05   # tied to graph_temp: makes the teacher row exactly attainable
     walk_start_epoch = 1
-    walk_topk = 128
     
     hard_neg_pool = 200
     walk_keep_topk = 2048
@@ -89,16 +79,17 @@ class HeatGeoConfig(BaseConfig):
     # kd_teacher_layers = [12, 24, 36, 36]
     # kd_student_layers = [4, 8, 12, 12]
     lambda_heatgeo = 1.0
+
+    # ---- Auxiliary objectives: all off ---------------------------------------
+    # The objective is exactly two terms, L = L_diff + walk_weight * L_walk, both
+    # inside the HeatGeo criterion. Everything below is a distiller-level term
+    # shared with the other methods and is held at 0 for this config.
     lambda_cosine = 0
     lambda_infonce = 0
-    
-    # ---- Student-Self-SimCSE Objective ---------------------------------------
     lambda_simcse = 0
     simcse_temp = 0
     simcse_start_epoch = 2
-    
-    # ---- Global Similarity Preserving Objective ------------------------------
-    lambda_sim = 1.0
+    lambda_sim = 0
 
     def __init__(self, **kwargs):
         for k, v in kwargs.items():

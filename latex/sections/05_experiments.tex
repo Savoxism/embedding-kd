@@ -15,7 +15,7 @@ We evaluate on three task families. Text classification uses F1 on Banking77, Tw
 We compare against the teacher, the undistilled student, SimCSE-unsup, CDM, DSKD, Jasper and Stella, DistillCSE, EMO, and TALAS. The baseline results use the Qwen3-Embedding-4B to BERT-base configuration reported by TALAS~\citep{dao2026talas}.
 
 \paragraph{Implementation Details.}
-The teacher graph uses $k=200$ mutual neighbors, and diffusion is taken over the scale family $\mathcal{R}=\{0,1,2,4\}$ with weights obtained by normalizing $(1,1,0.5,0.25)$, so that the ambient and local scales carry most of the objective. Each anchor draws a candidate set of size $64$ from diffusion neighbors, teacher hard negatives, and random negatives, redrawn every epoch, and candidate sets are pooled across mini-batches of $32$ anchors. Student temperatures increase with diffusion scale over the range $0.05$ to $0.10$, matching broader targets at a smoother resolution. Training runs for five epochs with a learning rate of $3\times10^{-5}$. Remaining settings are given in the released configuration.
+The teacher graph uses $k=200$ mutual neighbors, and diffusion is taken over the scale family $\mathcal{R}=\{0,1,2,4\}$ with weights obtained by normalizing $(1,1,0.5,0.25)$, so that the ambient and local scales carry most of the objective. Each anchor draws a candidate set of size $64$ from diffusion neighbors, teacher hard negatives, and random negatives, redrawn every epoch, and candidate sets are pooled across mini-batches of $32$ anchors. Student temperatures increase with diffusion scale over the range $0.05$ to $0.10$, matching broader targets at a smoother resolution. Walk-sampled kernel matching draws $M=4$ walks of length $L=4$ per anchor per epoch, at $\lambda=0.5$ and $\tau_w=\tau_g=0.05$, and is enabled from the second epoch onward so that the student has a neighborhood to rank before its rows are matched. Training runs for five epochs with a learning rate of $3\times10^{-5}$. Remaining settings are given in the released configuration.
 
 \subsection{Main Results}
 
@@ -67,19 +67,43 @@ Avg.    & \tbd & \tbd & 77.98 & \tbd & \tbd \\
 \end{tabular}
 \end{table}
 
-\paragraph{Similarity gauge calibration.}
-Propositions~\ref{prop:gauge} and~\ref{prop:sgc} make a sharp, falsifiable prediction: without $\mathcal{L}_{\mathrm{SGC}}$, the diffusion loss leaves one similarity offset per anchor free, so tasks that compare cosines \emph{across} anchors against a shared scale---pair classification with a global threshold, and cross-anchor rank correlation in semantic textual similarity---should degrade, while within-anchor structure such as classification by nearest neighborhoods should be comparatively unaffected. Table~\ref{tab:analysis_sgc} removes the calibration term and additionally reports the dispersion of the estimated per-anchor offsets $\hat{a}_i$ (the teacher-weighted mean similarity residual of Eq.~\ref{eq:sgc}), which the theory predicts to widen without calibration.
+\paragraph{Walk supervision and the similarity gauge.}
+Propositions~\ref{prop:gauge} and~\ref{prop:walkgauge} make a sharp, falsifiable prediction. Without $\mathcal{L}_{\mathrm{walk}}$ the supervised rows are the anchors alone, the constraint graph has no edges, and one similarity offset per anchor is free; with it, each traversed edge identifies two offsets and the freedom collapses to one constant per connected component of the teacher graph. Tasks that compare cosines \emph{across} anchors against a shared scale---pair classification with a global threshold, and cross-anchor rank correlation in semantic textual similarity---should therefore degrade when the term is removed, while within-anchor structure such as classification by nearest neighborhoods should be comparatively unaffected. Table~\ref{tab:analysis_walk} removes the term and additionally reports the dispersion of the estimated per-anchor offsets $\hat{a}_i=\sum_{j}p^T_{i,0}(j)\big[\cos(s_i,s_j)-\cos(t_i,t_j)\big]$, which the theory predicts to widen without walk supervision, together with $\kappa$, the number of components of the realized constraint graph.
 
 \begin{table}[h]
 \centering
-\caption{Effect of removing similarity gauge calibration (BGE-M3 $\rightarrow$ MiniLMv2-H768). Offset dispersion is the standard deviation of $\hat{a}_i$ across anchors.}
-\label{tab:analysis_sgc}
-\begin{tabular}{lccccc}
+\caption{Effect of removing walk-sampled kernel matching (BGE-M3 $\rightarrow$ MiniLMv2-H768). Offset dispersion is the standard deviation of $\hat{a}_i$ across anchors; $\kappa$ is the number of connected components of the realized constraint graph.}
+\label{tab:analysis_walk}
+\begin{tabular}{lcccccc}
 \toprule
-& Class.\ (F1) & Pair (AP) & STS (Spear.) & Avg. & Offset disp. \\
+& Class.\ (F1) & Pair (AP) & STS (Spear.) & Avg. & Offset disp. & $\kappa$ \\
 \midrule
-HeatGeo                                & \tbd & \tbd & \tbd & 77.98 & \tbd \\
-\;\;w/o $\mathcal{L}_{\mathrm{SGC}}$   & \tbd & \tbd & \tbd & \tbd  & \tbd \\
+HeatGeo                                 & \tbd & \tbd & \tbd & 77.98 & \tbd & \tbd \\
+\;\;w/o $\mathcal{L}_{\mathrm{walk}}$   & \tbd & \tbd & \tbd & \tbd  & \tbd & \tbd \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\paragraph{How much walk supervision.}
+The walk controls two quantities that the theory separates: how many rows are supervised, set by $M$ and $L$, and how strongly they are weighted against the anchor rows, set by $\lambda$. Because Eq.~\ref{eq:lwalk} is a divergence with infimum $0$ on the same scale as Eq.~\ref{eq:ldiff}, $\lambda$ is a genuine trade-off, and the prediction is a plateau rather than a monotone trend: once the traversed edges connect the graph, further walks add rows but no new identification. Table~\ref{tab:analysis_walkparams} sweeps both.
+
+\begin{table}[h]
+\centering
+\caption{Walk length $L$ and weight $\lambda$ (BGE-M3 $\rightarrow$ MiniLMv2-H768), reporting the nine-dataset average. Defaults in bold column headers.}
+\label{tab:analysis_walkparams}
+\begin{tabular}{lcccc}
+\toprule
+& \multicolumn{4}{c}{Walk length $L$} \\
+\cmidrule(lr){2-5}
+& $L=2$ & $\mathbf{L=4}$ & $L=6$ & $L=8$ \\
+\midrule
+Avg. & \tbd & 77.98 & \tbd & \tbd \\
+\midrule
+& \multicolumn{4}{c}{Walk weight $\lambda$} \\
+\cmidrule(lr){2-5}
+& $\lambda=0.1$ & $\lambda=0.3$ & $\mathbf{\lambda=0.5}$ & $\lambda=1.0$ \\
+\midrule
+Avg. & \tbd & \tbd & 77.98 & \tbd \\
 \bottomrule
 \end{tabular}
 \end{table}

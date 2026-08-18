@@ -39,9 +39,9 @@
 \@writefile{toc}{\contentsline {subsection}{\numberline {3.2}Mini-Batch Relations Undersample Local Geometry}{4}{subsection.3.2}\protected@file@percent }
 \newlabel{sec:theory-batch}{{3.2}{4}{Mini-Batch Relations Undersample Local Geometry}{subsection.3.2}{}}
 \newlabel{prop:coverage}{{1}{4}{Neighborhood coverage}{proposition.1}{}}
-\newlabel{asm:conc}{{1}{4}{Target concentration}{assumption.1}{}}
 \citation{coifman2006diffusionmaps}
 \citation{vonluxburg2008consistency,garciatrillos2018variational,calder2022improved}
+\newlabel{asm:conc}{{1}{5}{Target concentration}{assumption.1}{}}
 \newlabel{prop:bias}{{2}{5}{Bias of in-batch targets}{proposition.2}{}}
 \@writefile{toc}{\contentsline {subsection}{\numberline {3.3}Matching Local Diffusion Transfers Global Geometry}{5}{subsection.3.3}\protected@file@percent }
 \newlabel{sec:theory-global}{{3.3}{5}{Matching Local Diffusion Transfers Global Geometry}{subsection.3.3}{}}
@@ -49,65 +49,71 @@
 \newlabel{lem:restrict}{{2}{5}{Restriction}{lemma.2}{}}
 \newlabel{rem:leakage}{{1}{5}{Why negatives: leakage control}{remark.1}{}}
 \newlabel{thm:global}{{1}{5}{Local-to-global transfer}{theorem.1}{}}
-\newlabel{cor:multiscale}{{1}{5}{Multi-scale tightening}{corollary.1}{}}
 \citation{efraimidis2006weighted,kool2019stochastic}
+\newlabel{cor:multiscale}{{1}{6}{Multi-scale tightening}{corollary.1}{}}
 \newlabel{prop:collapse}{{3}{6}{Collapse under a shared student distribution}{proposition.3}{}}
 \@writefile{toc}{\contentsline {subsection}{\numberline {3.4}Sampled Neighborhoods Suffice}{6}{subsection.3.4}\protected@file@percent }
 \newlabel{sec:theory-sampling}{{3.4}{6}{Sampled Neighborhoods Suffice}{subsection.3.4}{}}
 \newlabel{prop:sampling}{{4}{6}{Sampling error}{proposition.4}{}}
-\@writefile{toc}{\contentsline {subsection}{\numberline {3.5}The Gauge of Diffusion Matching and Calibration}{6}{subsection.3.5}\protected@file@percent }
-\newlabel{sec:theory-gauge}{{3.5}{6}{The Gauge of Diffusion Matching and Calibration}{subsection.3.5}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {3.5}The Gauge of Diffusion Matching and Its Reduction}{6}{subsection.3.5}\protected@file@percent }
+\newlabel{sec:theory-gauge}{{3.5}{6}{The Gauge of Diffusion Matching and Its Reduction}{subsection.3.5}{}}
 \newlabel{prop:gauge}{{5}{6}{Gauge of the diffusion loss}{proposition.5}{}}
-\newlabel{prop:sgc}{{6}{6}{Identifiability}{proposition.6}{}}
+\newlabel{def:constraint}{{1}{7}{Constraint graph}{definition.1}{}}
+\newlabel{prop:walkgauge}{{6}{7}{Gauge reduction by walk supervision}{proposition.6}{}}
 \@writefile{toc}{\contentsline {section}{\numberline {4}Methodology}{7}{section.4}\protected@file@percent }
 \newlabel{sec:method}{{4}{7}{Methodology}{section.4}{}}
 \@writefile{toc}{\contentsline {subsection}{\numberline {4.1}Teacher Semantic Graph}{7}{subsection.4.1}\protected@file@percent }
 \newlabel{sec:graph}{{4.1}{7}{Teacher Semantic Graph}{subsection.4.1}{}}
 \@writefile{toc}{\contentsline {subsection}{\numberline {4.2}A Multi-Scale Family of Teacher Kernels}{7}{subsection.4.2}\protected@file@percent }
 \newlabel{sec:kernels}{{4.2}{7}{A Multi-Scale Family of Teacher Kernels}{subsection.4.2}{}}
-\@writefile{toc}{\contentsline {paragraph}{Graph scales ($r\geq 1$).}{7}{section*.5}\protected@file@percent }
-\@writefile{toc}{\contentsline {paragraph}{Ambient scale ($r=0$).}{7}{section*.6}\protected@file@percent }
-\newlabel{eq:ambient}{{11}{7}{Ambient scale ($r=0$)}{equation.4.11}{}}
+\@writefile{toc}{\contentsline {paragraph}{Graph scales ($r\geq 1$).}{8}{section*.5}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{Ambient scale ($r=0$).}{8}{section*.6}\protected@file@percent }
+\newlabel{eq:ambient}{{11}{8}{Ambient scale ($r=0$)}{equation.4.11}{}}
 \@writefile{toc}{\contentsline {subsection}{\numberline {4.3}Candidate Sets and Batch-Level Sharing}{8}{subsection.4.3}\protected@file@percent }
 \newlabel{sec:candidates}{{4.3}{8}{Candidate Sets and Batch-Level Sharing}{subsection.4.3}{}}
-\@writefile{toc}{\contentsline {subsection}{\numberline {4.4}Diffusion Objective}{8}{subsection.4.4}\protected@file@percent }
-\newlabel{sec:objective}{{4.4}{8}{Diffusion Objective}{subsection.4.4}{}}
-\newlabel{eq:student}{{15}{8}{Diffusion Objective}{equation.4.15}{}}
-\newlabel{eq:ldiff}{{16}{8}{Diffusion Objective}{equation.4.16}{}}
-\@writefile{toc}{\contentsline {paragraph}{Resolution-dependent student distributions.}{8}{section*.7}\protected@file@percent }
-\@writefile{toc}{\contentsline {paragraph}{Similarity gauge calibration.}{8}{section*.8}\protected@file@percent }
-\newlabel{eq:sgc}{{17}{8}{Similarity gauge calibration}{equation.4.17}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {4.4}Diffusion Objective}{9}{subsection.4.4}\protected@file@percent }
+\newlabel{sec:objective}{{4.4}{9}{Diffusion Objective}{subsection.4.4}{}}
+\newlabel{eq:student}{{15}{9}{Diffusion Objective}{equation.4.15}{}}
+\newlabel{eq:ldiff}{{16}{9}{Diffusion Objective}{equation.4.16}{}}
+\@writefile{toc}{\contentsline {paragraph}{Resolution-dependent student distributions.}{9}{section*.7}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {4.5}Walk-Sampled Kernel Matching}{9}{subsection.4.5}\protected@file@percent }
+\newlabel{sec:walk}{{4.5}{9}{Walk-Sampled Kernel Matching}{subsection.4.5}{}}
+\@writefile{toc}{\contentsline {paragraph}{Which rows.}{9}{section*.8}\protected@file@percent }
+\newlabel{eq:walk}{{17}{9}{Which rows}{equation.4.17}{}}
+\@writefile{toc}{\contentsline {paragraph}{Which columns.}{9}{section*.9}\protected@file@percent }
+\newlabel{eq:walkcols}{{18}{9}{Which columns}{equation.4.18}{}}
+\@writefile{toc}{\contentsline {paragraph}{The objective.}{9}{section*.10}\protected@file@percent }
+\newlabel{eq:lwalk}{{19}{9}{The objective}{equation.4.19}{}}
 \citation{dao2026talas}
 \citation{dao2026talas}
-\@writefile{toc}{\contentsline {paragraph}{Full objective.}{9}{section*.9}\protected@file@percent }
-\@writefile{toc}{\contentsline {section}{\numberline {5}Experiments}{9}{section.5}\protected@file@percent }
-\@writefile{toc}{\contentsline {subsection}{\numberline {5.1}Experimental Setup}{9}{subsection.5.1}\protected@file@percent }
-\@writefile{toc}{\contentsline {paragraph}{Models.}{9}{section*.10}\protected@file@percent }
-\@writefile{toc}{\contentsline {paragraph}{Training Data.}{9}{section*.11}\protected@file@percent }
-\@writefile{toc}{\contentsline {paragraph}{Evaluation Tasks and Metrics.}{9}{section*.12}\protected@file@percent }
-\@writefile{toc}{\contentsline {paragraph}{Baselines.}{9}{section*.13}\protected@file@percent }
-\@writefile{toc}{\contentsline {paragraph}{Implementation Details.}{9}{section*.14}\protected@file@percent }
-\@writefile{toc}{\contentsline {subsection}{\numberline {5.2}Main Results}{9}{subsection.5.2}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{Dense targets rather than sampled successors.}{10}{section*.11}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{Why step $0$ is dropped.}{10}{section*.12}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{Full objective.}{10}{section*.13}\protected@file@percent }
+\@writefile{toc}{\contentsline {section}{\numberline {5}Experiments}{10}{section.5}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {5.1}Experimental Setup}{10}{subsection.5.1}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{Models.}{10}{section*.14}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{Training Data.}{10}{section*.15}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{Evaluation Tasks and Metrics.}{10}{section*.16}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{Baselines.}{10}{section*.17}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{Implementation Details.}{10}{section*.18}\protected@file@percent }
 \citation{dao2026talas}
 \citation{dao2026talas}
-\@writefile{lot}{\contentsline {table}{\numberline {1}{\ignorespaces Results across three teacher\,$\rightarrow $\,student settings on nine datasets. Emotion, WiC, and STS-B (marked with $\star $) are in-domain; the remaining datasets are out-of-domain. Bold and underlined values denote the best and second-best compact-model results within each setting. Baseline results are from TALAS~\citep  {dao2026talas}. For setting (c), we report the epoch checkpoint with the highest overall average.}}{10}{table.1}\protected@file@percent }
-\newlabel{tab:main_results}{{1}{10}{Results across three teacher\,$\rightarrow $\,student settings on nine datasets. Emotion, WiC, and STS-B (marked with $\star $) are in-domain; the remaining datasets are out-of-domain. Bold and underlined values denote the best and second-best compact-model results within each setting. Baseline results are from TALAS~\citep {dao2026talas}. For setting (c), we report the epoch checkpoint with the highest overall average}{table.1}{}}
-\@writefile{toc}{\contentsline {subsection}{\numberline {5.3}Theory-Driven Analysis}{10}{subsection.5.3}\protected@file@percent }
-\newlabel{sec:analysis}{{5.3}{10}{Theory-Driven Analysis}{subsection.5.3}{}}
-\@writefile{toc}{\contentsline {paragraph}{Graph size $k$.}{10}{section*.15}\protected@file@percent }
-\@writefile{toc}{\contentsline {paragraph}{Candidate size $m$.}{10}{section*.16}\protected@file@percent }
 \bibdata{heatgeo}
 \bibcite{agarwal2024onpolicy}{{1}{2024}{{Agarwal et~al.}}{{Agarwal, Vieillard, Zhou, Stanczyk, Garea, Geist, and Bachem}}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {5.2}Main Results}{11}{subsection.5.2}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {5.3}Theory-Driven Analysis}{11}{subsection.5.3}\protected@file@percent }
+\newlabel{sec:analysis}{{5.3}{11}{Theory-Driven Analysis}{subsection.5.3}{}}
+\@writefile{toc}{\contentsline {paragraph}{Graph size $k$.}{11}{section*.19}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{Candidate size $m$.}{11}{section*.20}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{Walk supervision and the similarity gauge.}{11}{section*.21}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{How much walk supervision.}{11}{section*.22}\protected@file@percent }
 \bibcite{akram2026jinaembeddingsv5}{{2}{2026}{{Akram et~al.}}{{Akram, Sturua, Havriushenko, Herreros, G{\"u}nther, Werk, and Xiao}}}
 \bibcite{alqahtani2021ot}{{3}{2021}{{Alqahtani et~al.}}{{Alqahtani, Lalwani, Zhang, Romeo, and Mansour}}}
+\@writefile{lot}{\contentsline {table}{\numberline {1}{\ignorespaces Results across three teacher\,$\rightarrow $\,student settings on nine datasets. Emotion, WiC, and STS-B (marked with $\star $) are in-domain; the remaining datasets are out-of-domain. Bold and underlined values denote the best and second-best compact-model results within each setting. Baseline results are from TALAS~\citep  {dao2026talas}. For setting (c), we report the epoch checkpoint with the highest overall average.}}{12}{table.1}\protected@file@percent }
+\newlabel{tab:main_results}{{1}{12}{Results across three teacher\,$\rightarrow $\,student settings on nine datasets. Emotion, WiC, and STS-B (marked with $\star $) are in-domain; the remaining datasets are out-of-domain. Bold and underlined values denote the best and second-best compact-model results within each setting. Baseline results are from TALAS~\citep {dao2026talas}. For setting (c), we report the epoch checkpoint with the highest overall average}{table.1}{}}
+\@writefile{lot}{\contentsline {table}{\numberline {2}{\ignorespaces Effect of graph size $k$ (BGE-M3 $\rightarrow $ MiniLMv2-H768). Default in bold column header.}}{12}{table.2}\protected@file@percent }
+\newlabel{tab:analysis_k}{{2}{12}{Effect of graph size $k$ (BGE-M3 $\rightarrow $ MiniLMv2-H768). Default in bold column header}{table.2}{}}
 \bibcite{anshumann2025sparse}{{4}{2025}{{Anshumann et~al.}}{{Anshumann, Zaidi, Kedia, Ahn, Kwon, Lee, Lee, and Lee}}}
-\@writefile{lot}{\contentsline {table}{\numberline {2}{\ignorespaces Effect of graph size $k$ (BGE-M3 $\rightarrow $ MiniLMv2-H768). Default in bold column header.}}{11}{table.2}\protected@file@percent }
-\newlabel{tab:analysis_k}{{2}{11}{Effect of graph size $k$ (BGE-M3 $\rightarrow $ MiniLMv2-H768). Default in bold column header}{table.2}{}}
-\@writefile{lot}{\contentsline {table}{\numberline {3}{\ignorespaces Effect of candidate size $m$ (BGE-M3 $\rightarrow $ MiniLMv2-H768). Default in bold column header.}}{11}{table.3}\protected@file@percent }
-\newlabel{tab:analysis_m}{{3}{11}{Effect of candidate size $m$ (BGE-M3 $\rightarrow $ MiniLMv2-H768). Default in bold column header}{table.3}{}}
-\@writefile{toc}{\contentsline {paragraph}{Similarity gauge calibration.}{11}{section*.17}\protected@file@percent }
-\@writefile{lot}{\contentsline {table}{\numberline {4}{\ignorespaces Effect of removing similarity gauge calibration (BGE-M3 $\rightarrow $ MiniLMv2-H768). Offset dispersion is the standard deviation of $\hat  {a}_i$ across anchors.}}{11}{table.4}\protected@file@percent }
-\newlabel{tab:analysis_sgc}{{4}{11}{Effect of removing similarity gauge calibration (BGE-M3 $\rightarrow $ MiniLMv2-H768). Offset dispersion is the standard deviation of $\hat {a}_i$ across anchors}{table.4}{}}
 \bibcite{calder2022improved}{{5}{2022}{{Calder \& Trillos}}{{Calder and Trillos}}}
 \bibcite{chen2024bgem3}{{6}{2024}{{Chen et~al.}}{{Chen, Xiao, Zhang, Luo, Lian, and Liu}}}
 \bibcite{chen2025cdm}{{7}{2025}{{Chen et~al.}}{{Chen, Liu, Meng, Chen, Xu, and Zhou}}}
@@ -117,6 +123,10 @@
 \bibcite{efraimidis2006weighted}{{11}{2006}{{Efraimidis \& Spirakis}}{{Efraimidis and Spirakis}}}
 \bibcite{gao2021distilcse}{{12}{2021{a}}{{Gao et~al.}}{{Gao, Wu, Wang, Wang, Zang, Wang, and Hu}}}
 \bibcite{gao2021simcse}{{13}{2021{b}}{{Gao et~al.}}{{Gao, Yao, and Chen}}}
+\@writefile{lot}{\contentsline {table}{\numberline {3}{\ignorespaces Effect of candidate size $m$ (BGE-M3 $\rightarrow $ MiniLMv2-H768). Default in bold column header.}}{13}{table.3}\protected@file@percent }
+\newlabel{tab:analysis_m}{{3}{13}{Effect of candidate size $m$ (BGE-M3 $\rightarrow $ MiniLMv2-H768). Default in bold column header}{table.3}{}}
+\@writefile{lot}{\contentsline {table}{\numberline {4}{\ignorespaces Effect of removing walk-sampled kernel matching (BGE-M3 $\rightarrow $ MiniLMv2-H768). Offset dispersion is the standard deviation of $\hat  {a}_i$ across anchors; $\kappa $ is the number of connected components of the realized constraint graph.}}{13}{table.4}\protected@file@percent }
+\newlabel{tab:analysis_walk}{{4}{13}{Effect of removing walk-sampled kernel matching (BGE-M3 $\rightarrow $ MiniLMv2-H768). Offset dispersion is the standard deviation of $\hat {a}_i$ across anchors; $\kappa $ is the number of connected components of the realized constraint graph}{table.4}{}}
 \bibcite{hinton2015distilling}{{14}{2015}{{Hinton et~al.}}{{Hinton, Vinyals, and Dean}}}
 \bibcite{jiao2019tinybert}{{15}{2020}{{Jiao et~al.}}{{Jiao, Yin, Shang, Jiang, Chen, Li, Wang, and Liu}}}
 \bibcite{kim2025csd}{{16}{2025}{{Kim et~al.}}{{Kim, Shin, Kang, Na, and Moon}}}
@@ -126,6 +136,8 @@
 \bibcite{lee2024gecko}{{20}{2024}{{Lee et~al.}}{{Lee, Dai, Ren, Chen, Cer, Cole, Hui, Boratko, Kapadia, Ding, Luan, Duddu, Abrego, Shi, Gupta, Kusupati, Jain, Jonnalagadda, Chang, and Naim}}}
 \bibcite{muennighoff2023mteb}{{21}{2023}{{Muennighoff et~al.}}{{Muennighoff, Tazi, Magne, and Reimers}}}
 \bibcite{park2019rkd}{{22}{2019}{{Park et~al.}}{{Park, Kim, Lu, and Cho}}}
+\@writefile{lot}{\contentsline {table}{\numberline {5}{\ignorespaces Walk length $L$ and weight $\lambda $ (BGE-M3 $\rightarrow $ MiniLMv2-H768), reporting the nine-dataset average. Defaults in bold column headers.}}{14}{table.5}\protected@file@percent }
+\newlabel{tab:analysis_walkparams}{{5}{14}{Walk length $L$ and weight $\lambda $ (BGE-M3 $\rightarrow $ MiniLMv2-H768), reporting the nine-dataset average. Defaults in bold column headers}{table.5}{}}
 \bibcite{reimers2019sentencebert}{{23}{2019}{{Reimers \& Gurevych}}{{Reimers and Gurevych}}}
 \bibcite{sanh2019distilbert}{{24}{2019}{{Sanh et~al.}}{{Sanh, Debut, Chaumond, and Wolf}}}
 \bibcite{thakur2021beir}{{25}{2021}{{Thakur et~al.}}{{Thakur, Reimers, R{\"u}ckl{\'e}, Srivastava, and Gurevych}}}
@@ -142,34 +154,36 @@
 \bibcite{zhang2024dskd}{{36}{2024{b}}{{Zhang et~al.}}{{Zhang, Zhang, Sun, Chen, and Xu}}}
 \bibcite{zhang2025qwen3embedding}{{37}{2025{b}}{{Zhang et~al.}}{{Zhang, Li, Long, Zhang, Lin, Yang, Xie, Yang, Liu, Lin, Huang, and Zhou}}}
 \bibstyle{iclr2027_conference}
-\@writefile{toc}{\contentsline {section}{\numberline {A}Proofs}{14}{appendix.A}\protected@file@percent }
-\newlabel{app:proofs}{{A}{14}{Proofs}{appendix.A}{}}
-\@writefile{toc}{\contentsline {subsection}{\numberline {A.1}Proof of Proposition~\ref {prop:coverage} (neighborhood coverage)}{14}{subsection.A.1}\protected@file@percent }
-\newlabel{app:proof-coverage}{{A.1}{14}{Proof of Proposition~\ref {prop:coverage} (neighborhood coverage)}{subsection.A.1}{}}
-\@writefile{toc}{\contentsline {subsection}{\numberline {A.2}Proof of Proposition~\ref {prop:bias} (bias of in-batch targets) and the margin condition}{14}{subsection.A.2}\protected@file@percent }
-\newlabel{app:proof-bias}{{A.2}{14}{Proof of Proposition~\ref {prop:bias} (bias of in-batch targets) and the margin condition}{subsection.A.2}{}}
-\@writefile{toc}{\contentsline {paragraph}{Margin condition for Assumption~\ref {asm:conc}.}{15}{section*.19}\protected@file@percent }
-\@writefile{toc}{\contentsline {subsection}{\numberline {A.3}Proof of Lemma~\ref {lem:perturb} (one step to $r$ steps)}{15}{subsection.A.3}\protected@file@percent }
-\newlabel{app:proof-perturb}{{A.3}{15}{Proof of Lemma~\ref {lem:perturb} (one step to $r$ steps)}{subsection.A.3}{}}
-\@writefile{toc}{\contentsline {subsection}{\numberline {A.4}Proof of Lemma~\ref {lem:restrict} (restriction)}{15}{subsection.A.4}\protected@file@percent }
-\newlabel{app:proof-restrict}{{A.4}{15}{Proof of Lemma~\ref {lem:restrict} (restriction)}{subsection.A.4}{}}
-\@writefile{toc}{\contentsline {subsection}{\numberline {A.5}Leakage Control (Remark~\ref {rem:leakage})}{15}{subsection.A.5}\protected@file@percent }
-\newlabel{app:proof-leakage}{{A.5}{15}{Leakage Control (Remark~\ref {rem:leakage})}{subsection.A.5}{}}
-\newlabel{rem:leakage-extension}{{2}{15}{From sampled negatives to the full complement}{remark.2}{}}
+\@writefile{toc}{\contentsline {section}{\numberline {A}Proofs}{16}{appendix.A}\protected@file@percent }
+\newlabel{app:proofs}{{A}{16}{Proofs}{appendix.A}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {A.1}Proof of Proposition~\ref {prop:coverage} (neighborhood coverage)}{16}{subsection.A.1}\protected@file@percent }
+\newlabel{app:proof-coverage}{{A.1}{16}{Proof of Proposition~\ref {prop:coverage} (neighborhood coverage)}{subsection.A.1}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {A.2}Proof of Proposition~\ref {prop:bias} (bias of in-batch targets) and the margin condition}{16}{subsection.A.2}\protected@file@percent }
+\newlabel{app:proof-bias}{{A.2}{16}{Proof of Proposition~\ref {prop:bias} (bias of in-batch targets) and the margin condition}{subsection.A.2}{}}
+\@writefile{toc}{\contentsline {paragraph}{Margin condition for Assumption~\ref {asm:conc}.}{16}{section*.24}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {A.3}Proof of Lemma~\ref {lem:perturb} (one step to $r$ steps)}{16}{subsection.A.3}\protected@file@percent }
+\newlabel{app:proof-perturb}{{A.3}{16}{Proof of Lemma~\ref {lem:perturb} (one step to $r$ steps)}{subsection.A.3}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {A.4}Proof of Lemma~\ref {lem:restrict} (restriction)}{17}{subsection.A.4}\protected@file@percent }
+\newlabel{app:proof-restrict}{{A.4}{17}{Proof of Lemma~\ref {lem:restrict} (restriction)}{subsection.A.4}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {A.5}Leakage Control (Remark~\ref {rem:leakage})}{17}{subsection.A.5}\protected@file@percent }
+\newlabel{app:proof-leakage}{{A.5}{17}{Leakage Control (Remark~\ref {rem:leakage})}{subsection.A.5}{}}
+\newlabel{rem:leakage-extension}{{2}{17}{From sampled negatives to the full complement}{remark.2}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {A.6}Proof of Theorem~\ref {thm:global} (local-to-global transfer)}{17}{subsection.A.6}\protected@file@percent }
+\newlabel{app:proof-global}{{A.6}{17}{Proof of Theorem~\ref {thm:global} (local-to-global transfer)}{subsection.A.6}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {A.7}Proof of Proposition~\ref {prop:collapse} (collapse)}{17}{subsection.A.7}\protected@file@percent }
+\newlabel{app:proof-collapse}{{A.7}{17}{Proof of Proposition~\ref {prop:collapse} (collapse)}{subsection.A.7}{}}
 \citation{efraimidis2006weighted,kool2019stochastic}
-\@writefile{toc}{\contentsline {subsection}{\numberline {A.6}Proof of Theorem~\ref {thm:global} (local-to-global transfer)}{16}{subsection.A.6}\protected@file@percent }
-\newlabel{app:proof-global}{{A.6}{16}{Proof of Theorem~\ref {thm:global} (local-to-global transfer)}{subsection.A.6}{}}
-\@writefile{toc}{\contentsline {subsection}{\numberline {A.7}Proof of Proposition~\ref {prop:collapse} (collapse)}{16}{subsection.A.7}\protected@file@percent }
-\newlabel{app:proof-collapse}{{A.7}{16}{Proof of Proposition~\ref {prop:collapse} (collapse)}{subsection.A.7}{}}
-\@writefile{toc}{\contentsline {subsection}{\numberline {A.8}Truncated Walks and Proof of Proposition~\ref {prop:sampling}}{16}{subsection.A.8}\protected@file@percent }
-\newlabel{app:proof-sampling}{{A.8}{16}{Truncated Walks and Proof of Proposition~\ref {prop:sampling}}{subsection.A.8}{}}
-\newlabel{lem:truncation}{{3}{16}{Truncation error}{lemma.3}{}}
-\@writefile{toc}{\contentsline {paragraph}{Proof of Lemma~\ref {lem:truncation}.}{16}{section*.20}\protected@file@percent }
-\@writefile{toc}{\contentsline {paragraph}{Proof of Proposition~\ref {prop:sampling}.}{16}{section*.21}\protected@file@percent }
-\@writefile{toc}{\contentsline {subsection}{\numberline {A.9}Proofs of Propositions~\ref {prop:gauge} and~\ref {prop:sgc} (gauge and identifiability)}{17}{subsection.A.9}\protected@file@percent }
-\newlabel{app:proof-gauge}{{A.9}{17}{Proofs of Propositions~\ref {prop:gauge} and~\ref {prop:sgc} (gauge and identifiability)}{subsection.A.9}{}}
-\@writefile{toc}{\contentsline {paragraph}{Invariance.}{17}{section*.22}\protected@file@percent }
-\@writefile{toc}{\contentsline {paragraph}{Zero set.}{17}{section*.23}\protected@file@percent }
-\@writefile{toc}{\contentsline {paragraph}{Identifiability.}{17}{section*.24}\protected@file@percent }
-\newlabel{rem:threshold}{{5}{17}{Downstream tasks are not gauge-invariant}{remark.5}{}}
-\gdef \@abspage@last{17}
+\@writefile{toc}{\contentsline {subsection}{\numberline {A.8}Truncated Walks and Proof of Proposition~\ref {prop:sampling}}{18}{subsection.A.8}\protected@file@percent }
+\newlabel{app:proof-sampling}{{A.8}{18}{Truncated Walks and Proof of Proposition~\ref {prop:sampling}}{subsection.A.8}{}}
+\newlabel{lem:truncation}{{3}{18}{Truncation error}{lemma.3}{}}
+\@writefile{toc}{\contentsline {paragraph}{Proof of Lemma~\ref {lem:truncation}.}{18}{section*.25}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{Proof of Proposition~\ref {prop:sampling}.}{18}{section*.26}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {A.9}Proofs of Propositions~\ref {prop:gauge} and~\ref {prop:walkgauge} (gauge and its reduction)}{18}{subsection.A.9}\protected@file@percent }
+\newlabel{app:proof-gauge}{{A.9}{18}{Proofs of Propositions~\ref {prop:gauge} and~\ref {prop:walkgauge} (gauge and its reduction)}{subsection.A.9}{}}
+\@writefile{toc}{\contentsline {paragraph}{Invariance.}{18}{section*.27}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{Zero set.}{18}{section*.28}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{Walk rows carry the same form of constraint.}{18}{section*.29}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{Symmetry closes the gauge along edges.}{19}{section*.30}\protected@file@percent }
+\newlabel{rem:walkedges}{{5}{19}{The walk lays down the edges}{remark.5}{}}
+\newlabel{rem:threshold}{{6}{19}{Downstream tasks are not gauge-invariant}{remark.6}{}}
+\gdef \@abspage@last{19}

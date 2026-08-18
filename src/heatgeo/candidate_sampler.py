@@ -279,14 +279,20 @@ class HeatGeoCandidateSampler:
         """Sample ``num_walks`` trajectories of length ``walk_length`` from anchor *idx*.
 
         Each walk starts at *idx* and follows the teacher's transition matrix.
+
+        The anchor is *not* in the returned node set: it is excluded from its own
+        candidate draw by construction, the loss drops step 0 as redundant with the
+        r=1 diffusion target, and injecting it would burn a candidate slot that every
+        scale then masks out again.
+
         Returns:
             walks: int array [num_walks, walk_length + 1] of node indices.
-            walk_nodes: set of all unique node indices visited (excluding the anchor).
+            walk_nodes: set of unique node indices visited after the start.
         """
         walks = np.empty(
             (self.num_walks, self.walk_length + 1), dtype=np.int64
         )
-        walk_node_set: set[int] = {idx}
+        walk_node_set: set[int] = set()
         for m in range(self.num_walks):
             current = idx
             walks[m, 0] = current
@@ -314,8 +320,10 @@ class HeatGeoCandidateSampler:
 
         Walk-visited nodes that are not already in the candidate set are
         appended (replacing random negatives if room is needed), so the
-        student encoder will produce embeddings for them and the walk loss
-        can score every step without extra forward passes.
+        student encoder produces embeddings for them and the walk loss can
+        score their teacher rows without extra forward passes. Their presence
+        also raises the odds that a *neighbour* of a walk node is in the pool,
+        which is what the walk softmax denominator is drawn from.
 
         Returns:
             candidate_arr: int array [candidate_size]

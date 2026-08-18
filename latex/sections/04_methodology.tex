@@ -1,7 +1,7 @@
 \section{Methodology}
 \label{sec:method}
 
-HeatGeo treats the teacher embedding space as a sampled semantic manifold and transfers its geometry through heat diffusion, instantiating the analysis of Section~\ref{sec:theory}. Section~\ref{sec:graph} builds the discrete manifold, Section~\ref{sec:kernels} defines a family of diffusion kernels indexed by diffusion time, and Section~\ref{sec:objective} trains the student to reproduce all of them at once.
+HeatGeo treats the teacher embedding space as a sampled semantic manifold and transfers its geometry through heat diffusion, instantiating the analysis of Section~\ref{sec:theory}. Section~\ref{sec:graph} builds the discrete manifold, Section~\ref{sec:kernels} defines a family of diffusion kernels indexed by diffusion time, Section~\ref{sec:objective} trains the student to reproduce all of them at once, and Section~\ref{sec:walk} extends supervision from anchor rows to the rows a random walk visits.
 
 \subsection{Teacher Semantic Graph}
 \label{sec:graph}
@@ -116,21 +116,55 @@ with $\omega_r$ normalized scale weights that emphasize the ambient and local sc
 \paragraph{Resolution-dependent student distributions.}
 Eq.~\ref{eq:student} gives each scale its own temperature $\tau_r$, increasing with $r$ so that broader teacher targets are matched at a correspondingly smoother resolution. This is what makes the family informative rather than redundant: by Proposition~\ref{prop:collapse}, a shared student distribution reduces the multi-scale objective to a single-scale one against the mixture $\bar{p}^T_i$, so scales that differ only in the teacher would leave the gradient unchanged. Distinct $\tau_r$ break this equivalence. Matching the same similarities at several resolutions is over-determined, so the student must reproduce the teacher's cosine \emph{gaps} rather than only its ranking, which is precisely the information that graded similarity tasks measure.
 
-\paragraph{Similarity gauge calibration.}
-By Proposition~\ref{prop:gauge}, the diffusion objective determines relative semantic flow but leaves one scalar similarity origin per anchor free, even though downstream use of embeddings compares cosines against a shared scale. HeatGeo fixes exactly this degree of freedom by matching one teacher-weighted mean similarity per anchor,
+\subsection{Walk-Sampled Kernel Matching}
+\label{sec:walk}
+
+Every row of the teacher operator that Eq.~\ref{eq:ldiff} matches is indexed by an \emph{anchor}. The rows at the remaining corpus nodes are never supervised, even though a large number of them are already encoded: the pooled set $\mathcal{P}_B$ contains, on every step, several hundred non-anchor texts whose student embeddings are computed and then used only as columns. Walk-sampled kernel matching supervises those rows as well, at no additional encoding cost.
+
+\paragraph{Which rows.}
+From each anchor $i\in B$ we run $M$ random walks of length $L$ on the teacher transition matrix,
 \begin{equation}
-    \label{eq:sgc}
-    \mathcal{L}_{\mathrm{SGC}}
-    =
-    \frac{1}{|B|}
-    \sum_{i\in B}
-    \mathrm{Huber}_{\delta}
-    \left(
-        \sum_{j\in\mathcal{P}_B} p_{i,0}^{T}(j)\,
-        \big[\cos(s_i,s_j)-\cos(t_i,t_j)\big]
-    \right),
+    \label{eq:walk}
+    j^{(m)}_{0}=i,
+    \qquad
+    j^{(m)}_{t+1}\sim P^{T}_{j^{(m)}_{t}},
+    \qquad
+    t=0,\dots,L-1,
 \end{equation}
-weighting by the ambient teacher distribution so that calibration follows semantically relevant columns rather than the many easy negatives. Eq.~\ref{eq:sgc} constrains a single scalar per anchor and leaves the geometry to the diffusion terms (Proposition~\ref{prop:sgc}); it introduces no projection head, no pair construction, and no parameters.
+and take the nodes visited at steps $t\geq1$ as the rows to supervise. Writing $\nu_B$ for the normalized visit counts over the batch --- the walk's occupancy measure, restricted to nodes present in $\mathcal{P}_B$ --- the walk selects rows in proportion to how much diffusion mass reaches them from the batch's anchors, which is the same principle that selects columns in Section~\ref{sec:candidates}. Visited nodes not already in $C_i$ replace random negatives, so the pooled set covers the walk without enlarging it.
+
+\paragraph{Which columns.}
+For a visited node $j$ the column set is the teacher's own support for that row, intersected with what the batch holds,
+\begin{equation}
+    \label{eq:walkcols}
+    \Omega^{w}_{j}=\mathcal{P}_B\cap\mathcal{M}_k^{T}(j),
+\end{equation}
+and the teacher target is the transition row restricted to it, $P^{T}_{j}\big|_{\Omega^{w}_{j}}$. Restricting to $\mathcal{M}_k^{T}(j)$ rather than to all of $\mathcal{P}_B$ is what keeps the term compatible with Section~\ref{sec:candidates}: on $\Omega^w_j$ every column carries teacher mass, so no column receives a target of zero for the accidental reason that it was drawn for a different anchor. A hard negative, in particular, is by construction a high-similarity pair excluded from the mutual-$k$NN graph, so it can never enter $\Omega^w_j$ and is never pushed apart by this term.
+
+\paragraph{The objective.}
+With student distributions $p^{S}_{w,j}(j')\propto\exp\big(\cos(s_j,s_{j'})/\tau_w\big)$ on $\Omega^{w}_{j}$,
+\begin{equation}
+    \label{eq:lwalk}
+    \mathcal{L}_{\mathrm{walk}}
+    =
+    \sum_{j}
+    \nu_B(j)\,
+    D_{\mathrm{KL}}
+    \left(
+        P^{T}_{j}\big|_{\Omega^{w}_{j}}
+        \,\Big\|\,
+        p^{S}_{w,j}
+    \right),
+    \qquad
+    \tau_w=\tau_g,
+\end{equation}
+where tying the student temperature to the graph temperature makes the teacher target exactly attainable: $P^T_j$ is itself a softmax of teacher cosines at $\tau_g$, so Eq.~\ref{eq:lwalk} has an infimum of $0$ reached precisely when student and teacher cosines agree on $\Omega^w_j$ up to a constant. The term is therefore on the same scale as Eq.~\ref{eq:ldiff}, and $\lambda$ below trades off two divergences rather than converting units.
+
+\paragraph{Dense targets rather than sampled successors.}
+A natural alternative scores the sampled transitions themselves, $-\log p^{S}(j_{t+1}\mid j_{t})$ summed along each path. Because the walk is first-order and each step is scored on the teacher's own $j_t$, that path likelihood factorizes into independent one-step terms, and its expectation over the walk is exactly Eq.~\ref{eq:lwalk}. The sampled form is thus an unbiased but high-variance estimator of the dense one; since $P^{T}_{j}$ is already materialized during graph construction, we use the dense form and pay no variance. It also fixes what the term does and does not claim: it matches one-step kernels at walk-visited rows, and nothing in it couples two consecutive steps.
+
+\paragraph{Why step $0$ is dropped.}
+The walk starts at the anchor, but the anchor's row is already supervised: the lazy walk at $r=1$ is $\tfrac12(I+P^T)$, whose off-diagonal part renormalizes to exactly $P^{T}_{i}$. Supervising step $0$ would distil the $r=1$ target a second time, so only $t\geq1$ contributes.
 
 \paragraph{Full objective.}
 \begin{equation}
@@ -139,7 +173,9 @@ weighting by the ambient teacher distribution so that calibration follows semant
     =
     \mathcal{L}_{\mathrm{diff}}
     +
-    \lambda\,\mathcal{L}_{\mathrm{SGC}}
+    \lambda\,\mathcal{L}_{\mathrm{walk}}
     }
 \end{equation}
+Beyond its role as extra supervision, the walk term removes most of the gauge freedom that Proposition~\ref{prop:gauge} identifies. Each traversed edge constrains two rows that contain each other as columns, and cosine symmetry then forces their similarity offsets to agree; chaining along the walk propagates the identification through the graph, leaving one offset per connected component instead of one per anchor (Proposition~\ref{prop:walkgauge}). This is the sense in which the trajectory, and not merely the set of visited nodes, does work: it is the path that links the constraints.
+
 Training therefore requires only cached teacher embeddings. HeatGeo uses no teacher hidden states, no online teacher forward pass, no task labels, no contrastive or layer-alignment objective, and no change to the student architecture.

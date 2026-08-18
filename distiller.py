@@ -206,15 +206,14 @@ class KnowledgeDistiller:
                         direct_weight=getattr(config, "direct_weight", 1.0),
                         direct_temp=getattr(config, "direct_temp", 0.10),
                         direct_student_temp=getattr(config, "direct_student_temp", 0.10),
-                        use_sinkhorn=getattr(config, "use_sinkhorn", False),
-                        sinkhorn_alpha=getattr(config, "sinkhorn_alpha", 0.1),
-                        sinkhorn_max_iter=getattr(config, "sinkhorn_max_iter", 50),
-                        cosent_weight=getattr(config, "cosent_weight", 0.1),
-                        cosent_tau=getattr(config, "cosent_tau", 0.07),
-                        cosent_delta=getattr(config, "cosent_delta", 0.05),
                         walk_weight=getattr(config, "walk_weight", 0.5),
                         walk_temp=getattr(config, "walk_temp", 0.07),
-                        walk_topk=getattr(config, "walk_topk", 128),
+                        transition_neighbors=getattr(self, "heatgeo_artifact", {}).get("transition_neighbors")
+                        if getattr(config, "num_walks", 0) > 0
+                        else None,
+                        transition_probs=getattr(self, "heatgeo_artifact", {}).get("transition_probs")
+                        if getattr(config, "num_walks", 0) > 0
+                        else None,
                     ).to(self.device_s)
                     self.heatgeo_criterions.append(criterion)
                 
@@ -249,15 +248,14 @@ class KnowledgeDistiller:
                     direct_weight=getattr(config, "direct_weight", 1.0),
                     direct_temp=getattr(config, "direct_temp", 0.10),
                     direct_student_temp=getattr(config, "direct_student_temp", 0.10),
-                    use_sinkhorn=getattr(config, "use_sinkhorn", False),
-                    sinkhorn_alpha=getattr(config, "sinkhorn_alpha", 0.1),
-                    sinkhorn_max_iter=getattr(config, "sinkhorn_max_iter", 50),
-                    cosent_weight=getattr(config, "cosent_weight", 0.1),
-                    cosent_tau=getattr(config, "cosent_tau", 0.07),
-                    cosent_delta=getattr(config, "cosent_delta", 0.05),
                     walk_weight=getattr(config, "walk_weight", 0.5),
                     walk_temp=getattr(config, "walk_temp", 0.07),
-                    walk_topk=getattr(config, "walk_topk", 128),
+                    transition_neighbors=getattr(self, "heatgeo_artifact", {}).get("transition_neighbors")
+                    if getattr(config, "num_walks", 0) > 0
+                    else None,
+                    transition_probs=getattr(self, "heatgeo_artifact", {}).get("transition_probs")
+                    if getattr(config, "num_walks", 0) > 0
+                    else None,
                 ).to(self.device_s)
                 self.scheduler = self._build_scheduler()
                 print("HeatGeo criterion initialized (single layer)")
@@ -2020,19 +2018,7 @@ class KnowledgeDistiller:
             for epoch in range(cfg.epochs):
                 self.current_epoch = epoch
                 
-                # ---- CoSENT Curriculum ----
-                # Turn on CoSENT only if enabled in config and epoch >= start_epoch
-                use_cosent = getattr(cfg, "use_cosent", False) and (epoch >= getattr(cfg, "cosent_start_epoch", 0))
-                if hasattr(self, "heatgeo_criterions"):
-                    for crit in self.heatgeo_criterions:
-                        crit.use_cosent = use_cosent
-                elif self.criterion is not None and hasattr(self.criterion, "use_cosent"):
-                    self.criterion.use_cosent = use_cosent
-                if use_cosent:
-                    print(f"CoSENT Auxiliary Loss is ENABLED for Epoch {epoch + 1}")
-                # ---------------------------
-
-                # ---- Walk Trajectory Curriculum ----
+                # ---- Walk Curriculum ----
                 use_walk = (
                     getattr(cfg, "num_walks", 0) > 0
                     and epoch >= getattr(cfg, "walk_start_epoch", 1)
@@ -2043,7 +2029,7 @@ class KnowledgeDistiller:
                 elif self.criterion is not None and hasattr(self.criterion, "use_walk_loss"):
                     self.criterion.use_walk_loss = use_walk
                 if use_walk:
-                    print(f"Walk Trajectory Loss is ENABLED for Epoch {epoch + 1}")
+                    print(f"Walk kernel-matching loss is ENABLED for Epoch {epoch + 1}")
                 # ------------------------------------
 
                 avg_loss = self.train_epoch(epoch)

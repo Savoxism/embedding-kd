@@ -1,7 +1,7 @@
 \section{From Mini-Batch Relations to Manifold Diffusion}
 \label{sec:theory}
 
-This section develops the reasoning chain behind HeatGeo. First, relational objectives computed inside a mini-batch undersample the teacher's local geometry, and their in-batch targets are biased estimators of neighborhood structure (Section~\ref{sec:theory-batch}). Anchored supervision on each example's own neighborhood avoids both defects, and matching local one-step diffusion is enough: it controls the teacher's multi-step, global geometry (Section~\ref{sec:theory-global}). Local neighborhoods are large, but they need not be enumerated---diffusion-weighted sampling approximates them at a cost governed by the sharpness of the diffusion targets rather than by the neighborhood size (Section~\ref{sec:theory-sampling}). Finally, distribution matching leaves exactly one similarity offset per anchor undetermined, which motivates the calibration term (Section~\ref{sec:theory-gauge}). All statements are proved in Appendix~\ref{app:proofs}; Section~\ref{sec:analysis} instantiates the bounds and tests their predictions.
+This section develops the reasoning chain behind HeatGeo. First, relational objectives computed inside a mini-batch undersample the teacher's local geometry, and their in-batch targets are biased estimators of neighborhood structure (Section~\ref{sec:theory-batch}). Anchored supervision on each example's own neighborhood avoids both defects, and matching local one-step diffusion is enough: it controls the teacher's multi-step, global geometry (Section~\ref{sec:theory-global}). Local neighborhoods are large, but they need not be enumerated---diffusion-weighted sampling approximates them at a cost governed by the sharpness of the diffusion targets rather than by the neighborhood size (Section~\ref{sec:theory-sampling}). Finally, distribution matching leaves exactly one similarity offset per anchor undetermined; supervising the rows at non-anchor nodes, which a random walk selects and the batch has already encoded, collapses that freedom to one offset per connected component of the teacher graph (Section~\ref{sec:theory-gauge}). All statements are proved in Appendix~\ref{app:proofs}; Section~\ref{sec:analysis} instantiates the bounds and tests their predictions.
 
 \subsection{Setup}
 \label{sec:theory-setup}
@@ -142,7 +142,7 @@ In particular, if $p$ places mass at least $c/\rho$ on each atom of its effectiv
 
 The sample size that suffices is governed by the \emph{sharpness} of the diffusion target---its perplexity---rather than by the neighborhood size $k$: a peaked target is captured by a handful of draws no matter how large the graph neighborhood is. The implementation uses weighted sampling without replacement via Gumbel top-$k$~\citep{efraimidis2006weighted,kool2019stochastic}, which draws distinct columns and can only improve coverage. Per anchor and epoch, the student scores $O(m)$ columns instead of the full multi-hop support, and the graph and diffusion targets are computed once, offline.
 
-\subsection{The Gauge of Diffusion Matching and Calibration}
+\subsection{The Gauge of Diffusion Matching and Its Reduction}
 \label{sec:theory-gauge}
 
 The last question is what the diffusion objective leaves undetermined. Every term in Eq.~\ref{eq:ldiff-generic} is a softmax divergence, and a softmax is invariant to a constant shift of its logits.
@@ -152,11 +152,20 @@ The last question is what the diffusion objective leaves undetermined. Every ter
 $\mathcal{L}_{\mathrm{diff}}$ is invariant under $c^S_{ij}\mapsto c^S_{ij}+a_i$ for arbitrary per-anchor constants $a_i$. Moreover, if the ambient-scale term of $\mathcal{L}_{\mathrm{diff}}$ vanishes for anchor $i$ on a column set with at least two elements, then $c^S_{ij}=c^T_{ij}+a_i$ on that set for some $a_i\in\mathbb{R}$.
 \end{proposition}
 
-Distribution matching thus determines all similarity \emph{gaps} but leaves one scalar origin per anchor free. Downstream uses of embeddings are not invariant to this gauge: a retrieval threshold or a similarity calibration is shared \emph{across} anchors, and per-anchor offsets $\{a_i\}$ reorder cross-anchor comparisons while leaving $\mathcal{L}_{\mathrm{diff}}$ untouched (Appendix~\ref{app:proof-gauge}). The calibration term $\mathcal{L}_{\mathrm{SGC}}$ of Section~\ref{sec:objective} fixes this remaining freedom.
+Distribution matching thus determines all similarity \emph{gaps} but leaves one scalar origin free per supervised row. Downstream uses of embeddings are not invariant to this gauge: a retrieval threshold or a similarity calibration is shared \emph{across} anchors, and per-anchor offsets $\{a_i\}$ reorder cross-anchor comparisons while leaving $\mathcal{L}_{\mathrm{diff}}$ untouched (Appendix~\ref{app:proof-gauge}).
 
-\begin{proposition}[Identifiability]
-\label{prop:sgc}
-Suppose the ambient-scale term of $\mathcal{L}_{\mathrm{diff}}$ vanishes for anchor $i$ as in Proposition~\ref{prop:gauge}. Then $\mathcal{L}_{\mathrm{SGC}}$ vanishes for anchor $i$ if and only if $a_i=0$, in which case $c^S_{ij}=c^T_{ij}$ on the shared column set. Conversely, exact similarity matching makes both terms zero.
+The freedom is one constant per supervised row, so it shrinks when more rows are supervised and those rows overlap. This is what walk-sampled supervision provides: it constrains rows at non-anchor nodes, and cosine similarity is symmetric, so two rows that each appear in the other's column set cannot carry different offsets.
+
+\begin{definition}[Constraint graph]
+\label{def:constraint}
+Let $\mathcal{S}$ be the set of supervised rows and, for $u\in\mathcal{S}$, let $\Omega_u$ be the column set on which row $u$ is supervised. The constraint graph $\mathcal{G}$ has vertex set $\mathcal{S}$ and an edge $\{u,v\}$ whenever $v\in\Omega_u$ and $u\in\Omega_v$.
+\end{definition}
+
+\begin{proposition}[Gauge reduction by walk supervision]
+\label{prop:walkgauge}
+Assume $\tau_w=\tau_g$ and $|\Omega_u|\geq2$ for every $u\in\mathcal{S}$, and suppose every supervised term vanishes: the ambient term of $\mathcal{L}_{\mathrm{diff}}$ at each anchor, and the walk term of Eq.~\ref{eq:lwalk} at each visited node. Then there are constants $\{a_u\}_{u\in\mathcal{S}}$ with $c^S_{uv}=c^T_{uv}+a_u$ for every $v\in\Omega_u$, and $a_u=a_v$ for every edge $\{u,v\}$ of $\mathcal{G}$. Consequently $a$ is constant on each connected component of $\mathcal{G}$, and the invariance group of the objective is $\mathbb{R}^{\kappa}$ with $\kappa$ the number of connected components, rather than $\mathbb{R}^{|\mathcal{S}|}$.
 \end{proposition}
 
-The invariance group of $\mathcal{L}_{\mathrm{diff}}$ is one-dimensional per anchor, and $\mathcal{L}_{\mathrm{SGC}}$ imposes one scalar equation per anchor: it is a minimal sufficient calibration, constraining the gauge and nothing else. Section~\ref{sec:analysis} tests the resulting prediction that removing it should hurt tasks that depend on cross-anchor comparability while leaving within-anchor rankings comparatively intact.
+Two consequences make this the mechanism by which the walk term earns its place. First, the walk builds the edges of $\mathcal{G}$ as it moves: consecutive visited nodes are adjacent in the mutual-$k$NN graph, mutual adjacency is symmetric, and both endpoints are supervised, so each traversed step contributes an edge. Taking the union of the per-batch constraint graphs over training, $\mathcal{G}$ covers the traversed part of $\mathcal{M}_k^T$, and $\kappa$ is governed by the connected components of the \emph{teacher graph} rather than by the number of anchors. It is in this sense that the trajectory matters, even though the loss itself does not couple consecutive steps: the path is what chains the constraints.
+
+Second, the residual freedom is benign in a way the per-anchor freedom is not. A single offset shared by an entire component shifts all of its cosines equally, so it preserves every cross-anchor ordering---rank correlations such as those used in semantic textual similarity are exactly invariant to it---and it displaces only the absolute location of a shared decision threshold, a single scalar. Per-anchor offsets have neither property (Remark~\ref{rem:threshold}). Section~\ref{sec:analysis} tests the resulting prediction: removing the walk term should widen the dispersion of the estimated offsets $\hat{a}_i$ and cost most on tasks that compare cosines across anchors, while leaving within-anchor structure comparatively intact.
