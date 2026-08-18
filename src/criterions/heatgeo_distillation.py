@@ -168,6 +168,7 @@ class HeatGeoDistillation(nn.Module):
         transition_probs: torch.Tensor | None = None,
         walk_weight: float = 0.5,
         walk_temp: float = 0.07,
+        walk_topk: int | None = None,
         **kwargs,
     ):
         super().__init__()
@@ -184,6 +185,9 @@ class HeatGeoDistillation(nn.Module):
         self.use_walk_loss = False
         self.walk_weight = float(walk_weight)
         self.walk_temp = float(walk_temp)
+        self.walk_topk = None if walk_topk is None else int(walk_topk)
+        if self.walk_topk is not None and self.walk_topk <= 0:
+            raise ValueError("walk_topk must be positive when provided")
         if transition_neighbors is not None and transition_probs is not None:
             # The teacher's transition rows, padded with -1. Held as int32/float32
             # rather than the artifact's int64: at corpus scale this is the second
@@ -371,6 +375,11 @@ class HeatGeoDistillation(nn.Module):
         # Teacher transition row per source, restricted to columns the pool holds.
         neighbors = self.walk_neighbors.index_select(0, src_nodes).long()
         probs = self.walk_probs.index_select(0, src_nodes).float()
+        if self.walk_topk is not None and self.walk_topk < probs.size(1):
+            probs, top_positions = torch.topk(
+                probs, k=self.walk_topk, dim=1, largest=True, sorted=True
+            )
+            neighbors = neighbors.gather(1, top_positions)
         flat = neighbors.reshape(-1)
         nb_pos = torch.searchsorted(column_idx, flat.clamp_min(0)).clamp_max(
             pool_size - 1

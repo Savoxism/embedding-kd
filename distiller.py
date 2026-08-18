@@ -129,6 +129,7 @@ class KnowledgeDistiller:
         self.current_epoch = 0
         self.current_step = 0
         self._saved_checkpoint_epochs = set()
+        self._saved_student_weight_epochs = set()
         self.setup_seed(config.seed)
         self.setup_devices()
         self.setup_models()
@@ -208,6 +209,7 @@ class KnowledgeDistiller:
                         direct_student_temp=getattr(config, "direct_student_temp", 0.10),
                         walk_weight=getattr(config, "walk_weight", 0.5),
                         walk_temp=getattr(config, "walk_temp", 0.07),
+                        walk_topk=getattr(config, "walk_topk", None),
                         transition_neighbors=getattr(self, "heatgeo_artifact", {}).get("transition_neighbors")
                         if getattr(config, "num_walks", 0) > 0
                         else None,
@@ -250,6 +252,7 @@ class KnowledgeDistiller:
                     direct_student_temp=getattr(config, "direct_student_temp", 0.10),
                     walk_weight=getattr(config, "walk_weight", 0.5),
                     walk_temp=getattr(config, "walk_temp", 0.07),
+                    walk_topk=getattr(config, "walk_topk", None),
                     transition_neighbors=getattr(self, "heatgeo_artifact", {}).get("transition_neighbors")
                     if getattr(config, "num_walks", 0) > 0
                     else None,
@@ -650,6 +653,7 @@ class KnowledgeDistiller:
                     stochastic=getattr(cfg, "stochastic_candidates", True),
                     num_walks=getattr(cfg, "num_walks", 0),
                     walk_length=getattr(cfg, "walk_length", 4),
+                    walk_topk=getattr(cfg, "walk_topk", None),
                 )
                 anchor_texts = df[self.heatgeo_anchor_column].astype(str).tolist()
                 self.train_ds = TextPairWithTeacherAndHeatGeo(
@@ -1681,6 +1685,12 @@ class KnowledgeDistiller:
         weights_dir = getattr(self.config, "weights_dir", None)
         if not weights_dir:
             return
+        if epoch in self._saved_student_weight_epochs:
+            print(
+                f"Student weights for epoch {epoch + 1} already saved; "
+                "skipping duplicate."
+            )
+            return
 
         destination_dir = Path(weights_dir)
         destination_dir.mkdir(parents=True, exist_ok=True)
@@ -1716,6 +1726,7 @@ class KnowledgeDistiller:
             destination_tmp.unlink(missing_ok=True)
 
         print(f"Student weights saved: {destination}")
+        self._saved_student_weight_epochs.add(epoch)
 
     @staticmethod
     def _benchmark_name(path: str, split: str) -> str:
@@ -2063,9 +2074,25 @@ class KnowledgeDistiller:
                     }
                 )
 
-                if (epoch + 1) % cfg.save_every == 0:
+                final_weights_only = bool(
+                    getattr(cfg, "final_weights_only", False)
+                )
+                should_save_final_weights = (
+                    final_weights_only and epoch + 1 == cfg.epochs
+                )
+                should_save_checkpoint = (
+                    not final_weights_only and (epoch + 1) % cfg.save_every == 0
+                )
+                if should_save_final_weights or should_save_checkpoint:
                     try:
-                        self.save_checkpoint(epoch, {"loss": avg_loss})
+                        if should_save_final_weights:
+                            if not getattr(cfg, "weights_dir", None):
+                                raise ValueError(
+                                    "final_weights_only requires weights_dir"
+                                )
+                            self.save_student_weights(epoch)
+                        else:
+                            self.save_checkpoint(epoch, {"loss": avg_loss})
                     except Exception as e:
                         if getattr(cfg, "weights_dir", None):
                             raise RuntimeError(
@@ -2079,7 +2106,12 @@ class KnowledgeDistiller:
             print("=" * 60)
             print("Done train()")
 
-            self.save_checkpoint(cfg.epochs - 1, {"loss": avg_loss})
+            if getattr(cfg, "final_weights_only", False):
+                if not getattr(cfg, "weights_dir", None):
+                    raise ValueError("final_weights_only requires weights_dir")
+                self.save_student_weights(cfg.epochs - 1)
+            else:
+                self.save_checkpoint(cfg.epochs - 1, {"loss": avg_loss})
             try:
                 test_results = self.evaluate("test")
                 if (

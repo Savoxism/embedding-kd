@@ -37,6 +37,7 @@ class HeatGeoConfig(BaseConfig):
     walk_weight = 0.5
     walk_temp = 0.05   # tied to graph_temp: makes the teacher row exactly attainable
     walk_start_epoch = 1
+    walk_topk = None
     
     hard_neg_pool = 200
     walk_keep_topk = 2048
@@ -70,6 +71,7 @@ class HeatGeoConfig(BaseConfig):
     cache_dtype = "float32"
 
     save_dir = "models/heatgeo/qwen3_4b_to_bert_base"
+    final_weights_only = False
     use_wandb = True
     wandb_project = "iclr-mdd-heatgeo"
     wandb_run_name = "heatgeo_qwen3_4b_to_bert_base"

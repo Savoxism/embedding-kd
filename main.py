@@ -75,6 +75,31 @@ def parse_args():
         default=None,
         help='Maximum sequence length'
     )
+
+    # HeatGeo experiment overrides. Keeping these on the CLI lets concurrent
+    # teacher-student pairs use isolated caches without rewriting the shared
+    # default config.
+    parser.add_argument('--graph_k', type=int, default=None)
+    parser.add_argument('--graph_temp', type=float, default=None)
+    parser.add_argument('--pool_size', type=int, default=None)
+    parser.add_argument('--num_walks', type=int, default=None)
+    parser.add_argument('--walk_length', type=int, default=None)
+    parser.add_argument('--walk_weight', type=float, default=None)
+    parser.add_argument('--walk_temp', type=float, default=None)
+    parser.add_argument('--walk_start_epoch', type=int, default=None)
+    parser.add_argument('--walk_topk', type=int, default=None)
+    parser.add_argument('--candidate_size', type=int, default=None)
+    parser.add_argument('--diffusion_quota', type=int, default=None)
+    parser.add_argument('--hard_neg_k', type=int, default=None)
+    parser.add_argument('--random_neg_k', type=int, default=None)
+    parser.add_argument('--cache_path', type=str, default=None)
+    parser.add_argument('--heatgeo_cache_path', type=str, default=None)
+    parser.add_argument('--heatgeo_log_dir', type=str, default=None)
+    parser.add_argument(
+        '--pooling_method',
+        choices=['last_token', 'mean', 'cls'],
+        default=None,
+    )
     
     parser.add_argument(
         '--w_task',
@@ -106,6 +131,11 @@ def parse_args():
         type=str,
         default=None,
         help='Optional durable directory for per-epoch student weights'
+    )
+    parser.add_argument(
+        '--final_weights_only',
+        action='store_true',
+        help='Save only the final student state dict, not training checkpoints',
     )
     
     parser.add_argument(
@@ -187,6 +217,30 @@ def get_config(method: str, args):
         config.learning_rate = args.lr
     if args.max_length is not None:
         config.max_length = args.max_length
+
+    heatgeo_overrides = (
+        'graph_k',
+        'graph_temp',
+        'pool_size',
+        'num_walks',
+        'walk_length',
+        'walk_weight',
+        'walk_temp',
+        'walk_start_epoch',
+        'walk_topk',
+        'candidate_size',
+        'diffusion_quota',
+        'hard_neg_k',
+        'random_neg_k',
+        'cache_path',
+        'heatgeo_cache_path',
+        'heatgeo_log_dir',
+        'pooling_method',
+    )
+    for name in heatgeo_overrides:
+        value = getattr(args, name)
+        if value is not None:
+            setattr(config, name, value)
     
     if args.w_task is not None:
         config.w_task = args.w_task
@@ -199,6 +253,8 @@ def get_config(method: str, args):
         config.save_dir = args.save_dir
     if args.weights_dir is not None:
         config.weights_dir = args.weights_dir
+    if args.final_weights_only:
+        config.final_weights_only = True
     
     if args.seed is not None:
         config.seed = args.seed
