@@ -54,19 +54,45 @@ def test_heatgeo_cli_overrides(monkeypatch):
     assert config.final_weights_only is True
 
 
-def test_heatgeo_temperature_ties():
+def test_heatgeo_temperature_law_and_ties():
+    # Default alpha = 1: the heat-kernel value.
     criterion = HeatGeoDistillation(
         student_dim=4,
         teacher_dim=4,
         scale_weights=(1.0, 0.5, 0.25),
-        broad_scale_temps=(0.07, 0.10),
+        diffusion_scales=(1, 2, 4),
         graph_temp=0.05,
     )
-    # tau_1 = tau_w = graph_temp: not knobs, derived.
+    # tau_1 = tau_w = graph_temp: the tie is the law's base case.
     assert criterion.walk_temp == pytest.approx(0.05)
-    assert criterion.scale_temps.tolist() == pytest.approx([0.05, 0.07, 0.10])
+    assert criterion.scale_temps.tolist() == pytest.approx([0.05, 0.10, 0.20])
+    # tau_0 = graph_temp * r_max^alpha = the top of the ladder.
+    assert criterion.direct_temp == pytest.approx(0.20)
 
-    for removed in ("scale_temps", "walk_temp", "direct_student_temp"):
+    # alpha = 0.5: the historical ladder, kept reachable for comparison runs.
+    criterion = HeatGeoDistillation(
+        student_dim=4,
+        teacher_dim=4,
+        scale_weights=(1.0, 0.5, 0.25),
+        diffusion_scales=(1, 2, 4),
+        temp_exponent=0.5,
+        graph_temp=0.05,
+    )
+    assert criterion.scale_temps.tolist() == pytest.approx(
+        [0.05, 0.05 * 2**0.5, 0.10]
+    )
+    assert criterion.direct_temp == pytest.approx(0.10)
+    assert criterion.walk_temp == pytest.approx(0.05)
+
+    for removed in (
+        "scale_temps",
+        "broad_scale_temps",
+        "walk_temp",
+        "direct_student_temp",
+        "direct_temp",
+        "direct_weight",
+        "student_temp",
+    ):
         with pytest.raises(ValueError, match=removed):
             HeatGeoDistillation(
                 student_dim=4,
@@ -91,6 +117,7 @@ def test_heatgeo_tied_temperature_makes_teacher_row_attainable():
         student_dim=4,
         teacher_dim=4,
         scale_weights=(1.0,),
+        diffusion_scales=(1,),
         graph_temp=graph_temp,
     )
     loss, _ = criterion(

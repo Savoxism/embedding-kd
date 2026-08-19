@@ -12,22 +12,22 @@ class HeatGeoConfig(BaseConfig):
     teacher_special_token = "G"
 
     # ---- Objective -----------------------------------------------------------
-    # Temperature ties, enforced by HeatGeoDistillation (it rejects the removed
-    # knobs scale_temps / walk_temp / direct_student_temp):
-    #   tau_1 = graph_temp   the r=1 target IS the transition row, a softmax of
-    #                        teacher cosines at graph_temp -- any other student
-    #                        temperature makes zero loss unattainable;
-    #   tau_w = graph_temp   walk targets are transition rows, same argument;
-    #   direct scale         one temperature (direct_temp) on both teacher and
-    #                        student side (Hinton et al. 2015 convention).
-    # Only the broader diffusion scales keep free student temperatures.
-    student_temp = 0.07               # fallback when broad_scale_temps is unset
-    broad_scale_temps = (0.07, 0.10)  # student temps for r = 2, 4; r = 1 uses graph_temp
+    # One temperature law, enforced by HeatGeoDistillation (it rejects the removed
+    # knobs student_temp / broad_scale_temps / direct_temp / direct_weight on top
+    # of the provable ties scale_temps / walk_temp / direct_student_temp):
+    #   tau_r = graph_temp * r^temp_exponent      (r = 1 reproduces the tie)
+    #   tau_0 = graph_temp * r_max^temp_exponent  (direct scale, both sides)
+    #   tau_w = graph_temp
+    # The direct scale is always on with pre-normalization weight 1: one member
+    # of the ladder, not an optional term.
+    #
+    # temp_exponent is fixed at the heat-kernel value alpha = 1 (tau_r linear in
+    # diffusion time; Eq. templaw in the paper) rather than tuned:
+    #   1.0 -> temps (0.05, 0.10, 0.20),  tau_0 = 0.20    heat-kernel value
+    #   0.5 -> temps (0.05, 0.0707, 0.10), tau_0 = 0.10   historical hand-tuned
+    #          ladder, reachable via --temp_exponent for comparison runs
+    temp_exponent = 1.0
     share_in_batch = True
-
-    # ---- Direct Scale (r=0) --------------------------------------------------
-    direct_weight = 1.0
-    direct_temp = 0.10                # shared by both sides of the direct scale
 
     # ---- Teacher Graph -------------------------------------------------------
     graph_k = 200

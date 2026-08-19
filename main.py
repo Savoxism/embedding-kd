@@ -81,6 +81,11 @@ def parse_args():
     # default config.
     parser.add_argument('--graph_k', type=int, default=None)
     parser.add_argument('--graph_temp', type=float, default=None)
+    parser.add_argument(
+        '--temp_exponent', type=float, default=None,
+        help='Alpha in the temperature law tau_r = graph_temp * r^alpha '
+             '(default 1.0 = heat-kernel value; 0.5 = historical ladder)'
+    )
     parser.add_argument('--pool_size', type=int, default=None)
     parser.add_argument('--num_walks', type=int, default=None)
     parser.add_argument('--walk_length', type=int, default=None)
@@ -221,6 +226,7 @@ def get_config(method: str, args):
     heatgeo_overrides = (
         'graph_k',
         'graph_temp',
+        'temp_exponent',
         'pool_size',
         'num_walks',
         'walk_length',
