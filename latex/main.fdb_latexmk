@@ -1,15 +1,14 @@
 # Fdb version 4
-["bibtex main"] 1787113036.70042 "main.aux" "main.bbl" "main" 1787113290.9959 0
-  "./heatgeo.bib" 1787038361.07213 37294 4a9ef36f795e2d58cc0bfb12d6b3d8cc ""
+["bibtex main"] 1787123315.83195 "main.aux" "main.bbl" "main" 1787123317.40222 0
+  "./heatgeo.bib" 1787123287.97052 38587 a5b8584676cc7d3ddbdaae857d3039d6 ""
   "./iclr2027_conference.bst" 1787038361.07213 26973 af983813ca1a1414954dbceae7baa2a1 ""
-  "main.aux" 1787113290.61836 19881 a38201d8d20549ffea9a72c7d95bcf46 "pdflatex"
+  "main.aux" 1787123316.92294 20478 4ceed71dab8bfe6fafa6ae69478c3ded "pdflatex"
   (generated)
   "main.bbl"
   "main.blg"
   (rewritten before read)
-["pdflatex"] 1787113289.66287 "/home/duncan-nguyen/research/ICLR-EmbeddingKD/latex/main.tex" "main.pdf" "main" 1787113290.99625 0
+["pdflatex"] 1787123315.99818 "main.tex" "main.pdf" "main" 1787123317.40268 0
   "/etc/texmf/web2c/texmf.cnf" 1773138757.194 475 c0e671620eb5563b2130f56340a5fde8 ""
-  "/home/duncan-nguyen/research/ICLR-EmbeddingKD/latex/main.tex" 1787040124.22456 1144 9458d6f7d4380d2f2cd4a6cc24bded36 ""
   "/usr/share/texlive/texmf-dist/fonts/enc/dvips/base/8r.enc" 1165713224 4850 80dc9bab7f31fb78a000ccfed0e27cab ""
   "/usr/share/texlive/texmf-dist/fonts/map/fontname/texfonts.map" 1577235249 3524 cb3e574dea2d1052e39280babc910dc8 ""
   "/usr/share/texlive/texmf-dist/fonts/tfm/adobe/courier/pcrr7t.tfm" 1136768653 960 379cc0019370a9e0208a0a3f949f847a ""
@@ -128,17 +127,17 @@
   "/var/lib/texmf/web2c/pdftex/pdflatex.fmt" 1773138815 8213355 5c73132d1f44e382582447bfc6ff5c5e ""
   "fancyhdr.sty" 1787038361.07213 20521 e5d13d98d57bd53d4fed3aa61bd29c86 ""
   "iclr2027_conference.sty" 1787038361.07213 9025 1b4bb9c2e12c712c56f4eb1232b88dd6 ""
-  "main.aux" 1787113290.61836 19881 a38201d8d20549ffea9a72c7d95bcf46 "pdflatex"
-  "main.bbl" 1787113036.82338 16865 00a85091ef83e6683ace55a41d1a8c6d "bibtex main"
-  "main.out" 1787113290.62269 6498 b380726eb71e7096eff65076ef96853d "pdflatex"
+  "main.aux" 1787123316.92294 20478 4ceed71dab8bfe6fafa6ae69478c3ded "pdflatex"
+  "main.bbl" 1787123315.98694 18175 860c171608b7b70f58787acc33b13b68 "bibtex main"
+  "main.out" 1787123316.92727 6498 b380726eb71e7096eff65076ef96853d "pdflatex"
   "main.tex" 1787040124.22456 1144 9458d6f7d4380d2f2cd4a6cc24bded36 ""
   "natbib.sty" 1787038361.07213 45154 40088ce024445d7ee2bca59e704cdd01 ""
   "sections/00_abstract.tex" 1787040070.96841 1735 bb0be1c319b24faca026fbbf7437efeb ""
   "sections/01_introduction.tex" 1787040070.96841 5271 9aaa1301ba878375445123089748c644 ""
   "sections/02_related_work.tex" 1787038361.07644 6502 515dbd36135dec85a8f2eff3dd61d623 ""
   "sections/03_theory.tex" 1787069601.65128 18712 f993b0eb6a2cfc6de032d82660a0b96f ""
-  "sections/04_methodology.tex" 1787113289.17536 14592 9aa3bda73462d0c8c29fbac0277aac90 ""
-  "sections/05_experiments.tex" 1787113289.17536 9397 fa9048fa49382fde932218ec836840b9 ""
+  "sections/04_methodology.tex" 1787123304.13386 15604 3323b2a3820c6b75d27965263d407cc8 ""
+  "sections/05_experiments.tex" 1787123304.13386 9516 66f6fa03905ea89f703f56abd7200621 ""
   "sections/appendix_proofs.tex" 1787069616.86561 16062 0561628e87469bd9b54078b1cae5db45 ""
   "tables/main_results.tex" 1787038361.07644 5441 609cbe6a90e814c6d021654bf1aac713 ""
   (generated)

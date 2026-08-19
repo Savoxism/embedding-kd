@@ -84,7 +84,13 @@ def parse_args():
     parser.add_argument(
         '--temp_exponent', type=float, default=None,
         help='Alpha in the temperature law tau_r = graph_temp * r^alpha '
-             '(default 1.0 = heat-kernel value; 0.5 = historical ladder)'
+             '(default 1.0 = heat-kernel value; 0.5 = historical ladder)',
+    )
+    parser.add_argument(
+        '--weight_exponent', type=float, default=None,
+        help='Scale-weight law exponent: omega_r = r^-e '
+             '(default 0.0 = equal weight per octave, log-uniform measure; '
+             '1.0 = historical (1, 1/2, 1/4))',
     )
     parser.add_argument('--pool_size', type=int, default=None)
     parser.add_argument('--num_walks', type=int, default=None)
@@ -227,6 +233,7 @@ def get_config(method: str, args):
         'graph_k',
         'graph_temp',
         'temp_exponent',
+        'weight_exponent',
         'pool_size',
         'num_walks',
         'walk_length',

@@ -27,13 +27,26 @@ class HeatGeoConfig(BaseConfig):
     #   0.5 -> temps (0.05, 0.0707, 0.10), tau_0 = 0.10   historical hand-tuned
     #          ladder, reachable via --temp_exponent for comparison runs
     temp_exponent = 1.0
+    #
+    # Scale weights follow the same pattern (omega_r = r^-weight_exponent,
+    # rejected as a raw sequence by the criterion): the default 0.0 gives equal
+    # weight per dyadic octave -- the log-uniform scale measure dt/t used by
+    # heat-kernel signatures (HKS, SI-HKS, NetLSD) and unweighted dyadic
+    # diffusion wavelets:
+    #   0.0 -> (1, 1, 1)        log-uniform, gamma = 1     default
+    #   1.0 -> (1, 1/2, 1/4)    historical ladder, reachable via
+    #          --weight_exponent for comparison runs
+    # The direct scale always carries pre-normalization weight 1 against the
+    # normalized diffusion family: a 50/50 split between absolute calibration
+    # and neighbourhood ranking, independent of the exponent.
+    weight_exponent = 0.0
     share_in_batch = True
 
     # ---- Teacher Graph -------------------------------------------------------
     graph_k = 200
     graph_temp = 0.05
     diffusion_scales = (1, 2, 4)
-    scale_weights = (1.0, 0.5, 0.25)
+    # scale_weights is gone: derived from weight_exponent (see Objective block).
     pool_size = 256
     
     # ---- Random Walk Kernel Matching -----------------------------------------

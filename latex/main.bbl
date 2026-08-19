@@ -1,4 +1,4 @@
-\begin{thebibliography}{37}
+\begin{thebibliography}{41}
 \providecommand{\natexlab}[1]{#1}
 \providecommand{\url}[1]{\texttt{#1}}
 \expandafter\ifx\csname urlstyle\endcsname\relax
@@ -46,6 +46,14 @@ Anshumann, Mohd~Abbas Zaidi, Akhil Kedia, Jinwoo Ahn, Taehwak Kwon, Kangwook
 \newblock \doi{10.18653/v1/2025.acl-long.885}.
 \newblock URL \url{https://aclanthology.org/2025.acl-long.885/}.
 
+\bibitem[Bronstein \& Kokkinos(2010)Bronstein and
+  Kokkinos]{bronstein2010scalehks}
+Michael~M. Bronstein and Iasonas Kokkinos.
+\newblock Scale-invariant heat kernel signatures for non-rigid shape
+  recognition.
+\newblock In \emph{Proc. {IEEE} Conference on Computer Vision and Pattern
+  Recognition ({CVPR})}, pp.\  1704--1711, 2010.
+
 \bibitem[Calder \& Trillos(2022)Calder and Trillos]{calder2022improved}
 Jeff Calder and Nicol{\'a}s~Garc{\'i}a Trillos.
 \newblock Improved spectral convergence rates for graph laplacians on
@@ -85,6 +93,13 @@ Ronald~R. Coifman and St{\'e}phane Lafon.
 \newblock \emph{Applied and Computational Harmonic Analysis}, 21\penalty0
   (1):\penalty0 5--30, 2006.
 \newblock \doi{10.1016/j.acha.2006.04.006}.
+
+\bibitem[Coifman \& Maggioni(2006)Coifman and
+  Maggioni]{coifman2006diffusionwavelets}
+Ronald~R. Coifman and Mauro Maggioni.
+\newblock Diffusion wavelets.
+\newblock \emph{Applied and Computational Harmonic Analysis}, 21\penalty0
+  (1):\penalty0 53--94, 2006.
 
 \bibitem[Dao et~al.(2026)Dao, Nguyen, Pham, Ngo~Van, Nguyen, Nguyen, and
   Le]{dao2026talas}
@@ -223,6 +238,13 @@ Victor Sanh, Lysandre Debut, Julien Chaumond, and Thomas Wolf.
 \newblock \emph{CoRR}, abs/1910.01108, 2019.
 \newblock URL \url{http://arxiv.org/abs/1910.01108}.
 
+\bibitem[Sun et~al.(2009)Sun, Ovsjanikov, and Guibas]{sun2009hks}
+Jian Sun, Maks Ovsjanikov, and Leonidas~J. Guibas.
+\newblock A concise and provably informative multi-scale signature based on
+  heat diffusion.
+\newblock \emph{Computer Graphics Forum (Proc. SGP)}, 28\penalty0 (5):\penalty0
+  1383--1392, 2009.
+
 \bibitem[Thakur et~al.(2021)Thakur, Reimers, R{\"u}ckl{\'e}, Srivastava, and
   Gurevych]{thakur2021beir}
 Nandan Thakur, Nils Reimers, Andreas R{\"u}ckl{\'e}, Abhishek Srivastava, and
@@ -248,6 +270,14 @@ Nicol{\'a}s~Garc{\'i}a Trillos and Dejan Slep{\v{c}}ev.
 \newblock A variational approach to the consistency of spectral clustering.
 \newblock \emph{Applied and Computational Harmonic Analysis}, 45\penalty0
   (2):\penalty0 239--281, 2018.
+
+\bibitem[Tsitsulin et~al.(2018)Tsitsulin, Mottin, Karras, Bronstein, and
+  M{\"u}ller]{tsitsulin2018netlsd}
+Anton Tsitsulin, Davide Mottin, Panagiotis Karras, Alexander~M. Bronstein, and
+  Emmanuel M{\"u}ller.
+\newblock {NetLSD}: Hearing the shape of a graph.
+\newblock In \emph{Proc. {ACM} {SIGKDD} International Conference on Knowledge
+  Discovery and Data Mining ({KDD})}, pp.\  2347--2356, 2018.
 
 \bibitem[von Luxburg et~al.(2008)von Luxburg, Belkin, and
   Bousquet]{vonluxburg2008consistency}

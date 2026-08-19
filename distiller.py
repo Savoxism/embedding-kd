@@ -39,7 +39,10 @@ from src.cache_teacher import cache_teacher_embeddings, load_cached_embeddings
 from src.criterions.contextual_dynamic_mapping import ContextualDynamicMapping
 from src.criterions.dual_space_kd import DualSpaceKD
 from src.criterions.emo_embedding_distillation import EMODistillation
-from src.criterions.heatgeo_distillation import HeatGeoDistillation
+from src.criterions.heatgeo_distillation import (
+    HeatGeoDistillation,
+    scale_weights_from_law,
+)
 from src.criterions.stella_distillation import (
     StellaModel,
     stella_stage1_loss,
@@ -197,9 +200,9 @@ class KnowledgeDistiller:
                     criterion = HeatGeoDistillation(
                         student_dim=self.model_student.config.hidden_size,
                         teacher_dim=self.teacher_cls_all.shape[-1],
-                        scale_weights=config.scale_weights,
                         diffusion_scales=getattr(config, "diffusion_scales", (1, 2, 4)),
                         temp_exponent=getattr(config, "temp_exponent", 1.0),
+                        weight_exponent=getattr(config, "weight_exponent", 0.0),
                         eps_norm=getattr(config, "eps_norm", 1e-8),
                         diag_topk=getattr(config, "diag_topk", 8),
                         share_in_batch=getattr(config, "share_in_batch", True),
@@ -239,9 +242,9 @@ class KnowledgeDistiller:
                 self.criterion = HeatGeoDistillation(
                     student_dim=self.model_student.config.hidden_size,
                     teacher_dim=self.teacher_cls_all.shape[-1],
-                    scale_weights=config.scale_weights,
                     diffusion_scales=getattr(config, "diffusion_scales", (1, 2, 4)),
                     temp_exponent=getattr(config, "temp_exponent", 1.0),
+                    weight_exponent=getattr(config, "weight_exponent", 0.0),
                     eps_norm=getattr(config, "eps_norm", 1e-8),
                     diag_topk=getattr(config, "diag_topk", 8),
                     share_in_batch=getattr(config, "share_in_batch", True),
@@ -626,7 +629,10 @@ class KnowledgeDistiller:
                     # value, so the artifact and the loss must read the same source.
                     graph_temp=cfg.graph_temp,
                     diffusion_scales=getattr(cfg, "diffusion_scales", (1, 2, 4)),
-                    scale_weights=getattr(cfg, "scale_weights", (1.0, 0.5, 0.25)),
+                    scale_weights=scale_weights_from_law(
+                        getattr(cfg, "diffusion_scales", (1, 2, 4)),
+                        getattr(cfg, "weight_exponent", 0.0),
+                    ),
                     pool_size=getattr(cfg, "pool_size", 128),
                     hard_neg_pool=getattr(cfg, "hard_neg_pool", 200),
                     source_ids=self._heatgeo_source_ids(df),
@@ -647,7 +653,10 @@ class KnowledgeDistiller:
                     diffusion_quota=getattr(cfg, "diffusion_quota", 20),
                     hard_neg_k=getattr(cfg, "hard_neg_k", 8),
                     random_neg_k=getattr(cfg, "random_neg_k", 4),
-                    scale_weights=getattr(cfg, "scale_weights", (1.0, 0.5, 0.25)),
+                    scale_weights=scale_weights_from_law(
+                        getattr(cfg, "diffusion_scales", (1, 2, 4)),
+                        getattr(cfg, "weight_exponent", 0.0),
+                    ),
                     seed=cfg.seed,
                     deterministic_topm=getattr(cfg, "deterministic_topm", 4),
                     stochastic=getattr(cfg, "stochastic_candidates", True),

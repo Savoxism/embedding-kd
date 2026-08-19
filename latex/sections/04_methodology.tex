@@ -111,7 +111,10 @@ and HeatGeo minimizes the weighted divergence to the teacher family,
         p_{i,r}^{T}\,\|\,p_{i,r}^{S}
     \right),
 \end{equation}
-with $\omega_r$ normalized scale weights that emphasize the ambient and local scales.
+with $\omega_r$ normalized scale weights, specified below.
+
+\paragraph{The scale measure.}
+The weights discretize a measure over diffusion time. On the dyadic grid $t_j=2^j$ the spacing is $\Delta t_j=t_j$, so weighting scale $r$ by $\omega_r\propto r^{1-s}$ is the Riemann discretization of $dt/t^{s}$. Equal weights per octave, $s=1$, discretize the scale-invariant measure $dt/t$ --- logarithmic time sampling, the convention of heat-kernel signatures \citep{sun2009hks,bronstein2010scalehks,tsitsulin2018netlsd} and the unweighted dyadic convention of diffusion wavelets \citep{coifman2006diffusionwavelets} --- and we adopt it: the graph scales carry equal weight, so the weights, like the temperatures below, contribute no tuned parameter. The ambient scale is weighted against the graph family as a whole rather than as one more octave: it receives the same total mass as all graph scales combined, splitting the objective evenly between absolute calibration and neighborhood ranking --- the two jobs that Sections~\ref{sec:kernels} and~\ref{sec:candidates} keep on separate column domains.
 
 \paragraph{Resolution-dependent student distributions.}
 Eq.~\ref{eq:student} gives each scale its own temperature $\tau_r$, increasing with $r$ so that broader teacher targets are matched at a correspondingly smoother resolution. This is what makes the family informative rather than redundant: by Proposition~\ref{prop:collapse}, a shared student distribution reduces the multi-scale objective to a single-scale one against the mixture $\bar{p}^T_i$, so scales that differ only in the teacher would leave the gradient unchanged. Distinct $\tau_r$ break this equivalence. Matching the same similarities at several resolutions is over-determined, so the student must reproduce the teacher's cosine \emph{gaps} rather than only its ranking, which is precisely the information that graded similarity tasks measure.
