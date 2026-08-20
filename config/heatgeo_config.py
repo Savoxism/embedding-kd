@@ -64,6 +64,15 @@ class HeatGeoConfig(BaseConfig):
     stochastic_candidates = True
     dedup_corpus = True
     diag_topk = 8
+    eps_norm = 1e-8
+
+    # ---- Corpus Columns ------------------------------------------------------
+    # Which column is the graph node, and which defines "same source" for hard
+    # negatives. Both were read by the distiller but declared nowhere, so they
+    # could not be set through this class at all. None keeps the existing
+    # behaviour: the anchor column is picked from task_type.
+    heatgeo_anchor_column = None
+    heatgeo_source_column = "source"
 
     # ---- Training Setup ------------------------------------------------------
     batch_size = 32
@@ -74,7 +83,8 @@ class HeatGeoConfig(BaseConfig):
     encode_chunk_size = 256
 
     train_data_path = "data/train_set/merged_3_data_5k_each.csv"
-    cache_teacher = True
+    # cache_teacher removed: nothing read it. Teacher caching is gated purely by
+    # whether cache_path already exists on disk (distiller.py).
     cache_path = "cache/heatgeo/qwen3_4b_bert_base_teacher_train.pt"
     heatgeo_cache_path = "cache/heatgeo/qwen3_4b_bert_base_graph.pt"
     heatgeo_log_dir = "logs/heatgeo"
@@ -90,22 +100,31 @@ class HeatGeoConfig(BaseConfig):
     wandb_mode = "online"
 
     # ---- Multi-Layer Spec ----------------------------------------------------
+    # Defining both of these switches the distiller to its multi-layer HeatGeo
+    # branch. They are off, so that branch never runs, and with it every knob that
+    # only that branch reads.
     # kd_teacher_layers = [12, 24, 36, 36]
     # kd_student_layers = [4, 8, 12, 12]
-    lambda_heatgeo = 1.0
 
-    # ---- Auxiliary objectives: all off ---------------------------------------
+    # ---- Removed: auxiliary objectives ---------------------------------------
     # The objective is exactly two terms, L = L_diff + walk_weight * L_walk, both
-    # inside the HeatGeo criterion. Everything below is a distiller-level term
-    # shared with the other methods and is held at 0 for this config.
-    lambda_cosine = 0
-    lambda_infonce = 0
-    lambda_simcse = 0
-    simcse_temp = 0
-    simcse_start_epoch = 2
-    lambda_sim = 0
+    # inside the HeatGeo criterion. lambda_heatgeo, lambda_cosine, lambda_infonce,
+    # lambda_simcse, simcse_temp, simcse_start_epoch and lambda_sim used to sit
+    # here at 0. Every one of them is read only inside the multi-layer branch
+    # above, so on this path they were unreachable: they printed in the run banner
+    # and counted against the method's knob budget while doing nothing. Their
+    # consumers all read them through getattr with the same defaults these lines
+    # carried, so deleting them changes no behaviour. Re-adding one is only
+    # meaningful together with the kd_*_layers pair.
 
     def __init__(self, **kwargs):
+        # An unknown key is a typo, not a no-op. The previous version skipped it
+        # silently, so `HeatGeoConfig(walk_lenght=8)` ran the default 4 and looked
+        # like the override had been applied.
+        unknown = sorted(k for k in kwargs if not hasattr(self, k))
+        if unknown:
+            raise AttributeError(
+                f"HeatGeoConfig got unknown option(s): {', '.join(unknown)}"
+            )
         for k, v in kwargs.items():
-            if hasattr(self, k):
-                setattr(self, k, v)
+            setattr(self, k, v)

@@ -88,7 +88,7 @@ Rows with fewer than two live columns are dropped: a one-column softmax has no f
 
 $$\mathcal{L} = \mathcal{L}_{\text{diff}} + \lambda\,\mathcal{L}_{\text{walk}}$$
 
-Two terms, nothing else. `lambda_sim`, `lambda_cosine`, `lambda_infonce`, `lambda_simcse` are all 0 in this config; the CoSENT and Sinkhorn code paths have been removed from the criterion.
+Two terms, nothing else. The auxiliary weights (`lambda_sim`, `lambda_cosine`, `lambda_infonce`, `lambda_simcse`, `lambda_heatgeo`) have been deleted from the config rather than held at 0: they are read only inside the distiller's multi-layer branch, which this config never enters. The CoSENT and Sinkhorn code paths were removed from the criterion earlier.
 
 Because `L_walk` is a KL with an infimum of 0, it shares the scale of `L_diff` and `walk_weight` is a real trade-off rather than a units conversion.
 
