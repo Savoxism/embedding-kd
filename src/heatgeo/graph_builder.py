@@ -10,7 +10,7 @@ import torch
 import torch.nn.functional as F
 from tqdm import tqdm
 
-ARTIFACT_VERSION = 5
+ARTIFACT_VERSION = 6
 
 # Anchors diffused per sparse matrix product. The intermediate X @ P holds up to
 # block_size * keep_topk * max_degree nonzeros, so this trades memory for the
@@ -18,9 +18,106 @@ ARTIFACT_VERSION = 5
 # graph_k=200.
 DIFFUSION_BLOCK = 256
 
+# Memory guards, not modelling choices, which is why they are constants here and
+# not configuration. What a row actually keeps is decided by truncation_tolerance;
+# these only bound the arrays while that decision is being made, and the build
+# reports pool_capped_rows / walk_capped_rows if either ever binds first -- at
+# which point the tolerance is no longer a guarantee and the number must go up.
+DIFFUSION_ROW_CAP = 4096
+POOL_ROW_CAP = 2048
+
 
 def _as_tuple(values: Sequence[int]) -> tuple[int, ...]:
     return tuple(sorted({int(v) for v in values}))
+
+
+def _softmax_at(scores: np.ndarray, beta: float) -> tuple[np.ndarray, float]:
+    """Softmax of `beta * scores` and its Shannon entropy, in nats."""
+    shifted = beta * scores
+    shifted -= shifted.max()
+    weights = np.exp(shifted)
+    probs = weights / weights.sum()
+    entropy = -float((probs * np.log(np.maximum(probs, 1e-300))).sum())
+    return probs, entropy
+
+
+def _entropic_affinity(
+    scores: np.ndarray,
+    target_entropy: float,
+    max_iter: int = 60,
+    tol: float = 1e-8,
+) -> tuple[np.ndarray, float, bool]:
+    """Softmax over `scores` at the unique temperature that hits `target_entropy`.
+
+    Writing p_j(beta) proportional to exp(beta * s_j) with beta = 1/tau,
+
+        H(beta) = log Z(beta) - beta * E_p[s],    dH/dbeta = -beta * Var_p(s),
+
+    so H is strictly decreasing in beta -- strictly increasing in tau -- whenever
+    the scores are not all equal, and it sweeps (0, log d) as tau sweeps (0, inf).
+    The root is therefore unique for any target in that interval, and bisection
+    cannot fail; the bracket is found by doubling first. This is the entropic
+    affinity of Hinton and Roweis (2002), whose properties and numerics are
+    analysed by Vladymyrov and Carreira-Perpinan (2013).
+
+    The reason to prefer it over one global temperature is not adaptivity per se.
+    Under an affine rescaling of the teacher's similarity scale, s -> a*s + b with
+    a > 0, the solution moves to tau' = a*tau and the row is *unchanged*:
+
+        exp((a*s_j + b) / (a*tau)) proportional to exp(s_j / tau).
+
+    A fixed temperature has no such invariance, which is exactly why it has to be
+    retuned for every teacher whose cosines are spread differently.
+
+    Returns:
+        probs: the transition row.
+        tau: its temperature -- the student must match this row at the same value.
+        clamped: True if the target entropy was unreachable (perplexity >= degree)
+            and the row was solved against the largest attainable entropy instead.
+    """
+    degree = scores.size
+    if degree <= 1:
+        return np.ones(degree, dtype=np.float64), 1.0, True
+
+    max_entropy = float(np.log(degree))
+    # log d is the supremum, attained only as tau -> inf. Asking for it exactly
+    # would send the bracket to infinity, so a row whose degree is at or below the
+    # requested perplexity is solved just under its own ceiling instead.
+    ceiling = max_entropy * (1.0 - 1e-3)
+    clamped = target_entropy >= ceiling
+    goal = min(target_entropy, ceiling)
+
+    if float(np.ptp(scores)) <= 0.0:
+        # Every neighbour scores the same: the row is uniform at every temperature.
+        return np.full(degree, 1.0 / degree, dtype=np.float64), 1.0, True
+
+    # Bracket: low beta is the high-entropy end, so grow beta until entropy drops
+    # below the goal.
+    beta_lo = 1e-12
+    beta_hi = 1.0
+    for _ in range(max_iter):
+        _, entropy_hi = _softmax_at(scores, beta_hi)
+        if entropy_hi <= goal:
+            break
+        beta_lo = beta_hi
+        beta_hi *= 2.0
+
+    probs = None
+    for _ in range(max_iter):
+        beta = 0.5 * (beta_lo + beta_hi)
+        probs, entropy = _softmax_at(scores, beta)
+        if abs(entropy - goal) <= tol:
+            break
+        # H decreases in beta: too much entropy means beta must grow.
+        if entropy > goal:
+            beta_lo = beta
+        else:
+            beta_hi = beta
+
+    beta = 0.5 * (beta_lo + beta_hi)
+    if probs is None:
+        probs, _ = _softmax_at(scores, beta)
+    return probs, 1.0 / beta, clamped
 
 
 def _normalized_weights(scale_weights: Sequence[float], n_scales: int) -> np.ndarray:
@@ -74,13 +171,27 @@ def _build_transition(
     top_scores: np.ndarray,
     graph_k: int,
     graph_temp: float,
-) -> tuple[list[np.ndarray], list[np.ndarray], list[np.ndarray], np.ndarray]:
+    perplexity: float | None,
+) -> tuple[
+    list[np.ndarray], list[np.ndarray], list[np.ndarray], np.ndarray, np.ndarray, dict
+]:
+    """Mutual-kNN neighbour lists and their transition rows.
+
+    With `perplexity` set, each row gets its own temperature from the entropic
+    affinity above, so every node's neighbour distribution carries the same
+    effective number of neighbours and the graph is invariant to the teacher's
+    similarity scale. With `perplexity=None` every row uses `graph_temp`, which is
+    the fixed-bandwidth baseline that arm exists to be compared against.
+    """
     n_items = top_indices.shape[0]
     top_sets = [set(top_indices[i, :graph_k].tolist()) for i in range(n_items)]
     row_neighbors: list[np.ndarray] = []
     row_probs: list[np.ndarray] = []
     row_scores: list[np.ndarray] = []
+    row_temps = np.zeros(n_items, dtype=np.float64)
     fallback_flags = np.zeros(n_items, dtype=bool)
+    target_entropy = None if perplexity is None else float(np.log(float(perplexity)))
+    clamped_rows = 0
 
     for i in tqdm(range(n_items), desc="HeatGeo mutual kNN graph"):
         neighbors = []
@@ -97,18 +208,36 @@ def _build_transition(
             neighbors = [int(j) for j in top_indices[i, :fallback_k]]
             scores = [float(s) for s in top_scores[i, :fallback_k]]
 
-        # Softmax over neighbour cosines: sharpness is controlled by graph_temp, and it
-        # directly sets how much ranking information the diffusion targets can carry.
-        centered = np.asarray(scores, dtype=np.float64)
-        centered = centered - centered.max()
-        weights = np.exp(centered / max(graph_temp, 1e-6))
-        weights = weights / max(float(weights.sum()), 1e-12)
+        # Softmax over neighbour cosines. The temperature is either solved per row
+        # for a fixed perplexity, or shared across rows in the baseline arm; either
+        # way the value used here is the one the student has to match this row at,
+        # so it is stored alongside the row.
+        score_array = np.asarray(scores, dtype=np.float64)
+        if target_entropy is None:
+            centered = score_array - score_array.max()
+            weights = np.exp(centered / max(graph_temp, 1e-6))
+            weights = weights / max(float(weights.sum()), 1e-12)
+            tau = float(graph_temp)
+        else:
+            weights, tau, clamped = _entropic_affinity(score_array, target_entropy)
+            clamped_rows += int(clamped)
 
+        row_temps[i] = tau
         row_neighbors.append(np.asarray(neighbors, dtype=np.int64))
         row_probs.append(weights.astype(np.float32))
         row_scores.append(np.asarray(scores, dtype=np.float32))
 
-    return row_neighbors, row_probs, row_scores, fallback_flags
+    temp_stats = {
+        "row_temp_mean": float(row_temps.mean()) if n_items else 0.0,
+        "row_temp_min": float(row_temps.min()) if n_items else 0.0,
+        "row_temp_max": float(row_temps.max()) if n_items else 0.0,
+        "row_temp_p50": float(np.median(row_temps)) if n_items else 0.0,
+        # Rows whose degree was at or below the requested perplexity: their target
+        # entropy was unreachable and they were solved just under their own ceiling.
+        "perplexity_clamped_rows": int(clamped_rows),
+        "perplexity_clamped_rate": float(clamped_rows / max(1, n_items)),
+    }
+    return row_neighbors, row_probs, row_scores, fallback_flags, row_temps, temp_stats
 
 
 def _write_knn_graph_log(
@@ -191,10 +320,36 @@ def _transition_matrix(
     return matrix
 
 
+def _mass_prefix(data: np.ndarray, total: float, tolerance: float) -> np.ndarray:
+    """Positions of the smallest set of entries carrying at least 1 - tolerance.
+
+    Truncating a row to a set S with p(S) = 1 - delta and renormalizing gives a
+    row ptilde with, exactly,
+
+        TV(p, ptilde) = delta,   KL(ptilde || p) = -log(1 - delta) <= delta/(1-delta),
+
+    so a tolerance on the discarded mass is a bound on the target perturbation in
+    nats -- the units of the loss itself. That is what lets one stated tolerance
+    replace a capacity knob per truncation site. The bound is per truncation; the
+    lazy walk truncates once per step, so after r steps the total is at most r
+    times it.
+    """
+    order = np.argsort(-data)
+    cumulative = np.cumsum(data[order])
+    needed = (1.0 - tolerance) * total
+    keep = int(np.searchsorted(cumulative, needed) + 1)
+    return order[: min(keep, order.size)]
+
+
 def _truncate_renormalize(
-    matrix: sp.csr_matrix, keep_topk: int
-) -> tuple[sp.csr_matrix, float]:
-    """Row-wise top-keep_topk, then renormalize each row.
+    matrix: sp.csr_matrix, keep_topk: int, tolerance: float | None = None
+) -> tuple[sp.csr_matrix, float, int]:
+    """Row-wise truncation to `tolerance` of discarded mass, then renormalize.
+
+    `keep_topk` is a memory ceiling, not a modelling choice: the row is cut to the
+    smallest prefix carrying 1 - tolerance, and only clipped at keep_topk if that
+    prefix would be larger. Rows where the ceiling binds are counted and reported,
+    because for those the tolerance above is no longer a guarantee.
 
     Truncating without renormalizing leaks mass at every step, and the leak
     compounds with r, so the later scales end up systematically under-weighted
@@ -214,14 +369,22 @@ def _truncate_renormalize(
     kept_data: list[np.ndarray] = []
     new_indptr = np.zeros(n_rows + 1, dtype=np.int64)
     dropped = 0.0
+    capped = 0
 
     for row in range(n_rows):
         start, end = indptr[row], indptr[row + 1]
         row_indices, row_data = indices[start:end], data[start:end]
         full_total = float(row_data.sum())
         if row_data.size > keep_topk:
+            # Cheap O(n) cut to the ceiling first, so the sort inside _mass_prefix
+            # only ever runs on keep_topk entries.
             top = np.argpartition(-row_data, keep_topk - 1)[:keep_topk]
             row_indices, row_data = row_indices[top], row_data[top]
+            if float(row_data.sum()) < (1.0 - (tolerance or 0.0)) * full_total:
+                capped += 1
+        if tolerance is not None and full_total > 0.0 and row_data.size > 1:
+            keep = _mass_prefix(row_data, full_total, tolerance)
+            row_indices, row_data = row_indices[keep], row_data[keep]
         total = float(row_data.sum())
         if full_total > 0.0:
             dropped += 1.0 - total / full_total
@@ -237,7 +400,7 @@ def _truncate_renormalize(
     )
     # argpartition scrambles column order; searchsorted downstream needs it sorted.
     out.sort_indices()
-    return out, dropped / max(1, n_rows)
+    return out, dropped / max(1, n_rows), capped
 
 
 def _drop_self_renormalize(
@@ -265,7 +428,8 @@ def _diffuse_block(
     scales: tuple[int, ...],
     transition: sp.csr_matrix,
     keep_topk: int,
-) -> tuple[list[sp.csr_matrix], dict[int, float]]:
+    tolerance: float | None = None,
+) -> tuple[list[sp.csr_matrix], dict[int, float], int]:
     """Lazy random walk X <- (X + XP)/2 for a whole block of anchors, snapshotted
     at each scale.
 
@@ -290,33 +454,48 @@ def _diffuse_block(
 
     snapshots: dict[int, sp.csr_matrix] = {}
     truncation_loss: dict[int, float] = {}
+    capped_total = 0
     for step in range(1, max(scales) + 1):
-        dist, dropped = _truncate_renormalize(
-            ((dist + dist @ transition) * 0.5).tocsr(), keep_topk
+        dist, dropped, capped = _truncate_renormalize(
+            ((dist + dist @ transition) * 0.5).tocsr(), keep_topk, tolerance
         )
         truncation_loss[step] = dropped
+        capped_total += capped
         if step in scales:
             snapshots[step] = _drop_self_renormalize(dist, start_ids)
 
-    return [snapshots[scale] for scale in scales], truncation_loss
+    return [snapshots[scale] for scale in scales], truncation_loss, capped_total
 
 
 def _select_pool(
     supports: list[tuple[np.ndarray, np.ndarray]],
     weights: np.ndarray,
-    pool_size: int,
-) -> np.ndarray:
-    """Top-pool_size nodes of the weighted mixture over the per-scale supports."""
+    row_cap: int,
+    tolerance: float | None = None,
+) -> tuple[np.ndarray, bool]:
+    """Nodes of the weighted mixture carrying all but `tolerance` of its mass.
+
+    `row_cap` is the memory guard. Returns the selection and whether the guard bound
+    before the tolerance was met.
+    """
     nodes = np.concatenate([support[0] for support in supports])
     if nodes.size == 0:
-        return np.empty(0, dtype=np.int64)
+        return np.empty(0, dtype=np.int64), False
     mass = np.concatenate(
         [float(weights[scale_idx]) * support[1] for scale_idx, support in enumerate(supports)]
     )
     unique_nodes, inverse = np.unique(nodes, return_inverse=True)
     mixture = np.bincount(inverse, weights=mass, minlength=unique_nodes.size)
-    order = np.argsort(-mixture, kind="stable")[:pool_size]
-    return unique_nodes[order].astype(np.int64)
+
+    if tolerance is None:
+        order = np.argsort(-mixture, kind="stable")[:row_cap]
+        return unique_nodes[order].astype(np.int64), False
+
+    total = float(mixture.sum())
+    keep = _mass_prefix(mixture, total, tolerance) if total > 0.0 else np.empty(0, np.int64)
+    capped = keep.size > row_cap
+    keep = keep[:row_cap]
+    return unique_nodes[keep].astype(np.int64), capped
 
 
 def _gather_masses(support: tuple[np.ndarray, np.ndarray], nodes: np.ndarray) -> np.ndarray:
@@ -337,10 +516,9 @@ def _build_diffusion_pools(
     weights: np.ndarray,
     row_neighbors: list[np.ndarray],
     row_probs: list[np.ndarray],
-    pool_size: int,
     hard_neg_pool: int,
     source_ids: np.ndarray,
-    keep_topk: int,
+    tolerance: float,
     block_size: int = DIFFUSION_BLOCK,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, dict[str, float]]:
     """Per-anchor sparse diffusion support plus a same-source hard-negative pool.
@@ -350,12 +528,19 @@ def _build_diffusion_pools(
     student had fit those exact comparisons and the objective had nothing left to
     say. What is precomputed now is the diffusion support; the candidate set is
     resampled from it each epoch by HeatGeoCandidateSampler.
+
+    There is no pool-size argument. How many nodes an anchor keeps is decided by
+    `tolerance` alone, per anchor, and the array is allocated afterwards at the
+    width the widest anchor actually needed. A configured size could only be one of
+    two things: larger than the tolerance requires, which wastes memory and pads
+    with -1, or smaller, which silently breaks the guarantee.
     """
     n_items = top_indices.shape[0]
     n_scales = len(scales)
 
-    pool_indices = np.full((n_items, pool_size), -1, dtype=np.int64)
-    pool_probs = np.zeros((n_scales, n_items, pool_size), dtype=np.float32)
+    # Collected per anchor, then packed once the true width is known.
+    selected_nodes: list[np.ndarray] = [None] * n_items
+    selected_probs: list[np.ndarray] = [None] * n_items
     hard_neg_indices = np.full((n_items, hard_neg_pool), -1, dtype=np.int64)
 
     residual_mass = np.zeros(n_scales, dtype=np.float64)
@@ -366,6 +551,11 @@ def _build_diffusion_pools(
     transition = _transition_matrix(row_neighbors, row_probs, n_items)
     truncation_totals: dict[int, float] = {}
     n_blocks = 0
+    # Rows where the allocation ceiling bound before the tolerance was met. For
+    # those the TV/KL guarantee on the targets does not hold, so they are counted
+    # rather than absorbed.
+    pool_capped_rows = 0
+    walk_capped_rows = 0
 
     for block_start in tqdm(
         range(0, n_items, block_size), desc="HeatGeo diffusion pools"
@@ -373,9 +563,10 @@ def _build_diffusion_pools(
         block_ids = np.arange(
             block_start, min(block_start + block_size, n_items), dtype=np.int64
         )
-        scale_matrices, truncation_loss = _diffuse_block(
-            block_ids, scales, transition, keep_topk
+        scale_matrices, truncation_loss, walk_capped = _diffuse_block(
+            block_ids, scales, transition, DIFFUSION_ROW_CAP, tolerance
         )
+        walk_capped_rows += walk_capped
         n_blocks += 1
         for step, dropped in truncation_loss.items():
             truncation_totals[step] = truncation_totals.get(step, 0.0) + dropped
@@ -390,11 +581,16 @@ def _build_diffusion_pools(
                 for matrix in scale_matrices
             ]
 
-            selected = _select_pool(supports, weights, pool_size)
+            selected, pool_capped = _select_pool(
+                supports, weights, POOL_ROW_CAP, tolerance
+            )
+            pool_capped_rows += int(pool_capped)
             pool_fill[i] = selected.size
-            if selected.size:
-                pool_indices[i, : selected.size] = selected
+            selected_nodes[i] = selected
 
+            row_probs_per_scale = np.zeros(
+                (n_scales, selected.size), dtype=np.float32
+            )
             for scale_idx, support in enumerate(supports):
                 if support[0].size == 0:
                     empty_scale[scale_idx] += 1
@@ -408,9 +604,8 @@ def _build_diffusion_pools(
                 if kept_sum <= 0.0:
                     empty_scale[scale_idx] += 1
                     continue
-                pool_probs[scale_idx, i, : selected.size] = (kept / kept_sum).astype(
-                    np.float32
-                )
+                row_probs_per_scale[scale_idx] = (kept / kept_sum).astype(np.float32)
+            selected_probs[i] = row_probs_per_scale
 
             # Hard negatives: nearest teacher neighbours from the SAME source corpus
             # that carry no diffusion mass. Sampling negatives uniformly from a corpus
@@ -434,13 +629,29 @@ def _build_diffusion_pools(
             if hard.size:
                 hard_neg_indices[i, : hard.size] = hard.astype(np.int64)
 
+    # Pack at the width the tolerance actually asked for, not at a configured one.
+    width = max(1, int(pool_fill.max()))
+    pool_indices = np.full((n_items, width), -1, dtype=np.int64)
+    pool_probs = np.zeros((n_scales, n_items, width), dtype=np.float32)
+    for i in range(n_items):
+        nodes = selected_nodes[i]
+        if nodes is None or nodes.size == 0:
+            continue
+        pool_indices[i, : nodes.size] = nodes
+        pool_probs[:, i, : nodes.size] = selected_probs[i]
+
     stats = {
-        "pool_size": float(pool_size),
-        "walk_keep_topk": float(keep_topk),
+        "pool_width": float(width),
         "pool_fill_avg": float(pool_fill.mean()),
         "pool_fill_min": float(pool_fill.min()),
         "hard_pool_fill_avg": float(hard_fill.mean()),
         "hard_pool_fill_min": float(hard_fill.min()),
+        "truncation_tolerance": -1.0 if tolerance is None else float(tolerance),
+        # Non-zero means the ceiling, not the tolerance, decided the truncation for
+        # that many rows -- raise POOL_ROW_CAP / DIFFUSION_ROW_CAP until both are 0,
+        # or the stated guarantee is not the one the targets actually satisfy.
+        "pool_capped_rows": float(pool_capped_rows),
+        "walk_capped_rows": float(walk_capped_rows),
     }
     # Mass discarded by the top-keep_topk truncation at each walk step, before the
     # renormalization hides it. This is the only number that says whether keep_topk
@@ -528,12 +739,12 @@ def _target_sharpness_stats(
 _METADATA_KEYS = (
     "n_items",
     "graph_k",
+    "perplexity",
     "graph_temp",
     "diffusion_scales",
     "scale_weights",
-    "pool_size",
     "hard_neg_pool",
-    "walk_keep_topk",
+    "truncation_tolerance",
     "lazy_walk",
     "artifact_version",
     "teacher_fingerprint",
@@ -557,22 +768,14 @@ def build_or_load_heatgeo_artifact(
     graph_temp: float,
     diffusion_scales: Sequence[int],
     scale_weights: Sequence[float],
-    pool_size: int,
     hard_neg_pool: int,
     source_ids: Sequence[int] | None = None,
-    walk_keep_topk: int | None = None,
+    perplexity: float | None = None,
+    truncation_tolerance: float = 0.01,
 ) -> dict:
     n_items = int(teacher_embeddings.size(0))
     scales = _as_tuple(diffusion_scales)
     weights = _normalized_weights(scale_weights, len(scales))
-    # Columns kept per row at each walk step. This bounds how much of the broad
-    # scales' tail survives, so it belongs in the metadata: changing it changes the
-    # targets, and reusing a cache built at a different value would compare runs
-    # against different objectives.
-    if walk_keep_topk is None:
-        walk_keep_topk = max(pool_size * 8, 1024)
-    walk_keep_topk = int(min(max(walk_keep_topk, pool_size), max(n_items, 1)))
-
     if source_ids is None:
         source_array = np.zeros(n_items, dtype=np.int64)
     else:
@@ -586,12 +789,15 @@ def build_or_load_heatgeo_artifact(
     metadata = {
         "n_items": n_items,
         "graph_k": int(graph_k),
+        # Both are recorded, but only one of them shaped the rows: with a
+        # perplexity the temperature is per row and graph_temp is inert, and the
+        # two arms must never share a cache entry.
+        "perplexity": None if perplexity is None else float(perplexity),
         "graph_temp": float(graph_temp),
         "diffusion_scales": scales,
         "scale_weights": tuple(round(float(w), 8) for w in weights),
-        "pool_size": int(pool_size),
         "hard_neg_pool": int(hard_neg_pool),
-        "walk_keep_topk": int(walk_keep_topk),
+        "truncation_tolerance": float(truncation_tolerance),
         "lazy_walk": True,
         "artifact_version": ARTIFACT_VERSION,
         "teacher_fingerprint": _fingerprint(teacher_embeddings),
@@ -620,13 +826,21 @@ def build_or_load_heatgeo_artifact(
     # hard_neg_pool negatives -- on the 13.5k corpus it half-filled (102/200) and the
     # config knob was silently capped at ~100. The list has to be big enough for both
     # consumers.
-    topk_for_graph = min(n_items - 1, max(graph_k, hard_neg_pool + pool_size))
+    topk_for_graph = min(n_items - 1, max(graph_k, hard_neg_pool + graph_k))
     top_indices, top_scores = _compute_topk_cosine(teacher_embeddings, k=topk_for_graph)
-    row_neighbors, row_probs, row_scores, fallback_flags = _build_transition(
+    (
+        row_neighbors,
+        row_probs,
+        row_scores,
+        fallback_flags,
+        row_temps,
+        temp_stats,
+    ) = _build_transition(
         top_indices=top_indices,
         top_scores=top_scores,
         graph_k=graph_k,
         graph_temp=graph_temp,
+        perplexity=perplexity,
     )
     graph_log_path, graph_stats = _write_knn_graph_log(
         log_dir=log_dir,
@@ -642,11 +856,11 @@ def build_or_load_heatgeo_artifact(
         weights=weights,
         row_neighbors=row_neighbors,
         row_probs=row_probs,
-        pool_size=pool_size,
         hard_neg_pool=hard_neg_pool,
         source_ids=source_array,
-        keep_topk=walk_keep_topk,
+        tolerance=truncation_tolerance,
     )
+    graph_stats.update(temp_stats)
     graph_stats.update(pool_stats)
     graph_stats.update(
         _target_sharpness_stats(pool_indices, pool_probs, scales, weights)
@@ -671,6 +885,10 @@ def build_or_load_heatgeo_artifact(
         "source_ids": torch.from_numpy(source_array).long(),
         "transition_neighbors": torch.from_numpy(transition_neighbors).long(),
         "transition_probs": torch.from_numpy(transition_probs_arr).float(),
+        # The temperature each transition row was built at. The criterion matches
+        # row i at row_temps[i]: the tie is per row, and the shift family that
+        # makes zero loss attainable does not depend on the value.
+        "row_temps": torch.from_numpy(row_temps).float(),
         "graph_log_path": graph_log_path,
         "graph_stats": graph_stats,
         "metadata": metadata,
@@ -696,7 +914,7 @@ def _print_graph_summary(
         print(
             "HeatGeo pools: "
             f"diffusion_fill={graph_stats['pool_fill_avg']:.1f}/"
-            f"{graph_stats['pool_size']:.0f} (min {graph_stats['pool_fill_min']:.0f}), "
+            f"{graph_stats['pool_width']:.0f} (min {graph_stats['pool_fill_min']:.0f}), "
             f"hard_neg_fill={graph_stats['hard_pool_fill_avg']:.1f} "
             f"(min {graph_stats['hard_pool_fill_min']:.0f})"
         )
@@ -714,13 +932,14 @@ def _print_graph_summary(
         (graph_stats.get(f"walk_truncation_cum_r{scale}", 0.0) for scale in scales),
         default=0.0,
     )
+    tolerance = graph_stats.get("truncation_tolerance", 0.0)
     if worst_truncation > 0.05:
         print(
             f"WARNING: HeatGeo lazy walk drops {worst_truncation:.1%} of the mass at the "
-            f"broadest scale before renormalizing (walk_keep_topk="
-            f"{int(graph_stats.get('walk_keep_topk', 0))}). Truncate-then-renormalize "
-            f"makes the walk sharper than it really is, which pulls the scales toward "
-            f"each other -- raise walk_keep_topk until this is under a few percent."
+            f"broadest scale before renormalizing, against a per-step tolerance of "
+            f"{tolerance:.1%}. The per-step bound compounds across steps, so r*tolerance "
+            f"is the figure to compare against; if it is exceeded, DIFFUSION_ROW_CAP bound "
+            f"first (walk_capped_rows={int(graph_stats.get('walk_capped_rows', 0))})."
         )
     cross_keys = [key for key in graph_stats if key.startswith("target_cross_kl_")]
     for key in sorted(cross_keys):

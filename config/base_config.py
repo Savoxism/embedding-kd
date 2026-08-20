@@ -33,7 +33,8 @@ class BaseConfig:
     save_best = True
     
     debug_align = False
-    evaluate_test_each_epoch = False
+    # evaluate_test_each_epoch removed: repo-wide grep found no reader anywhere,
+    # in any method.
     eval_every = 1
     
     seed = 42

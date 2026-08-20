@@ -1,18 +1,18 @@
 \section{From Mini-Batch Relations to Manifold Diffusion}
 \label{sec:theory}
 
-This section develops the reasoning chain behind HeatGeo. First, relational objectives computed inside a mini-batch undersample the teacher's local geometry, and their in-batch targets are biased estimators of neighborhood structure (Section~\ref{sec:theory-batch}). Anchored supervision on each example's own neighborhood avoids both defects, and matching local one-step diffusion is enough: it controls the teacher's multi-step, global geometry (Section~\ref{sec:theory-global}). Local neighborhoods are large, but they need not be enumerated---diffusion-weighted sampling approximates them at a cost governed by the sharpness of the diffusion targets rather than by the neighborhood size (Section~\ref{sec:theory-sampling}). Finally, distribution matching leaves exactly one similarity offset per anchor undetermined; supervising the rows at non-anchor nodes, which a random walk selects and the batch has already encoded, collapses that freedom to one offset per connected component of the teacher graph (Section~\ref{sec:theory-gauge}). All statements are proved in Appendix~\ref{app:proofs}; Section~\ref{sec:analysis} instantiates the bounds and tests their predictions.
+This section develops the reasoning chain behind HeatGeo. Relational objectives computed inside a mini-batch undersample the teacher's local geometry, and their in-batch targets are biased estimators of it (Section~\ref{sec:theory-batch}). Anchored supervision avoids both defects, and matching local one-step diffusion suffices: it controls multi-step, global geometry (Section~\ref{sec:theory-global}). Neighborhoods need not be enumerated---diffusion-weighted sampling approximates them at a cost set by target sharpness rather than neighborhood size (Section~\ref{sec:theory-sampling}). Finally, distribution matching leaves one similarity offset per anchor undetermined; supervising the rows a random walk visits, which the batch has already encoded, collapses that freedom to one offset per connected component of the teacher graph (Section~\ref{sec:theory-gauge}). Proofs are in Appendix~\ref{app:proofs}; Section~\ref{sec:analysis} tests the predictions.
 
 \subsection{Setup}
 \label{sec:theory-setup}
 
-Let $\mathcal{D}=\{x_i\}_{i=1}^{N}$ be the distillation corpus with cached teacher embeddings $t_i$ on the unit sphere, and write $c^T_{ij}=\cos(t_i,t_j)$. Let $\mathcal{N}_k(i)$ denote the $k$ nearest neighbors of $x_i$ under $c^T$. A neighborhood graph on $\mathcal{D}$ induces a row-stochastic transition matrix $P$, with lazy walk $\tilde{P}=\tfrac12(I+P)$, and the teacher's diffusion family consists of the rows $p_{i,r}=\delta_i^{\top}\tilde{P}^{r}$ for $r\geq1$ together with an ambient distribution $p_{i,0}\propto\exp(c^T_{ij}/\tau_0)$. The student produces embeddings $s_i$ with scores $c^S_{ij}=\cos(s_i,s_j)$ and, on a column set $\Omega$, distributions $q_{i,r}\propto\exp(c^S_{ij}/\tau_r)$. Training minimizes the restricted, weighted divergence
+Let $\mathcal{D}=\{x_i\}_{i=1}^{N}$ be the distillation corpus with cached teacher embeddings $t_i$ on the unit sphere, and write $c^T_{ij}=\cos(t_i,t_j)$. Let $\mathcal{N}_k(i)$ denote the $k$ nearest neighbors of $x_i$ under $c^T$. A neighborhood graph on $\mathcal{D}$ induces a row-stochastic transition matrix $P$, with lazy walk $\tilde{P}=\tfrac12(I+P)$, and the teacher's diffusion family consists of the rows $p^T_{i,r}=\delta_i^{\top}\tilde{P}^{r}$ for $r\geq1$ together with an ambient distribution $p^T_{i,0}\propto\exp(c^T_{ij}/\tau_0)$. The student produces embeddings $s_i$ with scores $c^S_{ij}=\cos(s_i,s_j)$ and, on a column set $\Omega$, distributions $p^S_{i,r}\propto\exp(c^S_{ij}/\tau_r)$. Training minimizes the restricted, weighted divergence
 \begin{equation}
     \label{eq:ldiff-generic}
     \mathcal{L}_{\mathrm{diff}}
     =
     \frac{1}{N}\sum_{i}\sum_{r}\omega_r\,
-    D_{\mathrm{KL}}\!\left(p_{i,r}\big|_{C_i}\,\middle\|\,q_{i,r}\right),
+    D_{\mathrm{KL}}\!\left(p^T_{i,r}\big|_{C_i}\,\middle\|\,p^S_{i,r}\right),
 \end{equation}
 where $C_i$ is a per-anchor candidate set and $p|_{C}$ denotes restriction to $C$ followed by renormalization. Section~\ref{sec:method} specifies the graph, the candidate sets, and the temperatures; the analysis here depends only on the abstract structure.
 
@@ -37,7 +37,7 @@ Coverage alone could in principle be repaired by training longer. The next resul
 
 \begin{assumption}[Target concentration]
 \label{asm:conc}
-There is $\eta\in[0,1)$ such that $p_{i,0}(\mathcal{N}_k(i))\geq 1-\eta$ for every anchor $i$.
+There is $\eta\in[0,1)$ such that $p^T_{i,0}(\mathcal{N}_k(i))\geq 1-\eta$ for every anchor $i$.
 \end{assumption}
 
 Assumption~\ref{asm:conc} holds whenever neighbor cosines exceed non-neighbor cosines by a margin $\Delta$ and $\tau_0\lesssim\Delta/\log(N/k\eta)$ (Appendix~\ref{app:proof-bias}).
@@ -46,7 +46,7 @@ Assumption~\ref{asm:conc} holds whenever neighbor cosines exceed non-neighbor co
 \label{prop:bias}
 Let $p^{T,\mathcal{B}}_i(j)\propto\exp(c^T_{ij}/\tau_0)$ for $j\in\mathcal{B}\setminus\{i\}$ be the in-batch teacher target. Under Assumption~\ref{asm:conc},
 \begin{equation}
-    \mathbb{E}_{\mathcal{B}}\!\left[\mathrm{TV}\!\left(p^{T,\mathcal{B}}_i,\;p_{i,0}\right)\right]
+    \mathbb{E}_{\mathcal{B}}\!\left[\mathrm{TV}\!\left(p^{T,\mathcal{B}}_i,\;p^T_{i,0}\right)\right]
     \;\geq\;
     (1-\eta)\left(1-\frac{(B-1)k}{N-1}\right).
 \end{equation}
@@ -77,12 +77,12 @@ $\mathrm{TV}(p,q)\leq\mathrm{TV}\big(p|_C,q|_C\big)+\delta_T+\delta_S$.
 
 \begin{remark}[Why negatives: leakage control]
 \label{rem:leakage}
-The teacher-side defect $\delta_T$ is a property of the candidate construction; the student-side defect $\delta_S$ is what negatives target. Split $C=C^{+}\cup C^{-}$ with the teacher's restricted mass on the negative block $C^{-}$ at most $\varepsilon_{\mathrm{neg}}$. Driving the restricted divergence to $\varepsilon$ forces the student's restricted mass on $C^{-}$ below $\varepsilon_{\mathrm{neg}}+\sqrt{\varepsilon/2}$ (data processing and Pinsker; Appendix~\ref{app:proof-leakage}). Because the negatives are redrawn from the complement of the diffusion support at every epoch, a small restricted loss constrains the student's mass on fresh samples of the complement throughout training---the mechanism that keeps $\delta_S$ small. Theorem~\ref{thm:global} accordingly takes $\delta_S$ as a hypothesis; Appendix~\ref{app:proof-leakage} discusses the quantitative extension from sampled columns to the full complement.
+The teacher-side defect $\delta_T$ is a property of the candidate construction; the student-side defect $\delta_S$ is what negatives target. Split $C=C^{+}\cup C^{-}$ with teacher restricted mass at most $\varepsilon_{\mathrm{neg}}$ on the negative block. Driving the restricted divergence to $\varepsilon$ forces the student's restricted mass on $C^{-}$ below $\varepsilon_{\mathrm{neg}}+\sqrt{\varepsilon/2}$ (data processing and Pinsker; Appendix~\ref{app:proof-leakage}). Since negatives are redrawn from the complement of the diffusion support every epoch, a small restricted loss constrains the student on fresh samples of that complement throughout training. Theorem~\ref{thm:global} nonetheless takes $\delta_S$ as a hypothesis.
 \end{remark}
 
 \begin{theorem}[Local-to-global transfer]
 \label{thm:global}
-Let $P^T$ and $P^S$ be teacher and student transition matrices on the same support. Suppose for every anchor $i$: the restricted divergence satisfies $D_{\mathrm{KL}}(p_{i,1}|_{C_i}\,\|\,q_{i,1})\leq\varepsilon$, the candidate set carries teacher mass $p_{i,1}(C_i)\geq1-\delta_T$, and the student's full-row mass outside $C_i$ is at most $\delta_S$. Then for every diffusion time $r\geq1$,
+Let $P^T$ and $P^S$ be teacher and student transition matrices on the same support. Suppose for every anchor $i$: the restricted divergence satisfies $D_{\mathrm{KL}}(p^T_{i,1}|_{C_i}\,\|\,p^S_{i,1})\leq\varepsilon$, the candidate set carries teacher mass $p^T_{i,1}(C_i)\geq1-\delta_T$, and the student's full-row mass outside $C_i$ is at most $\delta_S$. Then for every diffusion time $r\geq1$,
 \begin{equation}
     \max_i\;
     \mathrm{TV}\!\left(
@@ -129,12 +129,24 @@ Let $\Omega$ be a column set with $|\Omega|\geq2$, and consider a term with targ
 (ii) Suppose the ambient term at the same row also vanishes, on a set $\Omega_0$ such that $\Omega\cap\Omega_0$ contains columns $j,j'$ with $c^T_{ij}\neq c^T_{ij'}$. Then $\tau_S=\tau$.
 \end{proposition}
 
-Part (ii) is the operative statement: with the ambient scale in the objective, a softmax-of-cosines target must be matched \emph{at its own temperature}, or the two zero sets are disjoint and the objective acquires an artificial floor. This pins two temperatures that would otherwise look like hyperparameters. The sharpest graph scale's target is the transition row itself --- the lazy walk at $r=1$, off-diagonal renormalized --- a softmax of teacher cosines at $\tau_g$, so $\tau_1=\tau_g$. The walk targets of Section~\ref{sec:walk} are transition rows as well, so $\tau_w=\tau_g$, the tie Proposition~\ref{prop:walkgauge} assumes. The ambient scale itself uses the single temperature $\tau_0$ on both sides, the same-temperature convention of knowledge distillation \citep{hinton2015distilling}, which by (i) makes its zero set exactly the shift family of Proposition~\ref{prop:gauge}. The only temperatures left free are those of the broader scales.
+Part (ii) is the operative statement: with the ambient scale in the objective, a softmax-of-cosines target must be matched \emph{at its own temperature}, or the two zero sets are disjoint and the objective acquires an artificial floor. Two members of the family are of this form---the sharpest graph scale and the walk targets of Section~\ref{sec:walk}, both transition rows---so their student temperatures are determined rather than tuned (Section~\ref{sec:objective}). The proposition constrains only the \emph{tie}, not the value of $\tau$, so it applies unchanged when every row carries its own bandwidth. The ambient scale uses one temperature $\tau_0$ on both sides, the usual distillation convention~\citep{hinton2015distilling}, which by (i) makes its zero set the shift family of Proposition~\ref{prop:gauge}. Only the broader scales remain free.
+
+\paragraph{Where the graph temperature comes from.}
+The ties determine how a target is matched, not how it was built. A single graph temperature $\tau_g$ is measured in the units of the teacher's cosines, so a teacher whose similarities are spread differently needs a different value for a comparably sharp graph. Fixing instead the \emph{effective number of neighbors} and solving each row for the bandwidth that achieves it removes this dependence---the entropic affinity of \citet{hinton2002sne}, used by t-SNE~\citep{maaten2008tsne}; \citet{sun2024logit} reach the same conclusion from the distillation side.
+
+\begin{proposition}[Entropic bandwidth]
+\label{prop:bandwidth}
+Fix a row $i$ with $d_i=|\mathcal{M}_k^T(i)|\geq2$ neighbor scores $c^T_{i\cdot}$, not all equal and with a unique maximizer, and write $P^T_i(\tau)\propto\exp(c^T_{i\cdot}/\tau)$ on $\mathcal{M}_k^T(i)$ with entropy $H_i(\tau)$.
+(i) $H_i$ is continuous and strictly increasing on $(0,\infty)$, from $0$ as $\tau\to0$ to $\log d_i$ as $\tau\to\infty$. Hence any target perplexity $\rho_g\in(1,d_i)$ has a \emph{unique} solution $\tau_i$ of $e^{H_i(\tau_i)}=\rho_g$, computable by bisection.
+(ii) Under an affine rescaling $c^T_{i\cdot}\mapsto a\,c^T_{i\cdot}+b$ with $a>0$, the solution becomes $a\tau_i$ and the row $P^T_i$ is unchanged. A fixed $\tau_g$ has no such invariance unless $a=1$.
+\end{proposition}
+
+Part (i) makes the construction well posed, and part (ii) is why it is worth making: the graph, and every target built on it, is invariant to the scale on which the teacher expresses similarity. The perplexity $\rho_g$ fixes a dimensionless neighbor count comparable across teachers, where $\tau_g$ fixed a number in the teacher's own units, and $\tau_i$ becomes the output of a solve rather than a hyperparameter.
 
 \subsection{Sampled Neighborhoods Suffice}
 \label{sec:theory-sampling}
 
-The support of $p_{i,r}$ grows with $k$ and with diffusion time, so scoring every anchor against its full multi-hop neighborhood at every step is not viable. HeatGeo instead scores each anchor against a small candidate set drawn in proportion to diffusion mass, from a support computed by a truncated walk whose error is additive across steps (Lemma~\ref{lem:truncation}, Appendix~\ref{app:proof-sampling}). The remaining question is how many draws the candidate set needs.
+The support of $p^T_{i,r}$ grows with $k$ and with diffusion time, so scoring every anchor against its full multi-hop neighborhood at every step is not viable. HeatGeo instead scores each anchor against a small candidate set drawn in proportion to diffusion mass, from a support computed by a truncated walk whose error is additive across steps (Lemma~\ref{lem:truncation}, Appendix~\ref{app:proof-sampling}). The remaining question is how many draws the candidate set needs.
 
 \begin{proposition}[Sampling error]
 \label{prop:sampling}
@@ -148,7 +160,7 @@ Let $p$ be a diffusion target for one anchor, and let the candidate set $C$ be f
     \qquad
     \mathrm{Tail}_p(t)=\!\!\sum_{j:\,p_j<t}\!\!p_j .
 \end{equation}
-In particular, if $p$ places mass at least $c/\rho$ on each atom of its effective support of perplexity $\rho=e^{H(p)}$, the expected error is at most $e^{-cm/\rho}$.
+In particular, if every atom in the support of $p$ carries mass at least $c/\rho$ with $\rho=e^{H(p)}$ its perplexity, the expected error is at most $e^{-cm/\rho}$.
 \end{proposition}
 
 The sample size that suffices is governed by the \emph{sharpness} of the diffusion target---its perplexity---rather than by the neighborhood size $k$: a peaked target is captured by a handful of draws no matter how large the graph neighborhood is. The implementation uses weighted sampling without replacement via Gumbel top-$k$~\citep{efraimidis2006weighted,kool2019stochastic}, which draws distinct columns and can only improve coverage. Per anchor and epoch, the student scores $O(m)$ columns instead of the full multi-hop support, and the graph and diffusion targets are computed once, offline.
@@ -174,7 +186,7 @@ Let $\mathcal{S}$ be the set of supervised rows and, for $u\in\mathcal{S}$, let 
 
 \begin{proposition}[Gauge reduction by walk supervision]
 \label{prop:walkgauge}
-Assume $\tau_w=\tau_g$ and $|\Omega_u|\geq2$ for every $u\in\mathcal{S}$, and suppose every supervised term vanishes: the ambient term of $\mathcal{L}_{\mathrm{diff}}$ at each anchor, and the walk term of Eq.~\ref{eq:lwalk} at each visited node. Then there are constants $\{a_u\}_{u\in\mathcal{S}}$ with $c^S_{uv}=c^T_{uv}+a_u$ for every $v\in\Omega_u$, and $a_u=a_v$ for every edge $\{u,v\}$ of $\mathcal{G}$. Consequently $a$ is constant on each connected component of $\mathcal{G}$, and the invariance group of the objective is $\mathbb{R}^{\kappa}$ with $\kappa$ the number of connected components, rather than $\mathbb{R}^{|\mathcal{S}|}$.
+Assume $\tau_w(u)=\tau_u$ for every visited row and $|\Omega_u|\geq2$ for every $u\in\mathcal{S}$, and suppose every supervised term vanishes: the ambient term of $\mathcal{L}_{\mathrm{diff}}$ at each anchor, and the walk term of Eq.~\ref{eq:lwalk} at each visited node. Then there are constants $\{a_u\}_{u\in\mathcal{S}}$ with $c^S_{uv}=c^T_{uv}+a_u$ for every $v\in\Omega_u$, and $a_u=a_v$ for every edge $\{u,v\}$ of $\mathcal{G}$. Consequently $a$ is constant on each connected component of $\mathcal{G}$, and the invariance group of the objective is $\mathbb{R}^{\kappa}$ with $\kappa$ the number of connected components, rather than $\mathbb{R}^{|\mathcal{S}|}$.
 \end{proposition}
 
 Two consequences make this the mechanism by which the walk term earns its place. First, the walk builds the edges of $\mathcal{G}$ as it moves: consecutive visited nodes are adjacent in the mutual-$k$NN graph, mutual adjacency is symmetric, and both endpoints are supervised, so each traversed step contributes an edge. Taking the union of the per-batch constraint graphs over training, $\mathcal{G}$ covers the traversed part of $\mathcal{M}_k^T$, and $\kappa$ is governed by the connected components of the \emph{teacher graph} rather than by the number of anchors. It is in this sense that the trajectory matters, even though the loss itself does not couple consecutive steps: the path is what chains the constraints.

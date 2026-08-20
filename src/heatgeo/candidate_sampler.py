@@ -61,7 +61,7 @@ class HeatGeoCandidateSampler:
         stochastic: bool = True,
         num_walks: int = 0,
         walk_length: int = 4,
-        walk_topk: int | None = None,
+        walk_non_backtracking: bool = True,
     ):
         self.pool_indices = artifact["pool_indices"].numpy()
         self.pool_probs = artifact["pool_probs"].numpy()
@@ -89,9 +89,7 @@ class HeatGeoCandidateSampler:
         # ---- Random walk trajectory sampling ------------------------------------
         self.num_walks = int(num_walks)
         self.walk_length = int(walk_length)
-        self.walk_topk = None if walk_topk is None else int(walk_topk)
-        if self.walk_topk is not None and self.walk_topk <= 0:
-            raise ValueError("walk_topk must be positive when provided")
+        self.walk_non_backtracking = bool(walk_non_backtracking)
         if self.num_walks > 0:
             if "transition_neighbors" not in artifact or "transition_probs" not in artifact:
                 raise ValueError(
@@ -100,23 +98,6 @@ class HeatGeoCandidateSampler:
                 )
             self.trans_neighbors = artifact["transition_neighbors"].numpy()
             self.trans_probs = artifact["transition_probs"].numpy()
-            if (
-                self.walk_topk is not None
-                and self.walk_topk < self.trans_probs.shape[1]
-            ):
-                order = np.argsort(-self.trans_probs, axis=1)[:, : self.walk_topk]
-                self.trans_neighbors = np.take_along_axis(
-                    self.trans_neighbors, order, axis=1
-                )
-                self.trans_probs = np.take_along_axis(
-                    self.trans_probs, order, axis=1
-                )
-                totals = self.trans_probs.sum(axis=1, keepdims=True)
-                self.trans_probs = np.divide(
-                    self.trans_probs,
-                    np.maximum(totals, 1e-12),
-                    out=np.zeros_like(self.trans_probs),
-                )
         else:
             self.trans_neighbors = None
             self.trans_probs = None
@@ -306,6 +287,28 @@ class HeatGeoCandidateSampler:
         r=1 diffusion target, and injecting it would burn a candidate slot that every
         scale then masks out again.
 
+        **Non-backtracking.** With ``walk_non_backtracking`` the step at time t+1 may
+        not return to the node occupied at t-1. This changes only the sampling measure
+        nu -- *which* rows the walk term supervises -- and never a target: the teacher
+        row matched at a visited node is still the full transition row P(.|j) at
+        graph_temp, read from the artifact by the criterion. The temperature tie and
+        the walk term's infimum of 0 are therefore untouched.
+
+        Two things the plain walk wastes and this recovers. Rows are supervised with
+        weight equal to visit count, so an A->B->A->B excursion spends the whole walk
+        budget re-supervising two rows; a non-backtracking walk of the same length
+        touches more distinct rows for the same number of student forward columns.
+        And the gauge argument (Proposition ``prop:walkgauge``) identifies similarity
+        offsets by *traversed edges*, so a repeated edge adds no constraint -- the
+        reduction propagates through the component faster when consecutive steps
+        cannot undo each other.
+
+        Non-backtracking walks are also the ones with the mixing and cover-time
+        guarantees (Alon, Benjamini, Lubetzky and Sodin, 2007); on a mutual-kNN graph
+        with bounded degree that is the whole of the structural argument, which is why
+        no degree-dependent reweighting is applied on top -- it would tilt nu without
+        a matching correction and buy a knob with no evidence behind it.
+
         Returns:
             walks: int array [num_walks, walk_length + 1] of node indices.
             walk_nodes: set of unique node indices visited after the start.
@@ -316,11 +319,24 @@ class HeatGeoCandidateSampler:
         walk_node_set: set[int] = set()
         for m in range(self.num_walks):
             current = idx
+            previous = -1
             walks[m, 0] = current
             for t in range(self.walk_length):
                 neighbors = self.trans_neighbors[current]
                 probs = self.trans_probs[current]
-                valid = neighbors >= 0
+                # A padded slot carries neighbour -1 *and* probability 0, but walk_topk
+                # truncation can also leave a real neighbour at probability 0; both are
+                # dropped here so the renormalization below can never divide by zero.
+                valid = (neighbors >= 0) & (probs > 0)
+                if self.walk_non_backtracking and previous >= 0:
+                    forward = valid & (neighbors != previous)
+                    # Only when every forward edge is gone -- a degree-1 node, where
+                    # the edge we arrived on is the sole way out -- is the backtrack
+                    # allowed. Alon et al. define non-backtracking walks on graphs of
+                    # minimum degree 2; retreating beats stalling on a self-loop, which
+                    # would supervise the same row twice and teach nothing.
+                    if forward.any():
+                        valid = forward
                 if not valid.any():
                     # Dead-end node: stay in place (self-loop).
                     walks[m, t + 1] = current
@@ -331,7 +347,7 @@ class HeatGeoCandidateSampler:
                 next_node = int(rng.choice(nb, p=pr))
                 walks[m, t + 1] = next_node
                 walk_node_set.add(next_node)
-                current = next_node
+                previous, current = current, next_node
         return walks, walk_node_set
 
     def sample_with_walks(
