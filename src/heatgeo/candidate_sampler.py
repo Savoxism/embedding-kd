@@ -61,7 +61,6 @@ class HeatGeoCandidateSampler:
         stochastic: bool = True,
         num_walks: int = 0,
         walk_length: int = 4,
-        walk_topk: int | None = None,
         walk_non_backtracking: bool = True,
     ):
         self.pool_indices = artifact["pool_indices"].numpy()
@@ -91,9 +90,6 @@ class HeatGeoCandidateSampler:
         self.num_walks = int(num_walks)
         self.walk_length = int(walk_length)
         self.walk_non_backtracking = bool(walk_non_backtracking)
-        self.walk_topk = None if walk_topk is None else int(walk_topk)
-        if self.walk_topk is not None and self.walk_topk <= 0:
-            raise ValueError("walk_topk must be positive when provided")
         if self.num_walks > 0:
             if "transition_neighbors" not in artifact or "transition_probs" not in artifact:
                 raise ValueError(
@@ -102,23 +98,6 @@ class HeatGeoCandidateSampler:
                 )
             self.trans_neighbors = artifact["transition_neighbors"].numpy()
             self.trans_probs = artifact["transition_probs"].numpy()
-            if (
-                self.walk_topk is not None
-                and self.walk_topk < self.trans_probs.shape[1]
-            ):
-                order = np.argsort(-self.trans_probs, axis=1)[:, : self.walk_topk]
-                self.trans_neighbors = np.take_along_axis(
-                    self.trans_neighbors, order, axis=1
-                )
-                self.trans_probs = np.take_along_axis(
-                    self.trans_probs, order, axis=1
-                )
-                totals = self.trans_probs.sum(axis=1, keepdims=True)
-                self.trans_probs = np.divide(
-                    self.trans_probs,
-                    np.maximum(totals, 1e-12),
-                    out=np.zeros_like(self.trans_probs),
-                )
         else:
             self.trans_neighbors = None
             self.trans_probs = None

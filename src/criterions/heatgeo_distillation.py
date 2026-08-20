@@ -159,6 +159,14 @@ class HeatGeoDistillation(nn.Module):
       cos_S = (tau_1/graph_temp) cos_T + a_i, which contradicts the direct scale
       on the same row (it pins unrescaled gaps), so the joint zero set is empty
       unless the teacher cosines are constant.
+
+      With ``row_temps`` supplied -- the entropic-affinity graph, where each row
+      is solved for a fixed perplexity instead of sharing one temperature -- the
+      tie is read row by row: row i's target was built at tau_i, so row i is
+      matched at tau_i. Nothing in the argument above depends on the *value* of
+      the temperature, only on the two sides sharing it, and the attainable set is
+      the same shift family; so the proposition holds per row, and the gauge
+      argument that chains it along walk edges is untouched.
     * ``walk_temp = graph_temp``: the walk targets are transition rows too --
       the same argument verbatim, and the tie the gauge-reduction proof assumes.
     * ``direct student temp = direct_temp``: the classic same-temperature
@@ -203,7 +211,7 @@ class HeatGeoDistillation(nn.Module):
         transition_neighbors: torch.Tensor | None = None,
         transition_probs: torch.Tensor | None = None,
         walk_weight: float = 0.5,
-        walk_topk: int | None = None,
+        row_temps: torch.Tensor | None = None,
         *,
         graph_temp: float,
         **kwargs,
@@ -218,6 +226,20 @@ class HeatGeoDistillation(nn.Module):
         self.teacher_dim = teacher_dim
         self.graph_temp = float(graph_temp)
         self.student_temp = student_temp
+
+        # Per-row temperatures (entropic affinities). The tie tau_1 = tau_w =
+        # "the temperature this row's target was built at" is unchanged; it is
+        # simply no longer the same number for every row. Zero loss is still
+        # attainable exactly on the shift family cos_S(i,.) = cos_T(i,.) + a_i,
+        # which is independent of tau_i, so the proposition and the gauge argument
+        # that chains it along walk edges both carry over row by row.
+        if row_temps is not None:
+            temps_row = row_temps.detach().to(torch.float32).reshape(-1)
+            if not bool(torch.isfinite(temps_row).all()) or bool((temps_row <= 0).any()):
+                raise ValueError("row_temps must be finite and positive")
+            self.register_buffer("row_temps", temps_row, persistent=False)
+        else:
+            self.row_temps = None
         self.eps_norm = eps_norm
         self.diag_topk = diag_topk
         self.share_in_batch = share_in_batch
@@ -230,9 +252,6 @@ class HeatGeoDistillation(nn.Module):
         # Tied, not tuned: the walk target is a transition row = softmax of teacher
         # cosines at graph_temp (see "Temperature ties" in the class docstring).
         self.walk_temp = self.graph_temp
-        self.walk_topk = None if walk_topk is None else int(walk_topk)
-        if self.walk_topk is not None and self.walk_topk <= 0:
-            raise ValueError("walk_topk must be positive when provided")
         if transition_neighbors is not None and transition_probs is not None:
             # The teacher's transition rows, padded with -1. Held as int32/float32
             # rather than the artifact's int64: at corpus scale this is the second
@@ -427,11 +446,6 @@ class HeatGeoDistillation(nn.Module):
         # Teacher transition row per source, restricted to columns the pool holds.
         neighbors = self.walk_neighbors.index_select(0, src_nodes).long()
         probs = self.walk_probs.index_select(0, src_nodes).float()
-        if self.walk_topk is not None and self.walk_topk < probs.size(1):
-            probs, top_positions = torch.topk(
-                probs, k=self.walk_topk, dim=1, largest=True, sorted=True
-            )
-            neighbors = neighbors.gather(1, top_positions)
         flat = neighbors.reshape(-1)
         nb_pos = torch.searchsorted(column_idx, flat.clamp_min(0)).clamp_max(
             pool_size - 1
@@ -463,7 +477,13 @@ class HeatGeoDistillation(nn.Module):
         weight = src_counts[usable].float()
         target = target / target.sum(dim=1, keepdim=True).clamp_min(1e-12)
 
-        logits = (pool_norm.index_select(0, src_pos) @ pool_norm.t()) / self.walk_temp
+        # One temperature per supervised row: the walk target at node j is j's own
+        # transition row, so it is matched at the temperature that row was built at.
+        if self.row_temps is not None:
+            walk_tau = self.row_temps.index_select(0, src_nodes[usable]).view(-1, 1)
+        else:
+            walk_tau = self.walk_temp
+        logits = (pool_norm.index_select(0, src_pos) @ pool_norm.t()) / walk_tau
         logits = logits.masked_fill(~allowed, float("-inf"))
         log_probs = F.log_softmax(logits, dim=-1)
 
@@ -606,11 +626,22 @@ class HeatGeoDistillation(nn.Module):
         # across the full pool. Complementary instead of opposed.
         diffusion_mask = self_mask | ~own_mask
 
+        # The sharpest diffusion scale is the one whose target IS the anchor's
+        # transition row, so it is the scale the temperature tie binds. With
+        # entropic affinities that temperature is per anchor, not global.
+        sharpest = 1 if self.direct_active else 0
+        row_tau = None
+        if self.row_temps is not None and anchor_idx is not None:
+            row_tau = self.row_temps.index_select(0, anchor_idx).view(-1, 1)
+
         kl_per_scale = []
         log_probs_per_scale = []
         for scale_idx in range(n_scales):
             is_direct = self.direct_active and scale_idx == 0
-            logits = similarity / temps[scale_idx]
+            if row_tau is not None and scale_idx == sharpest:
+                logits = similarity / row_tau
+            else:
+                logits = similarity / temps[scale_idx]
             logits = logits.masked_fill(self_mask if is_direct else diffusion_mask,
                                         float("-inf"))
             log_probs = F.log_softmax(logits, dim=-1)
@@ -816,8 +847,11 @@ class HeatGeoDistillation(nn.Module):
         # objective is spent, but it can also go negative.
         metrics["excess_is_exact"] = float(
             bool(
-                temps.numel() - offset <= 1
-                or torch.allclose(temps[offset:], temps[offset])
+                self.row_temps is None
+                and (
+                    temps.numel() - offset <= 1
+                    or torch.allclose(temps[offset:], temps[offset])
+                )
             )
         )
         return metrics

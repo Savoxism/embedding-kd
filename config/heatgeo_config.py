@@ -21,7 +21,6 @@ class HeatGeoConfig(BaseConfig):
     #   direct scale         one temperature (direct_temp) on both teacher and
     #                        student side (Hinton et al. 2015 convention).
     # Only the broader diffusion scales keep free student temperatures.
-    student_temp = 0.07               # fallback when broad_scale_temps is unset
     broad_scale_temps = (0.07, 0.10)  # student temps for r = 2, 4; r = 1 uses graph_temp
     share_in_batch = True
 
@@ -31,10 +30,21 @@ class HeatGeoConfig(BaseConfig):
 
     # ---- Teacher Graph -------------------------------------------------------
     graph_k = 200
+    # Bandwidth selection. Each transition row is solved for its own temperature so
+    # that H(P(.|i)) = log(perplexity): one effective number of neighbours for every
+    # node, instead of one temperature for every node. Two reasons, both provable:
+    # the entropy is strictly monotone in the temperature (dH/dbeta = -beta*Var(s)),
+    # so the solution is unique and bisection cannot fail; and the row is exactly
+    # invariant to an affine rescaling s -> a*s + b of the teacher's similarities,
+    # which is what forced graph_temp to be retuned for each teacher. 30 is the
+    # t-SNE default for the same quantity (van der Maaten and Hinton, 2008).
+    perplexity = 30
+    # Only used when perplexity is None: the fixed-bandwidth baseline this arm is
+    # meant to be compared against. It is not a second knob to tune -- set one or
+    # the other.
     graph_temp = 0.05
     diffusion_scales = (1, 2, 4)
     scale_weights = (1.0, 0.5, 0.25)
-    pool_size = 256
     
     # ---- Random Walk Kernel Matching -----------------------------------------
     # L_walk is a KL against the teacher's own transition row, so it shares the
@@ -45,14 +55,29 @@ class HeatGeoConfig(BaseConfig):
     walk_weight = 0.5
     # walk_temp is gone: it is tied to graph_temp inside the criterion.
     walk_start_epoch = 1
-    walk_topk = None
     # Which rows the walk supervises, never what they are matched against: a step may
     # not return to the node it came from (except out of a degree-1 node, where that
     # is the only edge). Same walk budget, more distinct rows, and no new temperature.
     walk_non_backtracking = True
     
     hard_neg_pool = 200
-    walk_keep_topk = 2048
+
+    # ---- Truncation ----------------------------------------------------------
+    # Every capacity in the build is the same operation: keep a subset S of a
+    # probability row and renormalize. Discarding mass delta gives exactly
+    # TV(p, ptilde) = delta and KL(ptilde || p) = -log(1 - delta), so this single
+    # tolerance bounds the perturbation of the targets *in nats* -- the units of
+    # the loss. At 1% that is <= 0.01 nats per truncation against a loss around
+    # 0.84, and it compounds to at most r * tolerance across the r-step lazy walk.
+    #
+    # This replaces pool_size, walk_keep_topk and walk_topk outright rather than
+    # sitting alongside them: each anchor now keeps exactly as many nodes as the
+    # tolerance requires and the arrays are allocated at the width the widest anchor
+    # needed. The only remaining sizes are DIFFUSION_ROW_CAP / POOL_ROW_CAP in
+    # graph_builder, which are memory guards -- the build reports
+    # pool_capped_rows / walk_capped_rows if either ever binds before the tolerance
+    # is met, and then the guarantee does not hold.
+    truncation_tolerance = 0.01
 
     # ---- Per-Epoch Candidate Sampling ---------------------------------------
     candidate_size = 66

@@ -199,7 +199,6 @@ class KnowledgeDistiller:
                         teacher_dim=self.teacher_cls_all.shape[-1],
                         scale_weights=config.scale_weights,
                         broad_scale_temps=config.broad_scale_temps,
-                        student_temp=config.student_temp,
                         eps_norm=config.eps_norm,
                         diag_topk=config.diag_topk,
                         share_in_batch=config.share_in_batch,
@@ -207,7 +206,7 @@ class KnowledgeDistiller:
                         direct_weight=config.direct_weight,
                         direct_temp=config.direct_temp,
                         walk_weight=config.walk_weight,
-                        walk_topk=config.walk_topk,
+                        row_temps=getattr(self, "heatgeo_artifact", {}).get("row_temps"),
                         # The tie tau_1 = tau_w = graph_temp lives in the criterion;
                         # this is the temperature the transition rows were built at.
                         graph_temp=config.graph_temp,
@@ -243,7 +242,6 @@ class KnowledgeDistiller:
                     teacher_dim=self.teacher_cls_all.shape[-1],
                     scale_weights=config.scale_weights,
                     broad_scale_temps=config.broad_scale_temps,
-                    student_temp=config.student_temp,
                     eps_norm=config.eps_norm,
                     diag_topk=config.diag_topk,
                     share_in_batch=config.share_in_batch,
@@ -251,7 +249,7 @@ class KnowledgeDistiller:
                     direct_weight=config.direct_weight,
                     direct_temp=config.direct_temp,
                     walk_weight=config.walk_weight,
-                    walk_topk=config.walk_topk,
+                    row_temps=getattr(self, "heatgeo_artifact", {}).get("row_temps"),
                     # The tie tau_1 = tau_w = graph_temp lives in the criterion;
                     # this is the temperature the transition rows were built at.
                     graph_temp=config.graph_temp,
@@ -629,12 +627,12 @@ class KnowledgeDistiller:
                     # No fallback default: the criterion ties tau_1 and tau_w to this
                     # value, so the artifact and the loss must read the same source.
                     graph_temp=cfg.graph_temp,
+                    perplexity=cfg.perplexity,
+                    truncation_tolerance=cfg.truncation_tolerance,
                     diffusion_scales=cfg.diffusion_scales,
                     scale_weights=cfg.scale_weights,
-                    pool_size=cfg.pool_size,
                     hard_neg_pool=cfg.hard_neg_pool,
                     source_ids=self._heatgeo_source_ids(df),
-                    walk_keep_topk=cfg.walk_keep_topk,
                 )
 
             # Free teacher model to save GPU memory (teacher not needed after caching)
@@ -657,7 +655,6 @@ class KnowledgeDistiller:
                     stochastic=cfg.stochastic_candidates,
                     num_walks=cfg.num_walks,
                     walk_length=cfg.walk_length,
-                    walk_topk=cfg.walk_topk,
                     walk_non_backtracking=cfg.walk_non_backtracking,
                 )
                 anchor_texts = df[self.heatgeo_anchor_column].astype(str).tolist()

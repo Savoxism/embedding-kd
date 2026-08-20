@@ -3,7 +3,7 @@
 \subsection{Experimental Setup}
 
 \paragraph{Models.}
-We distill Qwen3-Embedding-4B into BERT-base, a 109M-parameter student encoder. Teacher embeddings are cached once before HeatGeo training. After graph construction, the teacher is removed from GPU memory; student training uses only precomputed diffusion targets and the corresponding candidate texts.
+We evaluate three teacher\,$\rightarrow$\,student pairs: Qwen3-Embedding-4B $\rightarrow$ BERT-base (109M), BGE-M3 $\rightarrow$ MiniLMv2-H768 (66M), and Qwen3-Embedding-0.6B $\rightarrow$ MiniLMv2-H384 (22M). Teacher embeddings are cached once before training; after graph construction the teacher is removed from GPU memory, and student training uses only precomputed diffusion targets and the corresponding candidate texts.
 
 \paragraph{Training Data.}
 Following the TALAS setup~\citep{dao2026talas}, we train on approximately 15K unlabeled sentences sampled evenly from the three in-domain datasets Emotion, WiC, and STS-B. HeatGeo constructs the teacher semantic graph directly over these texts.
@@ -12,10 +12,19 @@ Following the TALAS setup~\citep{dao2026talas}, we train on approximately 15K un
 We evaluate on three task families. Text classification uses F1 on Banking77, Tweet, and Emotion. Pair classification uses average precision (AP) on MRPC, SciTail, and WiC. Semantic textual similarity uses Spearman correlation on SICK, STS12, and STS-B. Emotion, WiC, and STS-B are in-domain; the other six datasets are out-of-domain. Avg-In and Avg-Out are the unweighted means over their respective three and six datasets, and Avg.\ is the unweighted mean over all nine datasets.
 
 \paragraph{Baselines.}
-We compare against the teacher, the undistilled student, SimCSE-unsup, CDM, DSKD, Jasper and Stella, DistillCSE, EMO, and TALAS. The baseline results use the Qwen3-Embedding-4B to BERT-base configuration reported by TALAS~\citep{dao2026talas}.
+We compare against the teacher, the undistilled student, SimCSE-unsup, CDM, DSKD, Jasper and Stella, DistillCSE, EMO, and TALAS, using the baseline numbers reported by TALAS~\citep{dao2026talas} for the same three configurations.
 
 \paragraph{Implementation Details.}
-The teacher graph uses $k=200$ mutual neighbors, and diffusion is taken over the scale family $\mathcal{R}=\{0,1,2,4\}$ with weights obtained by normalizing $(1,1,0.5,0.25)$, so that the ambient and local scales carry most of the objective. Each anchor draws a candidate set of size $64$ from diffusion neighbors, teacher hard negatives, and random negatives, redrawn every epoch, and candidate sets are pooled across mini-batches of $32$ anchors. Student temperatures increase with diffusion scale, matching broader targets at a smoother resolution; of these, only the broader scales are tuned, $(\tau_2,\tau_4)=(0.07,0.10)$, while the sharpest scale and the walk term are tied to the graph temperature, $\tau_1=\tau_w=\tau_g=0.05$, and the ambient scale uses $\tau_0=0.10$ on both sides (Proposition~\ref{prop:temptie}). Walk-sampled kernel matching draws $M=4$ walks of length $L=4$ per anchor per epoch at $\lambda=0.5$, and is enabled from the second epoch onward so that the student has a neighborhood to rank before its rows are matched. Training runs for five epochs with a learning rate of $3\times10^{-5}$. Remaining settings are given in the released configuration.
+The teacher graph uses $k=200$ mutual neighbors, and diffusion is taken over $\mathcal{R}=\{0,1,2,4\}$ with weights obtained by normalizing $(1,1,0.5,0.25)$. Each anchor draws a candidate set of size $64$ from diffusion neighbors, teacher hard negatives, and random negatives, redrawn every epoch and pooled across mini-batches of $32$ anchors. Only the broader student temperatures are tuned, $(\tau_2,\tau_4)=(0.07,0.10)$; the sharpest scale and the walk term are tied to the bandwidth of the row they match, and the ambient scale uses $\tau_0=0.10$ on both sides (Proposition~\ref{prop:temptie}). Walk-sampled kernel matching draws $M=4$ non-backtracking walks of length $L=4$ per anchor per epoch at $\lambda=0.5$, enabled from the second epoch onward. The truncation tolerance of Section~\ref{sec:kernels} is $\delta=10^{-2}$, which fixes the width of every stored target. Training runs for five epochs at a learning rate of $3\times10^{-5}$; remaining settings are in the released configuration.
+
+% TODO(before submission): the numbers in Tables 1-3 were produced with the
+% fixed-bandwidth arm, tau_g = 0.05 for every row (reproducible with
+% --perplexity 0), and with the earlier count-based truncation rather than the
+% delta tolerance. The sentence below states that honestly; replace it with the
+% entropic-bandwidth results once those runs finish, and move the fixed-bandwidth
+% arm into the ablation table as the control for Proposition 6.
+\paragraph{Which bandwidth the reported runs use.}
+The results below use the fixed-bandwidth arm of Section~\ref{sec:graph}, a single $\tau_g=0.05$ shared by every row --- the control that the entropic bandwidth of Eq.~\ref{eq:bandwidth} is meant to be compared against. Entropic-bandwidth runs at $\rho_g=30$ are in progress and will be reported alongside it.
 
 \subsection{Main Results}
 
@@ -85,7 +94,7 @@ HeatGeo                                 & \tbd & \tbd & \tbd & 77.98 & \tbd & \t
 \end{table}
 
 \paragraph{How much walk supervision.}
-The walk controls two quantities that the theory separates: how many rows are supervised, set by $M$ and $L$, and how strongly they are weighted against the anchor rows, set by $\lambda$. Because Eq.~\ref{eq:lwalk} is a divergence with infimum $0$ on the same scale as Eq.~\ref{eq:ldiff}, $\lambda$ is a genuine trade-off, and the prediction is a plateau rather than a monotone trend: once the traversed edges connect the graph, further walks add rows but no new identification. Table~\ref{tab:analysis_walkparams} sweeps both.
+The walk controls two quantities that the theory separates: how many rows are supervised, set by $M$ and $L$, and how strongly they are weighted against the anchor rows, set by $\lambda$. Because Eq.~\ref{eq:lwalk} is a divergence with infimum $0$ on the same scale as Eq.~\ref{eq:ldiff-generic}, $\lambda$ is a genuine trade-off, and the prediction is a plateau rather than a monotone trend: once the traversed edges connect the graph, further walks add rows but no new identification. Table~\ref{tab:analysis_walkparams} sweeps both.
 
 \begin{table}[h]
 \centering

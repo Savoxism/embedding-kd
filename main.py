@@ -95,14 +95,16 @@ def parse_args():
     # teacher-student pairs use isolated caches without rewriting the shared
     # default config.
     parser.add_argument('--graph_k', type=int, default=None)
+    # The bandwidth knob. --perplexity 0 turns the entropic affinity off and falls
+    # back to --graph_temp, which is the fixed-bandwidth baseline arm.
+    parser.add_argument('--perplexity', type=float, default=None)
     parser.add_argument('--graph_temp', type=float, default=None)
-    parser.add_argument('--pool_size', type=int, default=None)
+    parser.add_argument('--truncation_tolerance', type=float, default=None)
     parser.add_argument('--num_walks', type=int, default=None)
     parser.add_argument('--walk_length', type=int, default=None)
     parser.add_argument('--walk_weight', type=float, default=None)
     # --walk_temp was removed: the criterion ties it to --graph_temp.
     parser.add_argument('--walk_start_epoch', type=int, default=None)
-    parser.add_argument('--walk_topk', type=int, default=None)
     # Ablation switch, not a tuned quantity: --walk_non_backtracking 0 restores the
     # plain Markov walk for the (a)/(b) arms of the walk ablation.
     parser.add_argument(
@@ -241,12 +243,11 @@ def get_config(method: str, args):
     heatgeo_overrides = (
         'graph_k',
         'graph_temp',
-        'pool_size',
+        'truncation_tolerance',
         'num_walks',
         'walk_length',
         'walk_weight',
         'walk_start_epoch',
-        'walk_topk',
         'walk_non_backtracking',
         'candidate_size',
         'diffusion_quota',
@@ -261,6 +262,10 @@ def get_config(method: str, args):
         value = getattr(args, name)
         if value is not None:
             setattr(config, name, value)
+
+    # 0 is how the CLI says "no perplexity", since None already means "no override".
+    if args.perplexity is not None:
+        config.perplexity = None if args.perplexity <= 0 else args.perplexity
     
     if args.w_task is not None:
         config.w_task = args.w_task

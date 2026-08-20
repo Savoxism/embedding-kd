@@ -161,6 +161,21 @@ that produced it disagrees with itself.
 
 ### P1. `graph_temp` → per-row entropic affinity at a fixed perplexity — **T1 + T2**
 
+> **Status 2026-08-20 — implemented.** `perplexity = 30` is the default; `graph_temp` survives only
+> as the fixed-bandwidth baseline, reached with `--perplexity 0`. The solve is
+> `_entropic_affinity` in `graph_builder.py`, the per-row temperatures ride in the artifact as
+> `row_temps`, and the criterion matches row *i* at τ_i for both the sharpest diffusion scale and
+> the walk term. `ARTIFACT_VERSION` is 6 and `perplexity` is in the cache metadata, so every
+> existing graph cache rebuilds. Four unit tests cover the maths directly: the solve hits the
+> requested perplexity, entropy is strictly monotone in τ over (0, log d), the row is invariant to
+> `s → a·s + b` while a fixed temperature is not, and a row with fewer neighbours than the
+> perplexity clamps instead of diverging.
+>
+> On a 400-node synthetic graph the realised perplexity is 15.000 on every unclamped row, and the
+> solved temperatures span **0.0117 to 0.679 — a factor of 58**. That spread is the point: one
+> global `graph_temp` was giving nodes in dense and sparse regions wildly different effective
+> neighbourhood sizes.
+
 Replace the single global temperature with a per-node τ_i chosen so that each transition row has a
 prescribed entropy:
 
@@ -216,8 +231,27 @@ read off the operator's spectrum.
 
 ### P3. Capacity knobs → one tolerance — **T1**
 
-`pool_size`, `walk_keep_topk`, `hard_neg_pool`, `walk_topk` are all the same operation: keep a
-subset S of a probability row and renormalize. If the discarded mass is δ = 1 − p(S), then the
+> **Status 2026-08-20 — implemented, with one correction to the claim below.** `hard_neg_pool` is
+> **not** a truncation of a probability row — it is a reservoir of same-source nearest neighbours —
+> so the TV/KL bound does not cover it and it stays a free knob. The three that are truncations
+> (`pool_size`, `walk_keep_topk`, and the per-step diffusion cut) now run off
+> `truncation_tolerance = 0.01`: each keeps the smallest prefix carrying 1 − δ, with the old
+> capacity numbers demoted to allocation ceilings that are reported (`pool_capped_rows`,
+> `walk_capped_rows`) if they ever bind first.
+>
+> Two honest qualifications, both visible in the build log. The pool is selected from the
+> *weighted mixture* over scales, so δ bounds the mixture's residual, not each scale's: on the
+> synthetic graph r=1 lands at 6e-05 while r=4 sits at 3.9e-02, since r=4 carries a quarter of the
+> mixture weight. And the lazy walk truncates once per step, so the bound compounds — measured
+> cumulative truncation was 8.7e-03 at r=1, 1.8e-02 at r=2 and 3.5e-02 at r=4, all within the
+> predicted r·δ.
+>
+> The practical effect: with δ = 1% the pool holds **34.9 nodes on average instead of a fixed
+> 256**, with zero rows hitting the ceiling. The old `pool_size` was about 7× larger than the
+> guarantee needs.
+
+`pool_size`, `walk_keep_topk`, `walk_topk` and the per-step diffusion cut are all the same
+operation: keep a subset S of a probability row and renormalize. If the discarded mass is δ = 1 − p(S), then the
 renormalized row p̃ satisfies, exactly,
 
 > TV(p, p̃) = δ,  KL(p̃ ‖ p) = −log(1 − δ) ≤ δ/(1−δ).
@@ -274,18 +308,46 @@ objective is flat, fix at the flat region's centre and publish the curve as the 
 is not flat, it is a genuine design choice and belongs in the ablation table (T4). A published
 sensitivity curve is stronger with reviewers than either a tuned value or an unfalsifiable formula.
 
+## 3b. What the config actually lost — audited 2026-08-20
+
+A reclassification is not a reduction. The first pass at P1 and P3 kept `graph_temp`, `pool_size`,
+`walk_keep_topk` and `walk_topk` alive under new labels ("baseline arm", "allocation ceiling") and
+added `perplexity` and `truncation_tolerance` on top, which left the config *larger*. Counting
+assignments in `HeatGeoConfig`:
+
+| | knobs |
+|---|---|
+| **Removed, dead code** (8) | `cache_teacher`, `lambda_heatgeo`, `lambda_cosine`, `lambda_infonce`, `lambda_simcse`, `simcse_temp`, `simcse_start_epoch`, `lambda_sim` |
+| **Removed, live knobs** (4) | `student_temp` (a fallback for `broad_scale_temps`, which is always set), `pool_size`, `walk_keep_topk`, `walk_topk` |
+| **Added** (3 real, 3 previously hidden) | `perplexity`, `truncation_tolerance`, `walk_non_backtracking`; plus `eps_norm`, `heatgeo_anchor_column`, `heatgeo_source_column`, which were already knobs read through `getattr` and are now merely visible |
+
+Net 60 → 54 lines, and on live scientific knobs 4 out for 3 in — with the three that went in
+carrying proofs and the four that went out carrying none.
+
+The three capacities really are gone, not renamed: `_build_diffusion_pools` takes no size argument,
+each anchor keeps exactly what the tolerance requires, and the array is allocated afterwards at the
+width the widest anchor needed (44 on the synthetic graph, against the 256 that used to be
+configured). What remains are `DIFFUSION_ROW_CAP` and `POOL_ROW_CAP` in `graph_builder.py`: module
+constants that bound memory while the tolerance decides, reported through `pool_capped_rows` /
+`walk_capped_rows` if they ever bind first.
+
+`graph_temp` is the one knob deliberately kept after being superseded. It is the fixed-bandwidth
+control arm for P1, reached with `--perplexity 0`, and a proposal that cannot be compared against
+the thing it replaced is not worth much. It is T4 and it is one line.
+
 ## 4. Ledger
 
 | knob | now | after | tier |
 |---|---|---|---|
 | 7 dead knobs | free | gone | — |
-| `graph_temp` | free | perplexity K | T1+T2 |
+| `graph_temp` | free | perplexity K; `graph_temp` kept only as the control arm | T1+T2 |
 | `diffusion_scales` | free | entropy knee / spectral gap | T2+T1 |
-| `pool_size`, `walk_keep_topk`, `hard_neg_pool`, `walk_topk` | 4 free | one tolerance δ | T1 |
+| `pool_size`, `walk_keep_topk`, `walk_topk` | 3 free | **deleted**; one tolerance δ | T1 |
+| `hard_neg_pool` | free | stays free: a reservoir, not a truncated row | T4 |
 | `graph_k` | free | connectivity + measured | T2+T3 |
 | `num_walks`, `walk_length` | 2 free | same tolerance δ | T3 |
 | `walk_weight` | free | E[R_w]/B, or stays free | T2 or T4 |
-| `scale_weights`, `broad_scale_temps`, `student_temp` | 3 free | sensitivity curve | T3 or T4 |
+| `scale_weights`, `broad_scale_temps` | 2 free (`student_temp` **deleted**) | sensitivity curve | T3 or T4 |
 | `candidate_size`, `batch_size`, `lr`, `epochs` | free | compute budget, stated as such | T4 |
 | `walk_start_epoch`, `direct_temp`, `direct_weight`, hard/random split | 4 free | ablated | T4 |
 

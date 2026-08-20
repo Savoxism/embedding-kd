@@ -6,35 +6,19 @@ HeatGeo treats the teacher embedding space as a sampled semantic manifold and tr
 \subsection{Teacher Semantic Graph}
 \label{sec:graph}
 
-Let $\mathcal{D}=\{x_i\}_{i=1}^{N}$ be the unlabeled distillation corpus, and let $t_i=T(x_i)$ denote the cached embedding produced by teacher encoder $T$. For each example, we retrieve its top-$k$ neighbors under teacher cosine similarity:
+Let $\mathcal{D}=\{x_i\}_{i=1}^{N}$ be the unlabeled distillation corpus and $t_i=T(x_i)$ the cached embedding produced by teacher encoder $T$. Writing $\mathcal{N}_k^T(i)$ for the top-$k$ neighbors of $x_i$ under teacher cosine similarity, HeatGeo keeps only mutual edges, $j\in\mathcal{M}_k^T(i)\Leftrightarrow j\in\mathcal{N}_k^T(i)$ and $i\in\mathcal{N}_k^T(j)$, which suppresses one-directional edges and hubness. The weighted adjacency is $W^T_{ij}=\exp\!\big(\cos(t_i,t_j)/\tau_i\big)$ for $j\in\mathcal{M}_k^T(i)$ and $0$ otherwise, with $\tau_i$ the bandwidth of row $i$; with diagonal degree matrix $D^T$, the transition matrix $P^T=(D^T)^{-1}W^T$ has rows $P^T_i$ giving the one-step semantic random walk from $x_i$.
+
+\paragraph{Bandwidth by perplexity, not by temperature.}
+Rather than sharing one temperature across the corpus, each row solves for its own, so that every node's neighbor distribution carries the same effective number of neighbors:
 \begin{equation}
-    \mathcal{N}_k^T(i)
-    =
-    \operatorname{TopK}_{j\neq i}\cos(t_i,t_j).
+    \label{eq:bandwidth}
+    \tau_i
+    \ \ \text{is the unique solution of}\ \
+    \exp\!\big(H(P^T_i)\big)=\rho_g,
+    \qquad
+    H(P^T_i)=-\!\!\sum_{j\in\mathcal{M}_k^T(i)}\!\! P^T_{ij}\log P^T_{ij}.
 \end{equation}
-To reduce noisy one-directional edges and hubness, HeatGeo retains only mutual $k$NN connections:
-\begin{equation}
-    j \in \mathcal{M}_k^T(i)
-    \Longleftrightarrow
-    j \in \mathcal{N}_k^T(i)
-    \ \mathrm{and}\
-    i \in \mathcal{N}_k^T(j).
-\end{equation}
-The weighted adjacency matrix $W^T$ is
-\begin{equation}
-    W_{ij}^{T}
-    =
-    \begin{cases}
-    \exp\!\left(\cos(t_i,t_j)/\tau_g\right),
-        & j \in \mathcal{M}_k^T(i),\\
-    0,  & \mathrm{otherwise},
-    \end{cases}
-\end{equation}
-where $\tau_g$ controls graph sharpness. With diagonal degree matrix $D^T$, the row-normalized transition matrix is
-\begin{equation}
-    P^T=(D^T)^{-1}W^T,
-\end{equation}
-and each row $P_i^T$ defines a one-step semantic random-walk distribution from anchor $x_i$.
+By Proposition~\ref{prop:bandwidth} the solution exists, is unique, and bisection on $1/\tau$ reaches it to machine precision; rows whose degree does not exceed $\rho_g$ are solved at their own entropy ceiling instead, which the build reports. This is the entropic affinity of \citet{hinton2002sne} on a mutual-$k$NN graph, and it buys the invariance of Proposition~\ref{prop:bandwidth}(ii): one $\rho_g$ transfers across teachers whose cosines are spread differently, where one $\tau_g$ would not.
 
 \subsection{A Multi-Scale Family of Teacher Kernels}
 \label{sec:kernels}
@@ -42,12 +26,7 @@ and each row $P_i^T$ defines a one-step semantic random-walk distribution from a
 Diffusion time is the natural scale parameter of a manifold. On a continuous manifold the heat kernel $h_t(u,v)$ interpolates between the ambient metric as $t\to 0$, where $h_t(u,v)\propto\exp(-d(u,v)^2/4t)$ depends only on the distance between the two points, and global connectivity as $t$ grows, where mass has travelled along the manifold and reflects its intrinsic structure. HeatGeo distills this entire interpolation rather than a single point on it, by pairing the graph walks with the ambient kernel they emerge from.
 
 \paragraph{Graph scales ($r\geq 1$).}
-Powers of the lazy walk $\tilde{P}^T=\tfrac12\big(I+P^T\big)$ expose progressively broader semantic regions,
-\begin{equation}
-    P_r^T=\big(\tilde{P}^T\big)^r,
-    \qquad r\in\{1,2,4\},
-\end{equation}
-where the lazy step retains half of the mass in place---the discrete analogue of a heat-semigroup step---and small $r$ preserves sharp local neighborhoods while larger $r$ captures multi-hop connectivity and community structure. Diffusion is computed sparsely by propagating probability mass through graph neighbor lists and retaining the highest-probability columns at each step (Lemma~\ref{lem:truncation}).
+Powers of the lazy walk $\tilde{P}^T=\tfrac12\big(I+P^T\big)$ expose progressively broader semantic regions: $P_r^T=(\tilde{P}^T)^r$ for $r\in\{1,2,4\}$, where the lazy step retains half of the mass in place---the discrete analogue of a heat-semigroup step---and small $r$ preserves sharp local neighborhoods while larger $r$ captures multi-hop connectivity and community structure. Diffusion is computed sparsely, propagating mass through neighbor lists and truncating each row at every step. Rather than fixing a column budget and measuring the mass that falls off, the implementation fixes a single tolerance $\delta$ and keeps per row the smallest column set carrying $1-\delta$ of the mass. Such a truncation perturbs the row by exactly $\delta$ in total variation, and by Lemma~\ref{lem:truncation} the error is additive, so an $r$-step target is within $r\delta$ of the exact one. The same tolerance sizes the per-anchor candidate support, so every stored array width follows from $\delta$ rather than from a separate setting.
 
 \paragraph{Ambient scale ($r=0$).}
 Before any propagation, the teacher metric itself induces a distribution. Writing this small-time limit of the heat kernel in terms of cosine similarity gives
@@ -65,25 +44,9 @@ We write $\mathcal{R}=\{0,1,2,4\}$ for the full scale family.
 \subsection{Candidate Sets and Batch-Level Sharing}
 \label{sec:candidates}
 
-Distributions over the full corpus are intractable, so each anchor is scored against a candidate set whose induced error Proposition~\ref{prop:sampling} bounds,
-\begin{equation}
-    C_i=C_i^{+}\cup C_i^{h}\cup C_i^{r},
-\end{equation}
-combining high-probability diffusion neighbors $C_i^{+}$, teacher hard negatives $C_i^{h}$ mined from same-source nearest neighbors outside the graph, and random negatives $C_i^{r}$. Candidate sets are redrawn every epoch from precomputed pools, so the student is evaluated against fresh comparisons rather than repeatedly refitting one frozen sample. The graph target at scale $r\geq1$ is the diffusion mass restricted and renormalized over this set,
-\begin{equation}
-    p_{i,r}^{T}(j)
-    =
-    \frac{(P_r^T)_{ij}}
-    {\sum_{j'\in C_i}(P_r^T)_{ij'}},
-    \qquad j\in C_i,
-\end{equation}
-which expresses graded semantic relatedness rather than a binary positive--negative label.
+Distributions over the full corpus are intractable, so each anchor is scored against a candidate set $C_i=C_i^{+}\cup C_i^{h}\cup C_i^{r}$ whose induced error Proposition~\ref{prop:sampling} bounds, combining high-probability diffusion neighbors $C_i^{+}$, teacher hard negatives $C_i^{h}$ mined from same-source nearest neighbors outside the graph, and random negatives $C_i^{r}$. Candidate sets are redrawn every epoch from precomputed pools, so the student faces fresh comparisons rather than refitting one frozen sample. The graph target at scale $r\geq1$ is the diffusion row restricted and renormalized, $p^T_{i,r}=(P_r^T)_i\big|_{C_i}$, which expresses graded semantic relatedness rather than a binary positive--negative label.
 
-Within a mini-batch $B$, the candidate sets are pooled: every anchor is scored against
-\begin{equation}
-    \mathcal{P}_B=\bigcup_{i\in B}C_i,
-\end{equation}
-deduplicated by corpus index and with the anchor's own column removed. Since $\mathcal{P}_B$ is encoded once for the whole batch, this multiplies the comparisons available per anchor by roughly $|B|$ at unchanged encoding cost, and the shared columns couple anchors so that similarity levels become comparable across the batch --- the property that semantic textual similarity and a single global cosine threshold both depend on. The ambient scale is normalized over $\mathcal{P}_B$, where Eq.~\ref{eq:ambient} assigns teacher mass to every column, and the graph scales are normalized over $C_i$, the support on which the walk from anchor $i$ is defined.
+Within a mini-batch $B$, candidate sets are pooled into $\mathcal{P}_B=\bigcup_{i\in B}C_i$, deduplicated by corpus index and with the anchor's own column removed---so the $r=1$ target is exactly $P^T_i$ restricted to $C_i$, the lazy walk's self-mass being dropped with that column. Since $\mathcal{P}_B$ is encoded once for the whole batch, pooling multiplies the comparisons per anchor by roughly $|B|$ at unchanged encoding cost, and the shared columns couple anchors so that similarity levels become comparable across the batch---the property that semantic textual similarity and a single global cosine threshold both depend on. The ambient scale is normalized over $\mathcal{P}_B$, where Eq.~\ref{eq:ambient} assigns teacher mass to every column; the graph scales are normalized over $C_i$, the support on which the walk from anchor $i$ is defined.
 
 \subsection{Diffusion Objective}
 \label{sec:objective}
@@ -97,32 +60,18 @@ Let $s_i=S_{\theta}(x_i)$ be the student embedding of anchor $x_i$. At each scal
     {\sum_{j'\in\Omega_{i,r}}\exp\!\left(\cos(s_i,s_{j'})/\tau_r\right)},
     \qquad j\in\Omega_{i,r},
 \end{equation}
-and HeatGeo minimizes the weighted divergence to the teacher family,
-\begin{equation}
-    \label{eq:ldiff}
-    \mathcal{L}_{\mathrm{diff}}
-    =
-    \frac{1}{|B|}
-    \sum_{i\in B}
-    \sum_{r\in\mathcal{R}}
-    \omega_r
-    D_{\mathrm{KL}}
-    \left(
-        p_{i,r}^{T}\,\|\,p_{i,r}^{S}
-    \right),
-\end{equation}
-with $\omega_r$ normalized scale weights that emphasize the ambient and local scales.
+and HeatGeo minimizes $\mathcal{L}_{\mathrm{diff}}$, the weighted divergence of Eq.~\eqref{eq:ldiff-generic} to this teacher family, averaged over the batch, with $\omega_r$ normalized scale weights that emphasize the ambient and local scales.
 
 \paragraph{Resolution-dependent student distributions.}
-Eq.~\ref{eq:student} gives each scale its own temperature $\tau_r$, increasing with $r$ so that broader teacher targets are matched at a correspondingly smoother resolution. This is what makes the family informative rather than redundant: by Proposition~\ref{prop:collapse}, a shared student distribution reduces the multi-scale objective to a single-scale one against the mixture $\bar{p}^T_i$, so scales that differ only in the teacher would leave the gradient unchanged. Distinct $\tau_r$ break this equivalence. Matching the same similarities at several resolutions is over-determined, so the student must reproduce the teacher's cosine \emph{gaps} rather than only its ranking, which is precisely the information that graded similarity tasks measure.
+Eq.~\ref{eq:student} gives each scale its own temperature $\tau_r$, increasing with $r$ so that broader teacher targets are matched at a correspondingly smoother resolution. By Proposition~\ref{prop:collapse} this is what keeps the family informative: a shared student distribution reduces the objective to a single-scale one against the mixture $\bar{p}^T_i$, so scales that differ only in the teacher would leave the gradient unchanged. Matching the same similarities at several resolutions is over-determined, which forces the student to reproduce the teacher's cosine \emph{gaps} rather than only its ranking---the information graded similarity tasks measure.
 
 \paragraph{Tied and free temperatures.}
-Not every member of the ladder is a design choice. The sharpest graph scale's target is exactly the transition row --- the lazy walk at $r=1$ is $\tfrac12(I+P^T)$, whose off-diagonal part renormalizes to $P^T_i$, itself a softmax of teacher cosines at $\tau_g$ --- so by Proposition~\ref{prop:temptie} it must be matched at the graph temperature, $\tau_1=\tau_g$: at any other value the term's zeros are an affine rescaling of the teacher's cosines, incompatible with the ambient scale, and the objective acquires an artificial floor. The ambient scale likewise uses the single temperature $\tau_0$ on both the teacher (Eq.~\ref{eq:ambient}) and the student (Eq.~\ref{eq:student}) side, the same-temperature convention of knowledge distillation \citep{hinton2015distilling}. Both ties are enforced in the implementation rather than exposed as hyperparameters; together with $\tau_w=\tau_g$ in Section~\ref{sec:walk}, the only free temperatures are those of the broader scales, here $\tau_2$ and $\tau_4$.
+Not every member of the ladder is a design choice. The $r=1$ target is exactly the transition row: the lazy walk $\tfrac12(I+P^T)$ loses its self-mass when the anchor's own column is dropped from $C_i$, and renormalizes to $P^T_i$, itself a softmax of teacher cosines at the bandwidth $\tau_i$ of Eq.~\ref{eq:bandwidth}. Proposition~\ref{prop:temptie} therefore fixes $\tau_1(i)=\tau_i$, and likewise $\tau_w(j)=\tau_j$ at a walk-visited node $j$ (Section~\ref{sec:walk}); at any other value the term's zero set is an affine rescaling of the teacher's cosines, incompatible with the ambient scale, and the objective acquires an artificial floor. Since the proposition constrains only the tie and not the value, per-row bandwidths leave it---and the gauge argument that chains it along walk edges---untouched. The ambient scale uses $\tau_0$ on both the teacher (Eq.~\ref{eq:ambient}) and student (Eq.~\ref{eq:student}) side. All of these ties are enforced in the implementation rather than exposed as hyperparameters; the only free temperatures are $\tau_2$ and $\tau_4$.
 
 \subsection{Walk-Sampled Kernel Matching}
 \label{sec:walk}
 
-Every row of the teacher operator that Eq.~\ref{eq:ldiff} matches is indexed by an \emph{anchor}. The rows at the remaining corpus nodes are never supervised, even though a large number of them are already encoded: the pooled set $\mathcal{P}_B$ contains, on every step, several hundred non-anchor texts whose student embeddings are computed and then used only as columns. Walk-sampled kernel matching supervises those rows as well, at no additional encoding cost.
+Every row of the teacher operator that Eq.~\ref{eq:ldiff-generic} matches is indexed by an \emph{anchor}. The rows at the remaining corpus nodes are never supervised, even though a large number of them are already encoded: the pooled set $\mathcal{P}_B$ contains, on every step, several hundred non-anchor texts whose student embeddings are computed and then used only as columns. Walk-sampled kernel matching supervises those rows as well, at no additional encoding cost.
 
 \paragraph{Which rows.}
 From each anchor $i\in B$ we run $M$ random walks of length $L$ on the teacher transition matrix,
@@ -134,18 +83,15 @@ From each anchor $i\in B$ we run $M$ random walks of length $L$ on the teacher t
     \qquad
     t=0,\dots,L-1,
 \end{equation}
-and take the nodes visited at steps $t\geq1$ as the rows to supervise. Writing $\nu_B$ for the normalized visit counts over the batch --- the walk's occupancy measure, restricted to nodes present in $\mathcal{P}_B$ --- the walk selects rows in proportion to how much diffusion mass reaches them from the batch's anchors, which is the same principle that selects columns in Section~\ref{sec:candidates}. Visited nodes not already in $C_i$ replace random negatives, so the pooled set covers the walk without enlarging it.
+and take the nodes visited at steps $t\geq1$ as the rows to supervise; step $0$ is the anchor, whose row is already the $r=1$ target of Section~\ref{sec:objective}. Writing $\nu_B$ for the normalized visit counts over the batch---the walk's occupancy measure, restricted to nodes present in $\mathcal{P}_B$---the walk selects rows in proportion to how much diffusion mass reaches them from the batch's anchors, the same principle that selects columns in Section~\ref{sec:candidates}. Visited nodes not already in $C_i$ replace random negatives, so the pooled set covers the walk without enlarging it.
+
+The walk is non-backtracking: the step at $t+1$ is drawn from $P^T_{j_t}$ conditioned on $j_{t+1}\neq j_{t-1}$, except at a node of degree one. Since rows are weighted by visit count, an immediate return spends the walk budget re-supervising a row already seen; forbidding it raises the number of distinct rows a walk of given length reaches, and non-backtracking walks also mix and cover faster on graphs of bounded degree \citep{alon2007nonbacktracking}. The constraint changes only which rows are chosen, never a target, and leaves Proposition~\ref{prop:walkgauge} unaffected, since a repeated edge contributes no new constraint.
 
 \paragraph{Which columns.}
-For a visited node $j$ the column set is the teacher's own support for that row, intersected with what the batch holds,
-\begin{equation}
-    \label{eq:walkcols}
-    \Omega^{w}_{j}=\mathcal{P}_B\cap\mathcal{M}_k^{T}(j),
-\end{equation}
-and the teacher target is the transition row restricted to it, $P^{T}_{j}\big|_{\Omega^{w}_{j}}$. Restricting to $\mathcal{M}_k^{T}(j)$ rather than to all of $\mathcal{P}_B$ is what keeps the term compatible with Section~\ref{sec:candidates}: on $\Omega^w_j$ every column carries teacher mass, so no column receives a target of zero for the accidental reason that it was drawn for a different anchor. A hard negative, in particular, is by construction a high-similarity pair excluded from the mutual-$k$NN graph, so it can never enter $\Omega^w_j$ and is never pushed apart by this term.
+For a visited node $j$ the column set is the teacher's own support for that row intersected with what the batch holds, $\Omega^{w}_{j}=\mathcal{P}_B\cap\mathcal{M}_k^{T}(j)$, and the teacher target is $P^{T}_{j}\big|_{\Omega^{w}_{j}}$. Restricting to $\mathcal{M}_k^{T}(j)$ rather than to all of $\mathcal{P}_B$ keeps the term compatible with Section~\ref{sec:candidates}: every column of $\Omega^w_j$ carries teacher mass, so none receives a target of zero for the accidental reason that it was drawn for a different anchor. A hard negative, being by construction a high-similarity pair excluded from the mutual-$k$NN graph, can never enter $\Omega^w_j$ and is never pushed apart by this term.
 
 \paragraph{The objective.}
-With student distributions $p^{S}_{w,j}(j')\propto\exp\big(\cos(s_j,s_{j'})/\tau_w\big)$ on $\Omega^{w}_{j}$,
+With student distributions $p^{S}_{w,j}(j')\propto\exp\big(\cos(s_j,s_{j'})/\tau_w(j)\big)$ on $\Omega^{w}_{j}$,
 \begin{equation}
     \label{eq:lwalk}
     \mathcal{L}_{\mathrm{walk}}
@@ -159,15 +105,12 @@ With student distributions $p^{S}_{w,j}(j')\propto\exp\big(\cos(s_j,s_{j'})/\tau
         p^{S}_{w,j}
     \right),
     \qquad
-    \tau_w=\tau_g,
+    \tau_w(j)=\tau_j,
 \end{equation}
-where tying the student temperature to the graph temperature makes the teacher target exactly attainable: $P^T_j$ is itself a softmax of teacher cosines at $\tau_g$, so Eq.~\ref{eq:lwalk} has an infimum of $0$ reached precisely when student and teacher cosines agree on $\Omega^w_j$ up to a constant --- the walk-row instance of Proposition~\ref{prop:temptie}, and a tie the implementation enforces rather than exposes. The term is therefore on the same scale as Eq.~\ref{eq:ldiff}, and $\lambda$ below trades off two divergences rather than converting units.
+where tying the student temperature at a visited row to that row's own bandwidth makes the teacher target exactly attainable: $P^T_j$ is itself a softmax of teacher cosines at $\tau_j$, so Eq.~\ref{eq:lwalk} has an infimum of $0$ reached precisely when student and teacher cosines agree on $\Omega^w_j$ up to a constant --- the walk-row instance of Proposition~\ref{prop:temptie}, and a tie the implementation enforces rather than exposes. The term is therefore on the same scale as Eq.~\ref{eq:ldiff-generic}, and $\lambda$ below trades off two divergences rather than converting units.
 
-\paragraph{Dense targets rather than sampled successors.}
-A natural alternative scores the sampled transitions themselves, $-\log p^{S}(j_{t+1}\mid j_{t})$ summed along each path. Because the walk is first-order and each step is scored on the teacher's own $j_t$, that path likelihood factorizes into independent one-step terms, and its expectation over the walk is exactly Eq.~\ref{eq:lwalk}. The sampled form is thus an unbiased but high-variance estimator of the dense one; since $P^{T}_{j}$ is already materialized during graph construction, we use the dense form and pay no variance. It also fixes what the term does and does not claim: it matches one-step kernels at walk-visited rows, and nothing in it couples two consecutive steps.
-
-\paragraph{Why step $0$ is dropped.}
-The walk starts at the anchor, but the anchor's row is already supervised: the lazy walk at $r=1$ is $\tfrac12(I+P^T)$, whose off-diagonal part renormalizes to exactly $P^{T}_{i}$. Supervising step $0$ would distil the $r=1$ target a second time, so only $t\geq1$ contributes.
+\paragraph{Dense rather than sampled targets.}
+A natural alternative scores the sampled transitions themselves, $-\log p^{S}(j_{t+1}\mid j_{t})$ summed along each path. The walk is first-order and each step is scored on the teacher's own $j_t$, so that path likelihood factorizes into one-step terms whose expectation over the walk is exactly Eq.~\ref{eq:lwalk}: the sampled form is an unbiased but higher-variance estimator of the dense one. Since $P^{T}_{j}$ is already materialized during graph construction, we use the dense form. Nothing in the term couples two consecutive steps.
 
 \paragraph{Full objective.}
 \begin{equation}
@@ -179,6 +122,4 @@ The walk starts at the anchor, but the anchor's row is already supervised: the l
     \lambda\,\mathcal{L}_{\mathrm{walk}}
     }
 \end{equation}
-Beyond its role as extra supervision, the walk term removes most of the gauge freedom that Proposition~\ref{prop:gauge} identifies. Each traversed edge constrains two rows that contain each other as columns, and cosine symmetry then forces their similarity offsets to agree; chaining along the walk propagates the identification through the graph, leaving one offset per connected component instead of one per anchor (Proposition~\ref{prop:walkgauge}). This is the sense in which the trajectory, and not merely the set of visited nodes, does work: it is the path that links the constraints.
-
-Training therefore requires only cached teacher embeddings. HeatGeo uses no teacher hidden states, no online teacher forward pass, no task labels, no contrastive or layer-alignment objective, and no change to the student architecture.
+Beyond supplying extra supervision, the walk term removes most of the gauge freedom of Proposition~\ref{prop:gauge}: each traversed edge constrains two rows that contain each other as columns, cosine symmetry forces their offsets to agree, and chaining along the path leaves one offset per connected component instead of one per anchor (Proposition~\ref{prop:walkgauge}). Training requires only cached teacher embeddings---no teacher hidden states, no online teacher pass, no task labels, no contrastive or layer-alignment term, and no change to the student architecture.

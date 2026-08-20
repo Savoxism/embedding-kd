@@ -15,9 +15,9 @@ Within an epoch the corpus is partitioned uniformly at random into batches of si
 \subsection{Proof of Proposition~\ref{prop:bias} (bias of in-batch targets) and the margin condition}
 \label{app:proof-bias}
 
-Condition on the event $E_0=\{\mathcal{B}\cap\mathcal{N}_k(i)=\emptyset\}$. On $E_0$ the in-batch target $p^{T,\mathcal{B}}_i$ is supported on $\mathcal{B}\setminus\{i\}\subseteq\mathcal{D}\setminus\mathcal{N}_k(i)$, hence assigns mass $0$ to $\mathcal{N}_k(i)$, while $p_{i,0}(\mathcal{N}_k(i))\geq1-\eta$ by Assumption~\ref{asm:conc}. Since $\mathrm{TV}(p,q)\geq|p(A)-q(A)|$ for any event $A$, taking $A=\mathcal{N}_k(i)$ gives $\mathrm{TV}(p^{T,\mathcal{B}}_i,p_{i,0})\geq1-\eta$ on $E_0$. Therefore
+Condition on the event $E_0=\{\mathcal{B}\cap\mathcal{N}_k(i)=\emptyset\}$. On $E_0$ the in-batch target $p^{T,\mathcal{B}}_i$ is supported on $\mathcal{B}\setminus\{i\}\subseteq\mathcal{D}\setminus\mathcal{N}_k(i)$, hence assigns mass $0$ to $\mathcal{N}_k(i)$, while $p^T_{i,0}(\mathcal{N}_k(i))\geq1-\eta$ by Assumption~\ref{asm:conc}. Since $\mathrm{TV}(p,q)\geq|p(A)-q(A)|$ for any event $A$, taking $A=\mathcal{N}_k(i)$ gives $\mathrm{TV}(p^{T,\mathcal{B}}_i,p^T_{i,0})\geq1-\eta$ on $E_0$. Therefore
 \begin{equation}
-    \mathbb{E}_{\mathcal{B}}\big[\mathrm{TV}\big(p^{T,\mathcal{B}}_i,p_{i,0}\big)\big]
+    \mathbb{E}_{\mathcal{B}}\big[\mathrm{TV}\big(p^{T,\mathcal{B}}_i,p^T_{i,0}\big)\big]
     \geq (1-\eta)\Pr[E_0]
     \geq (1-\eta)\Big(1-\tfrac{(B-1)k}{N-1}\Big),
 \end{equation}
@@ -26,7 +26,7 @@ using Proposition~\ref{prop:coverage}(ii). \qed
 \paragraph{Margin condition for Assumption~\ref{asm:conc}.}
 Suppose $\min_{j\in\mathcal{N}_k(i)}c^T_{ij}\geq\max_{j\notin\mathcal{N}_k(i)\cup\{i\}}c^T_{ij}+\Delta$. Each non-neighbor's unnormalized weight is at most $e^{-\Delta/\tau_0}$ times each neighbor's, so
 \begin{equation}
-    \frac{p_{i,0}(\mathcal{D}\setminus\mathcal{N}_k(i))}{p_{i,0}(\mathcal{N}_k(i))}
+    \frac{p^T_{i,0}(\mathcal{D}\setminus\mathcal{N}_k(i))}{p^T_{i,0}(\mathcal{N}_k(i))}
     \leq \frac{(N-1-k)\,e^{-\Delta/\tau_0}}{k},
 \end{equation}
 and $\eta\leq(N/k)e^{-\Delta/\tau_0}$, which is at most a prescribed $\eta$ whenever $\tau_0\leq\Delta/\log\!\big(N/(k\eta)\big)$.
@@ -79,7 +79,7 @@ The bound above controls the student's mass on the negative columns actually dra
 \subsection{Proof of Theorem~\ref{thm:global} (local-to-global transfer)}
 \label{app:proof-global}
 
-Fix an anchor $i$. Pinsker's inequality applied to the restricted divergence gives $\mathrm{TV}(p_{i,1}|_{C_i},q_{i,1})\leq\sqrt{\varepsilon/2}$. Lemma~\ref{lem:restrict} with $p=p_{i,1}$, $q$ the student's full row, and $C=C_i$ then bounds the full one-step rows:
+Fix an anchor $i$. Pinsker's inequality applied to the restricted divergence gives $\mathrm{TV}(p^T_{i,1}|_{C_i},p^S_{i,1})\leq\sqrt{\varepsilon/2}$. Lemma~\ref{lem:restrict} with $p=p^T_{i,1}$, $q$ the student's full row, and $C=C_i$ then bounds the full one-step rows:
 \begin{equation}
     \mathrm{TV}\big(P^{T}_i,\,P^{S}_i\big)
     \leq \sqrt{\varepsilon/2}+\delta_T+\delta_S
@@ -91,7 +91,7 @@ $\max_i\mathrm{TV}\big(\delta_i^{\top}(\tilde{P}^{T})^{r},\delta_i^{\top}(\tilde
 Corollary~\ref{cor:multiscale} is the same argument applied directly to the scale-$r$ family: Pinsker plus Lemma~\ref{lem:restrict} bound the $r$-step rows without invoking Lemma~\ref{lem:perturb}, so no factor of $r$ appears.
 
 \begin{remark}[Average-case variant]
-Training controls the divergence averaged over anchors rather than its maximum. By Jensen's inequality, $\frac1N\sum_i\mathrm{TV}(p_{i,1}|_{C_i},q_{i,1})\leq\sqrt{\bar{\varepsilon}/2}$ with $\bar{\varepsilon}$ the average restricted divergence, and the telescoping argument of Lemma~\ref{lem:perturb} can be carried out under any fixed initial distribution over anchors, giving the same bounds for anchor-averaged errors.
+Training controls the divergence averaged over anchors rather than its maximum. By Jensen's inequality, $\frac1N\sum_i\mathrm{TV}(p^T_{i,1}|_{C_i},p^S_{i,1})\leq\sqrt{\bar{\varepsilon}/2}$ with $\bar{\varepsilon}$ the average restricted divergence, and the telescoping argument of Lemma~\ref{lem:perturb} can be carried out under any fixed initial distribution over anchors, giving the same bounds for anchor-averaged errors.
 \end{remark}
 
 \subsection{Proof of Proposition~\ref{prop:collapse} (collapse)}
@@ -104,6 +104,32 @@ With one shared student distribution $p^S_i$,
     =H\Big(\textstyle\sum_r\omega_r p^T_{i,r},\,p^S_i\Big)-\sum_{r}\omega_r H\big(p^T_{i,r}\big),
 \end{equation}
 using that cross-entropy $H(p,q)=-\sum_j p_j\log q_j$ is linear in its first argument and $\sum_r\omega_r=1$. The subtracted entropy term does not depend on the student. \qed
+
+\subsection{Proof of Proposition~\ref{prop:bandwidth} (entropic bandwidth)}
+\label{app:proof-bandwidth}
+
+Write $\beta=1/\tau$ and $p_j(\beta)\propto\exp(\beta c_j)$ on the $d\geq2$ neighbor scores $c=c^T_{i\cdot}$, with $Z(\beta)=\sum_j e^{\beta c_j}$.
+
+(i) Since $\log p_j=\beta c_j-\log Z(\beta)$,
+\begin{equation}
+    H(\beta)=-\sum_j p_j\log p_j=\log Z(\beta)-\beta\,\mathbb{E}_p[c].
+\end{equation}
+The cumulant identities $\frac{d}{d\beta}\log Z=\mathbb{E}_p[c]$ and $\frac{d}{d\beta}\mathbb{E}_p[c]=\mathrm{Var}_p(c)$ give
+\begin{equation}
+    \label{eq:dHdbeta}
+    \frac{dH}{d\beta}
+    =\mathbb{E}_p[c]-\mathbb{E}_p[c]-\beta\,\mathrm{Var}_p(c)
+    =-\beta\,\mathrm{Var}_p(c)\;<\;0
+    \qquad(\beta>0),
+\end{equation}
+strictly, because the scores are not all equal and $p$ has full support, so $\mathrm{Var}_p(c)>0$. Hence $H$ is continuous and strictly decreasing in $\beta$, i.e.\ strictly increasing in $\tau$. At $\beta\to\infty$ the distribution concentrates on the maximizing scores and $H\to\log(\#\arg\max)$, which is $0$ when the maximizer is unique; at $\beta\to0$ it tends to the uniform distribution and $H\to\log d$. A continuous strictly monotone function attains every value strictly between its limits exactly once, so any target $H^\star=\log\rho_g$ with $\rho_g\in(1,d)$ has a unique root, and bisection on $\beta$ converges to it.
+
+(ii) Replace $c$ by $ac+b$ with $a>0$ and take $\tau'=a\tau$. Then
+\begin{equation}
+    \exp\!\Big(\frac{a c_j+b}{a\tau}\Big)
+    =e^{b/(a\tau)}\exp\!\Big(\frac{c_j}{\tau}\Big),
+\end{equation}
+and the factor $e^{b/(a\tau)}$ is common to all $j$, so it cancels in the normalization: the row at $\tau'$ on the rescaled scores equals the row at $\tau$ on the original ones, and in particular has the same entropy. Uniqueness from (i) then forces the solution for the rescaled scores to be exactly $a\tau_i$, and the resulting row to be $P^T_i$ unchanged. If instead the temperature is held at a fixed $\tau_g$, the row becomes $\mathrm{softmax}(a\,c/\tau_g)$, which equals $\mathrm{softmax}(c/\tau_g)$ for all non-constant $c$ only if $a=1$. \qed
 
 \subsection{Proof of Proposition~\ref{prop:temptie} (temperature ties)}
 \label{app:proof-temptie}
@@ -154,7 +180,7 @@ The identity $\mathrm{TV}(p|_C,p)=p(\bar{C})$ follows from the first display abo
     \mathbb{E}\big[p(\bar{C})\big]
     =\sum_j p_j\,(1-p_j)^m .
 \end{equation}
-Fix $t>0$ and split the sum: atoms with $p_j\geq t$ contribute at most $(1-t)^m\sum_j p_j\leq e^{-tm}$, and atoms with $p_j<t$ contribute at most $\mathrm{Tail}_p(t)$. Minimizing over $t$ gives the bound. If every atom of the effective support carries mass at least $c/\rho$, take $t=c/\rho$: the tail term vanishes and the bound is $e^{-cm/\rho}$. \qed
+Fix $t>0$ and split the sum: atoms with $p_j\geq t$ contribute at most $(1-t)^m\sum_j p_j\leq e^{-tm}$, and atoms with $p_j<t$ contribute at most $\mathrm{Tail}_p(t)$. Minimizing over $t$ gives the bound. If every atom in the support of $p$ carries mass at least $c/\rho$, take $t=c/\rho$: no atom falls below $t$, the tail term vanishes, and the bound is $e^{-cm/\rho}$. \qed
 
 \begin{remark}[Sampling without replacement]
 The implementation draws candidates by Gumbel top-$k$, which realizes weighted sampling without replacement~\citep{efraimidis2006weighted,kool2019stochastic}. Draws are distinct, so after $m$ draws the covered mass is at least that of $m$ independent draws in the natural coupling that re-draws duplicates; the bound of Proposition~\ref{prop:sampling} therefore remains valid.
@@ -170,13 +196,13 @@ For any temperature $\tau$ and column set $\Omega$, $\mathrm{softmax}\big((c_i+a
 Suppose the ambient-scale term vanishes for anchor $i$ on the column set $\Omega$, $|\Omega|\geq2$: then $\mathrm{softmax}(c^S_i/\tau_0)=\mathrm{softmax}(c^T_i/\tau_0)$ on $\Omega$. Taking log-ratios of any two columns $j,j'\in\Omega$,
 \begin{equation}
     \frac{c^S_{ij}-c^S_{ij'}}{\tau_0}
-    =\log\frac{p_{i,0}(j)}{p_{i,0}(j')}
+    =\log\frac{p^T_{i,0}(j)}{p^T_{i,0}(j')}
     =\frac{c^T_{ij}-c^T_{ij'}}{\tau_0},
 \end{equation}
 so $c^S_{ij}-c^T_{ij}$ is constant in $j$ on $\Omega$; call it $a_i$. This proves Proposition~\ref{prop:gauge}.
 
 \paragraph{Walk rows carry the same form of constraint.}
-The teacher's transition row is itself a softmax of teacher cosines at the graph temperature, $P^T_j(j')\propto\exp(c^T_{jj'}/\tau_g)$ on $\mathcal{M}_k^T(j)$, and restricting a softmax to a subset and renormalizing is the softmax over that subset. Hence $P^T_j|_{\Omega^w_j}=\mathrm{softmax}_{\Omega^w_j}(c^T_{j\cdot}/\tau_g)$, and the walk term of Eq.~\ref{eq:lwalk} vanishes at $j$ exactly when $\mathrm{softmax}_{\Omega^w_j}(c^S_{j\cdot}/\tau_w)=\mathrm{softmax}_{\Omega^w_j}(c^T_{j\cdot}/\tau_g)$. With $\tau_w=\tau_g$ the log-ratio argument above applies verbatim on $\Omega^w_j$, giving $c^S_{jv}=c^T_{jv}+a_j$ for all $v\in\Omega^w_j$.
+The teacher's transition row is itself a softmax of teacher cosines at that row's bandwidth, $P^T_j(j')\propto\exp(c^T_{jj'}/\tau_j)$ on $\mathcal{M}_k^T(j)$, and restricting a softmax to a subset and renormalizing is the softmax over that subset. Hence $P^T_j|_{\Omega^w_j}=\mathrm{softmax}_{\Omega^w_j}(c^T_{j\cdot}/\tau_j)$, and the walk term of Eq.~\ref{eq:lwalk} vanishes at $j$ exactly when $\mathrm{softmax}_{\Omega^w_j}(c^S_{j\cdot}/\tau_w(j))=\mathrm{softmax}_{\Omega^w_j}(c^T_{j\cdot}/\tau_j)$. With $\tau_w(j)=\tau_j$ the log-ratio argument above applies verbatim on $\Omega^w_j$ --- the common temperature cancels from both sides of the ratio, so its value is immaterial and only the tie matters --- giving $c^S_{jv}=c^T_{jv}+a_j$ for all $v\in\Omega^w_j$. The argument is thus unchanged whether the bandwidths are shared or solved per row.
 
 \paragraph{Symmetry closes the gauge along edges.}
 Every supervised row $u\in\mathcal{S}$ therefore satisfies $c^S_{uv}=c^T_{uv}+a_u$ on $\Omega_u$, whether it was supervised by the ambient term or by the walk term. Let $\{u,v\}$ be an edge of the constraint graph of Definition~\ref{def:constraint}, so $v\in\Omega_u$ and $u\in\Omega_v$. Applying the identity in both directions,
