@@ -35,7 +35,11 @@ except ImportError:
     print(
         "Warning: pytorch_optimizer not installed. SAM optimizer unavailable for TALAS."
     )
-from src.cache_teacher import cache_teacher_embeddings, load_cached_embeddings
+from src.cache_teacher import (
+    cache_teacher_embeddings,
+    load_cached_embeddings,
+    validate_cached_embeddings,
+)
 from src.criterions.contextual_dynamic_mapping import ContextualDynamicMapping
 from src.criterions.dual_space_kd import DualSpaceKD
 from src.criterions.emo_embedding_distillation import EMODistillation
@@ -364,15 +368,22 @@ class KnowledgeDistiller:
 
         print("Loading tokenizers...")
         tokenizer_kwargs = {"use_fast": True}
+        self._talas_cache_ready = (
+            cfg.distill_method == "talas" and Path(cfg.cache_path).is_file()
+        )
         self.tok_student = AutoTokenizer.from_pretrained(
             cfg.student_model_name,
             **tokenizer_kwargs,
         )
-        self.tok_teacher = AutoTokenizer.from_pretrained(
-            cfg.teacher_model_name,
-            trust_remote_code=True,
-            **tokenizer_kwargs,
-        )
+        if self._talas_cache_ready:
+            self.tok_teacher = None
+            print("TALAS teacher cache found; skipping teacher tokenizer/model loading")
+        else:
+            self.tok_teacher = AutoTokenizer.from_pretrained(
+                cfg.teacher_model_name,
+                trust_remote_code=True,
+                **tokenizer_kwargs,
+            )
         if cfg.distill_method == "stella":
             print(f"Loading Stella student model: {cfg.student_model_name}")
             self.model_student = StellaModel(
@@ -412,34 +423,40 @@ class KnowledgeDistiller:
                 **student_kwargs,
             )
 
-        print(f"Loading teacher model: {cfg.teacher_model_name}")
-        teacher_kwargs = {"trust_remote_code": True}
-        if cfg.teacher_dtype == "bfloat16":
-            teacher_kwargs["torch_dtype"] = torch.bfloat16
-        elif cfg.teacher_dtype == "float16":
-            teacher_kwargs["torch_dtype"] = torch.float16
+        if self._talas_cache_ready:
+            self.model_teacher = None
+        else:
+            print(f"Loading teacher model: {cfg.teacher_model_name}")
+            teacher_kwargs = {"trust_remote_code": True}
+            if cfg.teacher_dtype == "bfloat16":
+                teacher_kwargs["torch_dtype"] = torch.bfloat16
+            elif cfg.teacher_dtype == "float16":
+                teacher_kwargs["torch_dtype"] = torch.float16
 
-        # EMO method needs attentions, force eager attention implementation
-        if cfg.distill_method == "emo":
-            teacher_kwargs["attn_implementation"] = "eager"
-            print(
-                "Using eager attention implementation for EMO (required for output_attentions)"
+            # EMO method needs attentions, force eager attention implementation
+            if cfg.distill_method == "emo":
+                teacher_kwargs["attn_implementation"] = "eager"
+                print(
+                    "Using eager attention implementation for EMO "
+                    "(required for output_attentions)"
+                )
+
+            self.model_teacher = AutoModel.from_pretrained(
+                cfg.teacher_model_name, **teacher_kwargs
             )
 
-        self.model_teacher = AutoModel.from_pretrained(
-            cfg.teacher_model_name, **teacher_kwargs
-        )
-
         self.model_student.to(self.device_s)
-        self.model_teacher.to(self.device_t)
+        if self.model_teacher is not None:
+            self.model_teacher.to(self.device_t)
 
         student_dtype = next(self.model_student.parameters()).dtype
         print(f"Student training dtype: {student_dtype}")
         assert_module_parameters_finite(self.model_student, "Student model after load")
 
-        self.model_teacher.eval()
-        for p in self.model_teacher.parameters():
-            p.requires_grad_(False)
+        if self.model_teacher is not None:
+            self.model_teacher.eval()
+            for p in self.model_teacher.parameters():
+                p.requires_grad_(False)
 
         print("Models loaded successfully!")
         print("Done setup_models")
@@ -621,6 +638,13 @@ class KnowledgeDistiller:
                     f"Cached teacher embeddings length mismatch: cache has {len(teacher_cls_list)} "
                     f"rows but training data has {len(df)} rows. Remove or regenerate {cache_path}."
                 )
+
+            validate_cached_embeddings(
+                teacher_cls_list,
+                len(df),
+                cache_path=str(cache_path),
+                require_single_layer=cfg.distill_method == "talas",
+            )
 
             self.teacher_cls_all = teacher_cls_list
 
@@ -1104,7 +1128,8 @@ class KnowledgeDistiller:
                             },
                             {
                                 "params": self.criterion.parameters(),
-                                "lr": cfg.learning_rate * 5,
+                                "lr": cfg.learning_rate,
+                                "weight_decay": 0.01,
                             },
                         ],
                         base_optimizer,
@@ -1219,6 +1244,11 @@ class KnowledgeDistiller:
 
             # SAM second step
             self.optimizer.second_step(zero_grad=True)
+            # `second_step()` performs the wrapped AdamW update directly, so
+            # PyTorch's scheduler wrapper never observes an `optimizer.step()` call.
+            # Mark the real update before advancing the schedule; otherwise it emits
+            # a false "scheduler before optimizer" warning on the first TALAS step.
+            self.optimizer._opt_called = True
             self.scaler.update()
             self.scheduler.step()
 

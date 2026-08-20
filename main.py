@@ -7,7 +7,9 @@ from config import (
     EMOConfig,
     HeatGeoConfig,
     StellaConfig,
+    TALAS_PAPER_PAIRS,
     TALASConfig,
+    get_talas_paper_pair,
 )
 from distiller import KnowledgeDistiller
 
@@ -59,6 +61,12 @@ def parse_args():
         type=str,
         default=None,
         help='Teacher model name or path'
+    )
+    parser.add_argument(
+        '--talas_pair',
+        choices=sorted(TALAS_PAPER_PAIRS),
+        default=None,
+        help='Canonical TALAS teacher-student pair from the paper',
     )
     
     parser.add_argument(
@@ -154,6 +162,11 @@ def parse_args():
         action='store_true',
         help='Save only the final student state dict, not training checkpoints',
     )
+    parser.add_argument(
+        '--prepare_cache_only',
+        action='store_true',
+        help='Prepare and validate a TALAS teacher cache, then exit before training',
+    )
     
     parser.add_argument(
         '--seed',
@@ -215,6 +228,15 @@ def get_config(method: str, args):
         config = HeatGeoConfig()
     else:
         config = BaseConfig()
+
+    if args.talas_pair is not None:
+        if method != 'talas':
+            raise ValueError('--talas_pair is supported only with --method talas')
+        preset = get_talas_paper_pair(args.talas_pair)
+        config.paper_pair = args.talas_pair
+        config.teacher_model_name = preset['teacher']
+        config.student_model_name = preset['student']
+        config.pooling_method = preset['pooling_method']
     
     if args.train_data is not None:
         config.train_data_path = args.train_data
@@ -297,6 +319,9 @@ def get_config(method: str, args):
 
 def main():
     args = parse_args()
+
+    if args.prepare_cache_only and args.method != 'talas':
+        raise SystemExit('--prepare_cache_only is supported only with --method talas')
     
     config = get_config(args.method, args)
     
@@ -314,6 +339,10 @@ def main():
         import traceback
         traceback.print_exc()
         sys.exit(1)
+
+    if args.prepare_cache_only:
+        print(f"TALAS teacher cache prepared and validated: {config.cache_path}")
+        return
     
     try:
         distiller.train()

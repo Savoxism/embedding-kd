@@ -118,6 +118,41 @@ def load_cached_embeddings(cache_path: str) -> torch.Tensor:
     return embeddings
 
 
+def validate_cached_embeddings(
+    embeddings: torch.Tensor,
+    expected_rows: int,
+    *,
+    cache_path: str = "<memory>",
+    require_single_layer: bool = False,
+) -> torch.Tensor:
+    """Reject partial, stale, or numerically invalid teacher-cache tensors."""
+    if not torch.is_tensor(embeddings):
+        raise TypeError(
+            f"Teacher cache {cache_path} must contain a tensor, got "
+            f"{type(embeddings).__name__}"
+        )
+    allowed_dims = (2,) if require_single_layer else (2, 3)
+    if embeddings.ndim not in allowed_dims:
+        raise ValueError(
+            f"Teacher cache {cache_path} has shape {tuple(embeddings.shape)}; "
+            f"expected {'[N, D]' if require_single_layer else '[N, D] or [N, L, D]'}"
+        )
+    if embeddings.shape[0] != expected_rows:
+        raise ValueError(
+            f"Teacher cache {cache_path} row mismatch: cache has "
+            f"{embeddings.shape[0]} rows, data has {expected_rows}"
+        )
+    if embeddings.shape[-1] <= 0:
+        raise ValueError(f"Teacher cache {cache_path} has an empty embedding dimension")
+    if not embeddings.is_floating_point():
+        raise TypeError(
+            f"Teacher cache {cache_path} must be floating point, got {embeddings.dtype}"
+        )
+    if not bool(torch.isfinite(embeddings).all().item()):
+        raise ValueError(f"Teacher cache {cache_path} contains NaN or Inf")
+    return embeddings
+
+
 def clear_cache_and_free_memory():
     import gc
     torch.cuda.empty_cache()

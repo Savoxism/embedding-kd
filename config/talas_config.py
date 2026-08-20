@@ -1,12 +1,44 @@
 from .base_config import BaseConfig
 
 
+DEFAULT_TALAS_PAIR = "qwen3_0_6b_to_minilmv2_h384"
+
+TALAS_PAPER_PAIRS = {
+    DEFAULT_TALAS_PAIR: {
+        "teacher": "Qwen/Qwen3-Embedding-0.6B",
+        "student": "nreimers/MiniLMv2-L6-H384-distilled-from-BERT-Large",
+        "pooling_method": "last_token",
+    },
+    "bge_m3_to_minilmv2_h768": {
+        "teacher": "BAAI/bge-m3",
+        "student": "nreimers/MiniLMv2-L6-H768-distilled-from-BERT-Large",
+        "pooling_method": "cls",
+    },
+    "qwen3_4b_to_bert_base": {
+        "teacher": "Qwen/Qwen3-Embedding-4B",
+        "student": "google-bert/bert-base-uncased",
+        "pooling_method": "last_token",
+    },
+}
+
+
+def get_talas_paper_pair(pair_key: str) -> dict[str, str]:
+    try:
+        return dict(TALAS_PAPER_PAIRS[pair_key])
+    except KeyError as exc:
+        choices = ", ".join(sorted(TALAS_PAPER_PAIRS))
+        raise ValueError(
+            f"Unknown TALAS paper pair {pair_key!r}; expected one of: {choices}"
+        ) from exc
+
+
 class TALASConfig(BaseConfig):
     
     distill_method = "talas"
     
-    student_model_name = "bert-base-uncased"
-    teacher_model_name = "Qwen/Qwen3-Embedding-0.6B"
+    paper_pair = DEFAULT_TALAS_PAIR
+    student_model_name = TALAS_PAPER_PAIRS[paper_pair]["student"]
+    teacher_model_name = TALAS_PAPER_PAIRS[paper_pair]["teacher"]
     teacher_dtype = "bfloat16"
     
     student_special_token = "##"
@@ -27,8 +59,8 @@ class TALASConfig(BaseConfig):
     min_lr = 2e-6
     
     cache_teacher = True
-    cache_path = "cache/teacher_train.pt"
-    pooling_method = "last_token"
+    cache_path = f"cache/talas/{paper_pair}/teacher_train.pt"
+    pooling_method = TALAS_PAPER_PAIRS[paper_pair]["pooling_method"]
     normalize_cache = True  
     cache_dtype = "float32"
     

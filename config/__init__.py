@@ -3,7 +3,12 @@ from .cdm_config import CDMConfig
 from .dskd_config import DSKDConfig
 from .emo_config import EMOConfig
 from .stella_config import StellaConfig
-from .talas_config import TALASConfig
+from .talas_config import (
+    DEFAULT_TALAS_PAIR,
+    TALAS_PAPER_PAIRS,
+    TALASConfig,
+    get_talas_paper_pair,
+)
 from .heatgeo_config import HeatGeoConfig
 
 __all__ = [
@@ -13,5 +18,8 @@ __all__ = [
     'EMOConfig',
     'StellaConfig',
     'TALASConfig',
+    'DEFAULT_TALAS_PAIR',
+    'TALAS_PAPER_PAIRS',
+    'get_talas_paper_pair',
     'HeatGeoConfig'
 ]
