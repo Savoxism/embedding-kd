@@ -16,9 +16,7 @@ def _normalized_weights(scale_weights: Sequence[float], n_scales: int) -> np.nda
     return weights / max(float(weights.sum()), 1e-12)
 
 
-def _gumbel_topk(
-    probs: np.ndarray, k: int, rng: np.random.Generator
-) -> np.ndarray:
+def _gumbel_topk(probs: np.ndarray, k: int, rng: np.random.Generator) -> np.ndarray:
     """Weighted sampling without replacement (Gumbel top-k / Efraimidis-Spirakis).
 
     Returns positions into `probs`. O(n log k) with no rejection loop, which matters
@@ -91,7 +89,10 @@ class HeatGeoCandidateSampler:
         self.walk_length = int(walk_length)
         self.walk_non_backtracking = bool(walk_non_backtracking)
         if self.num_walks > 0:
-            if "transition_neighbors" not in artifact or "transition_probs" not in artifact:
+            if (
+                "transition_neighbors" not in artifact
+                or "transition_probs" not in artifact
+            ):
                 raise ValueError(
                     "Walk sampling requires transition_neighbors and transition_probs "
                     "in the artifact. Rebuild the graph cache with the updated graph_builder."
@@ -105,9 +106,19 @@ class HeatGeoCandidateSampler:
     def set_epoch(self, epoch: int) -> None:
         self.epoch = int(epoch)
 
-    def _rng(self, idx: int) -> np.random.Generator:
+    # Distinct streams for the two draws an item makes. `sample_with_walks` used to
+    # call `_rng(idx)` for the walks and then `sample(idx)` re-derived a generator
+    # from the same SeedSequence, so both consumed the *same* numbers: the walk's
+    # first `choice` and the diffusion draw's first Gumbel key were one draw seen
+    # twice, and the trajectory and the candidate set were deterministically coupled
+    # rather than independent. Spawning by purpose keeps every stream reproducible
+    # from (seed, epoch, idx) and independent of the others.
+    _STREAM_CANDIDATES = 0
+    _STREAM_WALKS = 1
+
+    def _rng(self, idx: int, stream: int = 0) -> np.random.Generator:
         return np.random.default_rng(
-            np.random.SeedSequence([self.seed, self.epoch, idx])
+            np.random.SeedSequence([self.seed, self.epoch, idx, stream])
         )
 
     def _scale_quotas(self, total: int) -> list[int]:
@@ -126,7 +137,7 @@ class HeatGeoCandidateSampler:
         return quotas
 
     def sample(self, idx: int) -> tuple[np.ndarray, np.ndarray]:
-        rng = self._rng(idx)
+        rng = self._rng(idx, self._STREAM_CANDIDATES)
         pool = self.pool_indices[idx]
         valid = pool >= 0
         mixture = np.where(valid, self.mixture[idx], 0.0).astype(np.float64)
@@ -230,9 +241,7 @@ class HeatGeoCandidateSampler:
             [position_of.get(int(node), -1) for node in candidate_arr], dtype=np.int64
         )
         present = gather >= 0
-        teacher_probs = np.zeros(
-            (self.n_scales, candidate_arr.size), dtype=np.float32
-        )
+        teacher_probs = np.zeros((self.n_scales, candidate_arr.size), dtype=np.float32)
         if present.any():
             teacher_probs[:, present] = self.pool_probs[:, idx, gather[present]]
         # A scale with no mass on the drawn set is left as all-zeros, not filled with
@@ -311,12 +320,14 @@ class HeatGeoCandidateSampler:
 
         Returns:
             walks: int array [num_walks, walk_length + 1] of node indices.
-            walk_nodes: set of unique node indices visited after the start.
+            walk_nodes: unique node indices visited after the start, in
+                first-visit order. A dict is used as an ordered set: when more
+                walk nodes want injecting than there are replaceable candidate
+                slots, which ones win has to be decided by the walk, not by
+                Python's set iteration order.
         """
-        walks = np.empty(
-            (self.num_walks, self.walk_length + 1), dtype=np.int64
-        )
-        walk_node_set: set[int] = set()
+        walks = np.empty((self.num_walks, self.walk_length + 1), dtype=np.int64)
+        walk_node_set: dict[int, None] = {}
         for m in range(self.num_walks):
             current = idx
             previous = -1
@@ -346,13 +357,11 @@ class HeatGeoCandidateSampler:
                 pr = pr / pr.sum()
                 next_node = int(rng.choice(nb, p=pr))
                 walks[m, t + 1] = next_node
-                walk_node_set.add(next_node)
+                walk_node_set[next_node] = None
                 previous, current = current, next_node
         return walks, walk_node_set
 
-    def sample_with_walks(
-        self, idx: int
-    ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    def sample_with_walks(self, idx: int) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
         """Like ``sample`` but also returns walk trajectories.
 
         Walk-visited nodes that are not already in the candidate set are
@@ -367,13 +376,13 @@ class HeatGeoCandidateSampler:
             teacher_probs: float array [n_scales, candidate_size]
             walks: int array [num_walks, walk_length + 1]   (-1 padded when disabled)
         """
-        rng = self._rng(idx)
+        rng = self._rng(idx, self._STREAM_WALKS)
         # Sample walks first so their nodes can be injected into the candidate set.
         if self.num_walks > 0:
             walks, walk_node_set = self._sample_walks(idx, rng)
         else:
             walks = np.full((1, 2), -1, dtype=np.int64)
-            walk_node_set = set()
+            walk_node_set = {}
 
         # --- Run the standard candidate sampling --------------------------------
         candidate_arr, teacher_probs = self.sample(idx)
@@ -393,7 +402,8 @@ class HeatGeoCandidateSampler:
             # Identify replaceable positions: random negatives are those that
             # are neither in the diffusion pool nor in the hard-negative pool.
             replaceable = [
-                pos for pos, c in enumerate(candidate_arr)
+                pos
+                for pos, c in enumerate(candidate_arr)
                 if int(c) not in pool_set and int(c) not in hard_set and int(c) != idx
             ]
             for node, pos in zip(missing, replaceable):

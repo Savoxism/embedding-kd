@@ -31,6 +31,11 @@ class HeatGeoConfig(BaseConfig):
     share_in_batch = True
 
     # ---- Direct Scale (r=0) --------------------------------------------------
+    # omega_0. It lives on the same unnormalized scale as `scale_weights` below and
+    # the criterion normalizes the two together, once -- so omega_0 = omega_1 is
+    # written by setting this to scale_weights[0]. It used to be normalized
+    # separately, which quietly bought the ambient scale 0.500 of the total instead
+    # of the 0.364 the rule asks for.
     direct_weight = 1.0
     direct_temp = 0.10                # shared by both sides of the direct scale
 
@@ -49,10 +54,15 @@ class HeatGeoConfig(BaseConfig):
     # meant to be compared against. It is not a second knob to tune -- set one or
     # the other.
     graph_temp = 0.05
+    # Sorted, unique, and starting at 1. All three are enforced: the artifact stores
+    # its scales sorted and applies `scale_weights` by position, and the temperature
+    # ladder is anchored to the r=1 target being the transition row.
     diffusion_scales = (1, 2, 4)
-    # omega_r = 1/r, and omega_0 = omega_1: each scale is weighted by the inverse of
-    # its diffusion time. Written as the rule rather than as (1.0, 0.5, 0.25), which
-    # is what it evaluates to. Only the ratios matter -- the criterion normalizes.
+    # omega_r = 1/r, and omega_0 = omega_1 (= `direct_weight` above): each scale is
+    # weighted by the inverse of its diffusion time. Written as the rule rather than
+    # as (1.0, 0.5, 0.25), which is what it evaluates to. Only the ratios matter,
+    # but they are ratios against direct_weight too -- the criterion normalizes the
+    # full vector (omega_0, omega_1, ...) in one step, not each half separately.
     scale_weights = tuple(1.0 / r for r in diffusion_scales)
     
     # ---- Random Walk Kernel Matching -----------------------------------------
@@ -89,10 +99,10 @@ class HeatGeoConfig(BaseConfig):
     truncation_tolerance = 0.01
 
     # ---- Per-Epoch Candidate Sampling ---------------------------------------
-    candidate_size = 66
-    diffusion_quota = 14
-    hard_neg_k = 26
-    random_neg_k = 26
+    candidate_size = 96
+    diffusion_quota = 36
+    hard_neg_k = 30
+    random_neg_k = 30
     resample_candidates_per_epoch = True
     deterministic_topm = 2
     stochastic_candidates = True

@@ -10,7 +10,11 @@ import torch
 import torch.nn.functional as F
 from tqdm import tqdm
 
-ARTIFACT_VERSION = 6
+# 7: the lazy-walk truncation holds the anchor's own column out of the tolerance
+#    budget, so the discarded mass of every target is `truncation_tolerance`
+#    rather than tolerance/(1 - self_mass) -- 2x it at r=1. Targets changed;
+#    caches built at 6 must not be reused.
+ARTIFACT_VERSION = 7
 
 # Anchors diffused per sparse matrix product. The intermediate X @ P holds up to
 # block_size * keep_topk * max_degree nonzeros, so this trades memory for the
@@ -342,7 +346,10 @@ def _mass_prefix(data: np.ndarray, total: float, tolerance: float) -> np.ndarray
 
 
 def _truncate_renormalize(
-    matrix: sp.csr_matrix, keep_topk: int, tolerance: float | None = None
+    matrix: sp.csr_matrix,
+    keep_topk: int,
+    tolerance: float | None = None,
+    protect: np.ndarray | None = None,
 ) -> tuple[sp.csr_matrix, float, int]:
     """Row-wise truncation to `tolerance` of discarded mass, then renormalize.
 
@@ -350,6 +357,19 @@ def _truncate_renormalize(
     smallest prefix carrying 1 - tolerance, and only clipped at keep_topk if that
     prefix would be larger. Rows where the ceiling binds are counted and reported,
     because for those the tolerance above is no longer a guarantee.
+
+    `protect` names one column per row that is kept unconditionally and left out of
+    the tolerance budget. It exists because the row this function truncates is not
+    the row that becomes a target: the lazy walk's snapshot has its self-mass
+    dropped and is renormalized afterwards. At step r the self entry alone carries
+    at least 2^-r, so spending the budget on the whole row spends it against a total
+    the target never sees -- at r=1 the self entry is half the row, the surviving
+    non-self mass came out at 1 - 2*tolerance, and the stated per-step tolerance
+    was off by a factor of two on the one scale the temperature tie binds
+    (measured: 0.9874 mean retained against a claimed 0.99). Excluding the
+    protected column makes the discarded fraction *of the target* equal to
+    `tolerance` at every scale, which is what the TV/KL bound in `_mass_prefix` is
+    stated over.
 
     Truncating without renormalizing leaks mass at every step, and the leak
     compounds with r, so the later scales end up systematically under-weighted
@@ -375,19 +395,39 @@ def _truncate_renormalize(
         start, end = indptr[row], indptr[row + 1]
         row_indices, row_data = indices[start:end], data[start:end]
         full_total = float(row_data.sum())
-        if row_data.size > keep_topk:
+        # Split off the protected column before anything else, so neither the
+        # keep_topk cut nor the tolerance budget can spend itself on mass the
+        # target will discard anyway.
+        held_index = np.empty(0, dtype=row_indices.dtype)
+        held_data = np.empty(0, dtype=row_data.dtype)
+        if protect is not None:
+            is_held = row_indices == protect[row]
+            if is_held.any():
+                held_index, held_data = row_indices[is_held], row_data[is_held]
+                row_indices, row_data = row_indices[~is_held], row_data[~is_held]
+        # The budget is stated over the mass that survives to the target, i.e. the
+        # row minus whatever is held out.
+        budget_total = full_total - float(held_data.sum())
+        room = max(keep_topk - held_index.size, 1)
+        if row_data.size > room:
             # Cheap O(n) cut to the ceiling first, so the sort inside _mass_prefix
-            # only ever runs on keep_topk entries.
-            top = np.argpartition(-row_data, keep_topk - 1)[:keep_topk]
+            # only ever runs on `room` entries.
+            top = np.argpartition(-row_data, room - 1)[:room]
             row_indices, row_data = row_indices[top], row_data[top]
-            if float(row_data.sum()) < (1.0 - (tolerance or 0.0)) * full_total:
+            if float(row_data.sum()) < (1.0 - (tolerance or 0.0)) * budget_total:
                 capped += 1
-        if tolerance is not None and full_total > 0.0 and row_data.size > 1:
-            keep = _mass_prefix(row_data, full_total, tolerance)
+        if tolerance is not None and budget_total > 0.0 and row_data.size > 1:
+            keep = _mass_prefix(row_data, budget_total, tolerance)
             row_indices, row_data = row_indices[keep], row_data[keep]
+        # Reported before the protected column is put back: the discarded fraction
+        # is what the tolerance bounds, and it is stated over the mass the target
+        # actually keeps, not over a row whose self entry is dropped downstream.
+        if budget_total > 0.0:
+            dropped += 1.0 - float(row_data.sum()) / budget_total
+        if held_index.size:
+            row_indices = np.concatenate([held_index, row_indices])
+            row_data = np.concatenate([held_data, row_data])
         total = float(row_data.sum())
-        if full_total > 0.0:
-            dropped += 1.0 - total / full_total
         if total > 0.0:
             row_data = row_data / total
         kept_indices.append(row_indices)
@@ -403,9 +443,7 @@ def _truncate_renormalize(
     return out, dropped / max(1, n_rows), capped
 
 
-def _drop_self_renormalize(
-    dist: sp.csr_matrix, start_ids: np.ndarray
-) -> sp.csr_matrix:
+def _drop_self_renormalize(dist: sp.csr_matrix, start_ids: np.ndarray) -> sp.csr_matrix:
     """Remove each row's own start node and renormalize what is left."""
     out = dist.copy()
     indptr, indices, data = out.indptr, out.indices, out.data
@@ -457,7 +495,13 @@ def _diffuse_block(
     capped_total = 0
     for step in range(1, max(scales) + 1):
         dist, dropped, capped = _truncate_renormalize(
-            ((dist + dist @ transition) * 0.5).tocsr(), keep_topk, tolerance
+            ((dist + dist @ transition) * 0.5).tocsr(),
+            keep_topk,
+            tolerance,
+            # The anchor's own column is dropped by `_drop_self_renormalize` before
+            # the snapshot becomes a target, so it is held out of the tolerance
+            # budget rather than consuming it.
+            protect=start_ids.astype(np.int64),
         )
         truncation_loss[step] = dropped
         capped_total += capped
@@ -482,7 +526,10 @@ def _select_pool(
     if nodes.size == 0:
         return np.empty(0, dtype=np.int64), False
     mass = np.concatenate(
-        [float(weights[scale_idx]) * support[1] for scale_idx, support in enumerate(supports)]
+        [
+            float(weights[scale_idx]) * support[1]
+            for scale_idx, support in enumerate(supports)
+        ]
     )
     unique_nodes, inverse = np.unique(nodes, return_inverse=True)
     mixture = np.bincount(inverse, weights=mass, minlength=unique_nodes.size)
@@ -492,13 +539,19 @@ def _select_pool(
         return unique_nodes[order].astype(np.int64), False
 
     total = float(mixture.sum())
-    keep = _mass_prefix(mixture, total, tolerance) if total > 0.0 else np.empty(0, np.int64)
+    keep = (
+        _mass_prefix(mixture, total, tolerance)
+        if total > 0.0
+        else np.empty(0, np.int64)
+    )
     capped = keep.size > row_cap
     keep = keep[:row_cap]
     return unique_nodes[keep].astype(np.int64), capped
 
 
-def _gather_masses(support: tuple[np.ndarray, np.ndarray], nodes: np.ndarray) -> np.ndarray:
+def _gather_masses(
+    support: tuple[np.ndarray, np.ndarray], nodes: np.ndarray
+) -> np.ndarray:
     """Diffusion mass of `nodes` under one scale; 0 for nodes outside its support."""
     support_indices, support_data = support
     if support_indices.size == 0 or nodes.size == 0:
@@ -588,9 +641,7 @@ def _build_diffusion_pools(
             pool_fill[i] = selected.size
             selected_nodes[i] = selected
 
-            row_probs_per_scale = np.zeros(
-                (n_scales, selected.size), dtype=np.float32
-            )
+            row_probs_per_scale = np.zeros((n_scales, selected.size), dtype=np.float32)
             for scale_idx, support in enumerate(supports):
                 if support[0].size == 0:
                     empty_scale[scale_idx] += 1
@@ -756,7 +807,10 @@ def _metadata_matches(artifact: dict, metadata: dict) -> tuple[bool, str]:
     old = artifact.get("metadata", {})
     for key in _METADATA_KEYS:
         if old.get(key) != metadata.get(key):
-            return False, f"{key}: cached={old.get(key)!r} requested={metadata.get(key)!r}"
+            return (
+                False,
+                f"{key}: cached={old.get(key)!r} requested={metadata.get(key)!r}",
+            )
     return True, ""
 
 
@@ -775,6 +829,24 @@ def build_or_load_heatgeo_artifact(
 ) -> dict:
     n_items = int(teacher_embeddings.size(0))
     scales = _as_tuple(diffusion_scales)
+    # `_as_tuple` sorts and deduplicates, but `scale_weights` is consumed by
+    # position, and so is `pool_probs`'s first axis downstream. Silently reordering
+    # the scales while leaving the weights where they were pairs every scale with
+    # another scale's weight, so the reorder is rejected rather than performed. The
+    # criterion enforces the same two conditions; checking here as well means the
+    # error arrives before a full graph build rather than after it.
+    requested = tuple(int(r) for r in diffusion_scales)
+    if requested != scales:
+        raise ValueError(
+            f"diffusion_scales must be sorted and unique, got {requested}: they are "
+            f"stored as {scales} and scale_weights is applied by position"
+        )
+    if scales[0] != 1:
+        raise ValueError(
+            f"diffusion_scales must start at 1, got {scales}: the criterion's "
+            f"temperature ladder is anchored to the r=1 target being the "
+            f"transition row"
+        )
     weights = _normalized_weights(scale_weights, len(scales))
     if source_ids is None:
         source_array = np.zeros(n_items, dtype=np.int64)
