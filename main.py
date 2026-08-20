@@ -12,6 +12,16 @@ from config import (
 from distiller import KnowledgeDistiller
 
 
+def _bool_override(value: str) -> bool:
+    """Parse explicit boolean overrides for knobs whose config default is True."""
+    normalized = value.strip().lower()
+    if normalized in {"1", "true", "yes", "on"}:
+        return True
+    if normalized in {"0", "false", "no", "off"}:
+        return False
+    raise argparse.ArgumentTypeError(f"expected a boolean value, got {value!r}")
+
+
 def parse_args():
     parser = argparse.ArgumentParser(
         description="Knowledge Distillation for Embeddings Model"
@@ -80,25 +90,21 @@ def parse_args():
     # teacher-student pairs use isolated caches without rewriting the shared
     # default config.
     parser.add_argument('--graph_k', type=int, default=None)
+    parser.add_argument(
+        '--perplexity', type=float, default=None,
+        help='Target transition-row perplexity; 0 uses fixed graph_temp',
+    )
     parser.add_argument('--graph_temp', type=float, default=None)
-    parser.add_argument(
-        '--temp_exponent', type=float, default=None,
-        help='Alpha in the temperature law tau_r = graph_temp * r^alpha '
-             '(default 1.0 = heat-kernel value; 0.5 = historical ladder)',
-    )
-    parser.add_argument(
-        '--weight_exponent', type=float, default=None,
-        help='Scale-weight law exponent: omega_r = r^-e '
-             '(default 0.0 = equal weight per octave, log-uniform measure; '
-             '1.0 = historical (1, 1/2, 1/4))',
-    )
-    parser.add_argument('--pool_size', type=int, default=None)
+    parser.add_argument('--truncation_tolerance', type=float, default=None)
     parser.add_argument('--num_walks', type=int, default=None)
     parser.add_argument('--walk_length', type=int, default=None)
     parser.add_argument('--walk_weight', type=float, default=None)
     # --walk_temp was removed: the criterion ties it to --graph_temp.
     parser.add_argument('--walk_start_epoch', type=int, default=None)
-    parser.add_argument('--walk_topk', type=int, default=None)
+    parser.add_argument(
+        '--walk_non_backtracking', type=_bool_override, default=None,
+        help='Use non-backtracking walks (1/0 or true/false)',
+    )
     parser.add_argument('--candidate_size', type=int, default=None)
     parser.add_argument('--diffusion_quota', type=int, default=None)
     parser.add_argument('--hard_neg_k', type=int, default=None)
@@ -232,14 +238,12 @@ def get_config(method: str, args):
     heatgeo_overrides = (
         'graph_k',
         'graph_temp',
-        'temp_exponent',
-        'weight_exponent',
-        'pool_size',
+        'truncation_tolerance',
         'num_walks',
         'walk_length',
         'walk_weight',
         'walk_start_epoch',
-        'walk_topk',
+        'walk_non_backtracking',
         'candidate_size',
         'diffusion_quota',
         'hard_neg_k',
@@ -253,6 +257,11 @@ def get_config(method: str, args):
         value = getattr(args, name)
         if value is not None:
             setattr(config, name, value)
+
+    # None already means "leave the config unchanged", so 0 disables the
+    # entropic-affinity bandwidth and selects the fixed graph_temp baseline.
+    if args.perplexity is not None:
+        config.perplexity = None if args.perplexity <= 0 else args.perplexity
     
     if args.w_task is not None:
         config.w_task = args.w_task

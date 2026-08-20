@@ -39,10 +39,7 @@ from src.cache_teacher import cache_teacher_embeddings, load_cached_embeddings
 from src.criterions.contextual_dynamic_mapping import ContextualDynamicMapping
 from src.criterions.dual_space_kd import DualSpaceKD
 from src.criterions.emo_embedding_distillation import EMODistillation
-from src.criterions.heatgeo_distillation import (
-    HeatGeoDistillation,
-    scale_weights_from_law,
-)
+from src.criterions.heatgeo_distillation import HeatGeoDistillation
 from src.criterions.stella_distillation import (
     StellaModel,
     stella_stage1_loss,
@@ -200,23 +197,24 @@ class KnowledgeDistiller:
                     criterion = HeatGeoDistillation(
                         student_dim=self.model_student.config.hidden_size,
                         teacher_dim=self.teacher_cls_all.shape[-1],
-                        diffusion_scales=getattr(config, "diffusion_scales", (1, 2, 4)),
-                        temp_exponent=getattr(config, "temp_exponent", 1.0),
-                        weight_exponent=getattr(config, "weight_exponent", 0.0),
-                        eps_norm=getattr(config, "eps_norm", 1e-8),
-                        diag_topk=getattr(config, "diag_topk", 8),
-                        share_in_batch=getattr(config, "share_in_batch", True),
+                        scale_weights=config.scale_weights,
+                        broad_scale_temps=config.broad_scale_temps,
+                        eps_norm=config.eps_norm,
+                        diag_topk=config.diag_topk,
+                        share_in_batch=config.share_in_batch,
                         teacher_embeddings=self.teacher_cls_all[:, l_idx, :],
-                        walk_weight=getattr(config, "walk_weight", 0.5),
-                        walk_topk=getattr(config, "walk_topk", None),
+                        direct_weight=config.direct_weight,
+                        direct_temp=config.direct_temp,
+                        walk_weight=config.walk_weight,
+                        row_temps=getattr(self, "heatgeo_artifact", {}).get("row_temps"),
                         # The tie tau_1 = tau_w = graph_temp lives in the criterion;
                         # this is the temperature the transition rows were built at.
                         graph_temp=config.graph_temp,
                         transition_neighbors=getattr(self, "heatgeo_artifact", {}).get("transition_neighbors")
-                        if getattr(config, "num_walks", 0) > 0
+                        if config.num_walks > 0
                         else None,
                         transition_probs=getattr(self, "heatgeo_artifact", {}).get("transition_probs")
-                        if getattr(config, "num_walks", 0) > 0
+                        if config.num_walks > 0
                         else None,
                     ).to(self.device_s)
                     self.heatgeo_criterions.append(criterion)
@@ -242,23 +240,24 @@ class KnowledgeDistiller:
                 self.criterion = HeatGeoDistillation(
                     student_dim=self.model_student.config.hidden_size,
                     teacher_dim=self.teacher_cls_all.shape[-1],
-                    diffusion_scales=getattr(config, "diffusion_scales", (1, 2, 4)),
-                    temp_exponent=getattr(config, "temp_exponent", 1.0),
-                    weight_exponent=getattr(config, "weight_exponent", 0.0),
-                    eps_norm=getattr(config, "eps_norm", 1e-8),
-                    diag_topk=getattr(config, "diag_topk", 8),
-                    share_in_batch=getattr(config, "share_in_batch", True),
+                    scale_weights=config.scale_weights,
+                    broad_scale_temps=config.broad_scale_temps,
+                    eps_norm=config.eps_norm,
+                    diag_topk=config.diag_topk,
+                    share_in_batch=config.share_in_batch,
                     teacher_embeddings=self.teacher_cls_all,
-                    walk_weight=getattr(config, "walk_weight", 0.5),
-                    walk_topk=getattr(config, "walk_topk", None),
+                    direct_weight=config.direct_weight,
+                    direct_temp=config.direct_temp,
+                    walk_weight=config.walk_weight,
+                    row_temps=getattr(self, "heatgeo_artifact", {}).get("row_temps"),
                     # The tie tau_1 = tau_w = graph_temp lives in the criterion;
                     # this is the temperature the transition rows were built at.
                     graph_temp=config.graph_temp,
                     transition_neighbors=getattr(self, "heatgeo_artifact", {}).get("transition_neighbors")
-                    if getattr(config, "num_walks", 0) > 0
+                    if config.num_walks > 0
                     else None,
                     transition_probs=getattr(self, "heatgeo_artifact", {}).get("transition_probs")
-                    if getattr(config, "num_walks", 0) > 0
+                    if config.num_walks > 0
                     else None,
                 ).to(self.device_s)
                 self.scheduler = self._build_scheduler()
@@ -438,7 +437,7 @@ class KnowledgeDistiller:
 
     def _resolve_heatgeo_anchor_column(self, df: pd.DataFrame) -> str:
         cfg = self.config
-        column = getattr(cfg, "heatgeo_anchor_column", None)
+        column = cfg.heatgeo_anchor_column
         if column is not None:
             if column not in df.columns:
                 raise ValueError(
@@ -480,7 +479,7 @@ class KnowledgeDistiller:
         teacher mass and a candidate slot.
         """
         keep_positions = np.arange(len(df), dtype=np.int64)
-        if not getattr(self.config, "dedup_corpus", True):
+        if not self.config.dedup_corpus:
             return df.reset_index(drop=True), keep_positions
 
         texts = df[anchor_column].astype(str)
@@ -498,7 +497,7 @@ class KnowledgeDistiller:
         return deduped, keep_positions
 
     def _heatgeo_source_ids(self, df: pd.DataFrame) -> np.ndarray:
-        column = getattr(self.config, "heatgeo_source_column", "source")
+        column = self.config.heatgeo_source_column
         if column not in df.columns:
             print(
                 f"HeatGeo: no {column!r} column, hard negatives will not be "
@@ -623,20 +622,17 @@ class KnowledgeDistiller:
                 self.heatgeo_artifact = build_or_load_heatgeo_artifact(
                     teacher_embeddings=teacher_embeddings_for_graph,
                     cache_path=cfg.heatgeo_cache_path,
-                    log_dir=getattr(cfg, "heatgeo_log_dir", "logs/heatgeo"),
-                    graph_k=getattr(cfg, "graph_k", 50),
+                    log_dir=cfg.heatgeo_log_dir,
+                    graph_k=cfg.graph_k,
                     # No fallback default: the criterion ties tau_1 and tau_w to this
                     # value, so the artifact and the loss must read the same source.
                     graph_temp=cfg.graph_temp,
-                    diffusion_scales=getattr(cfg, "diffusion_scales", (1, 2, 4)),
-                    scale_weights=scale_weights_from_law(
-                        getattr(cfg, "diffusion_scales", (1, 2, 4)),
-                        getattr(cfg, "weight_exponent", 0.0),
-                    ),
-                    pool_size=getattr(cfg, "pool_size", 128),
-                    hard_neg_pool=getattr(cfg, "hard_neg_pool", 200),
+                    perplexity=cfg.perplexity,
+                    truncation_tolerance=cfg.truncation_tolerance,
+                    diffusion_scales=cfg.diffusion_scales,
+                    scale_weights=cfg.scale_weights,
+                    hard_neg_pool=cfg.hard_neg_pool,
                     source_ids=self._heatgeo_source_ids(df),
-                    walk_keep_topk=getattr(cfg, "walk_keep_topk", None),
                 )
 
             # Free teacher model to save GPU memory (teacher not needed after caching)
@@ -649,20 +645,17 @@ class KnowledgeDistiller:
             if cfg.distill_method == "heatgeo":
                 self.heatgeo_sampler = HeatGeoCandidateSampler(
                     artifact=self.heatgeo_artifact,
-                    candidate_size=getattr(cfg, "candidate_size", 32),
-                    diffusion_quota=getattr(cfg, "diffusion_quota", 20),
-                    hard_neg_k=getattr(cfg, "hard_neg_k", 8),
-                    random_neg_k=getattr(cfg, "random_neg_k", 4),
-                    scale_weights=scale_weights_from_law(
-                        getattr(cfg, "diffusion_scales", (1, 2, 4)),
-                        getattr(cfg, "weight_exponent", 0.0),
-                    ),
+                    candidate_size=cfg.candidate_size,
+                    diffusion_quota=cfg.diffusion_quota,
+                    hard_neg_k=cfg.hard_neg_k,
+                    random_neg_k=cfg.random_neg_k,
+                    scale_weights=cfg.scale_weights,
                     seed=cfg.seed,
-                    deterministic_topm=getattr(cfg, "deterministic_topm", 4),
-                    stochastic=getattr(cfg, "stochastic_candidates", True),
-                    num_walks=getattr(cfg, "num_walks", 0),
-                    walk_length=getattr(cfg, "walk_length", 4),
-                    walk_topk=getattr(cfg, "walk_topk", None),
+                    deterministic_topm=cfg.deterministic_topm,
+                    stochastic=cfg.stochastic_candidates,
+                    num_walks=cfg.num_walks,
+                    walk_length=cfg.walk_length,
+                    walk_non_backtracking=cfg.walk_non_backtracking,
                 )
                 anchor_texts = df[self.heatgeo_anchor_column].astype(str).tolist()
                 self.train_ds = TextPairWithTeacherAndHeatGeo(
@@ -681,7 +674,7 @@ class KnowledgeDistiller:
                     cfg.task_type,
                     cfg.max_length,
                     corpus_texts=anchor_texts,
-                    encode_chunk_size=getattr(cfg, "encode_chunk_size", 256),
+                    encode_chunk_size=cfg.encode_chunk_size,
                 )
                 print(
                     "HeatGeo candidate sampling: "
@@ -920,7 +913,7 @@ class KnowledgeDistiller:
                             anchor_idx=batch_s.get("idx"),
                             walk_paths=batch_s.get("walk_paths"),
                         )
-                        total_loss += heat_loss * cfg.lambda_heatgeo
+                        total_loss += heat_loss * getattr(cfg, "lambda_heatgeo", 1.0)
                         
                     # Cosine loss for final layer
                     s_layer_final = self.kd_student_layers[-1]
@@ -2040,8 +2033,9 @@ class KnowledgeDistiller:
                 
                 # ---- Walk Curriculum ----
                 use_walk = (
-                    getattr(cfg, "num_walks", 0) > 0
-                    and epoch >= getattr(cfg, "walk_start_epoch", 1)
+                    cfg.distill_method == "heatgeo"
+                    and cfg.num_walks > 0
+                    and epoch >= cfg.walk_start_epoch
                 )
                 if hasattr(self, "heatgeo_criterions"):
                     for crit in self.heatgeo_criterions:

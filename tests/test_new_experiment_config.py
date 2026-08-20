@@ -56,55 +56,30 @@ def test_heatgeo_cli_overrides(monkeypatch):
     assert config.final_weights_only is True
 
 
-def test_heatgeo_temperature_law_and_ties():
-    # Default alpha = 1: the heat-kernel value.
+def test_heatgeo_explicit_temperatures_weights_and_ties():
     criterion = HeatGeoDistillation(
         student_dim=4,
         teacher_dim=4,
-        diffusion_scales=(1, 2, 4),
+        scale_weights=(1.0, 0.5, 0.25),
+        broad_scale_temps=(0.07, 0.10),
         graph_temp=0.05,
+        direct_temp=0.10,
     )
-    # tau_1 = tau_w = graph_temp: the tie is the law's base case.
+    # The sharpest diffusion scale and walk target are tied to graph_temp in the
+    # fixed-bandwidth arm; broader scale temperatures remain explicit.
     assert criterion.walk_temp == pytest.approx(0.05)
-    assert criterion.scale_temps.tolist() == pytest.approx([0.05, 0.10, 0.20])
-    # tau_0 = graph_temp * r_max^alpha = the top of the ladder.
-    assert criterion.direct_temp == pytest.approx(0.20)
-    # Default weight law e = 0: equal weight per dyadic octave (log-uniform).
-    assert criterion.scale_weights.tolist() == pytest.approx([1 / 3] * 3)
-
-    # alpha = 0.5: the historical ladder, kept reachable for comparison runs.
-    criterion = HeatGeoDistillation(
-        student_dim=4,
-        teacher_dim=4,
-        diffusion_scales=(1, 2, 4),
-        temp_exponent=0.5,
-        weight_exponent=1.0,
-        graph_temp=0.05,
-    )
-    assert criterion.scale_temps.tolist() == pytest.approx(
-        [0.05, 0.05 * 2**0.5, 0.10]
-    )
+    assert criterion.scale_temps.tolist() == pytest.approx([0.05, 0.07, 0.10])
     assert criterion.direct_temp == pytest.approx(0.10)
-    assert criterion.walk_temp == pytest.approx(0.05)
-    # e = 1 reproduces the historical (1, 1/2, 1/4), normalized.
     assert criterion.scale_weights.tolist() == pytest.approx(
         [4 / 7, 2 / 7, 1 / 7]
     )
 
-    for removed in (
-        "scale_temps",
-        "broad_scale_temps",
-        "walk_temp",
-        "direct_student_temp",
-        "direct_temp",
-        "direct_weight",
-        "student_temp",
-        "scale_weights",
-    ):
+    for removed in ("scale_temps", "walk_temp", "direct_student_temp"):
         with pytest.raises(ValueError, match=removed):
             HeatGeoDistillation(
                 student_dim=4,
                 teacher_dim=4,
+                scale_weights=(1.0,),
                 graph_temp=0.05,
                 **{removed: 0.07},
             )
@@ -123,7 +98,7 @@ def test_heatgeo_tied_temperature_makes_teacher_row_attainable():
     criterion = HeatGeoDistillation(
         student_dim=4,
         teacher_dim=4,
-        diffusion_scales=(1,),
+        scale_weights=(1.0,),
         graph_temp=graph_temp,
     )
     loss, _ = criterion(
