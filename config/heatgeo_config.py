@@ -99,10 +99,10 @@ class HeatGeoConfig(BaseConfig):
     truncation_tolerance = 0.01
 
     # ---- Per-Epoch Candidate Sampling ---------------------------------------
-    candidate_size = 96
-    diffusion_quota = 36
-    hard_neg_k = 30
-    random_neg_k = 30
+    candidate_size = 66
+    diffusion_quota = 14
+    hard_neg_k = 26
+    random_neg_k = 26
     resample_candidates_per_epoch = True
     deterministic_topm = 2
     stochastic_candidates = True

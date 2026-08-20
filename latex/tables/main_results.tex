@@ -1,6 +1,6 @@
 \begin{table}[t]
 \centering
-\caption{Results across three teacher\,$\rightarrow$\,student settings on nine datasets. Emotion, WiC, and STS-B (marked with $\star$) are in-domain; the remaining datasets are out-of-domain. Bold and underlined values denote the best and second-best compact-model results within each setting. Baseline results are from TALAS~\citep{dao2026talas}. For setting (c), we report the epoch checkpoint with the highest overall average.}
+\caption{Results across three teacher\,$\rightarrow$\,student settings on nine datasets. Emotion, WiC, and STS-B (marked with $\star$) are in-domain; the remaining datasets are out-of-domain. Bold and underlined values denote the best and second-best compact-model results within each setting. TALAS results are reported as mean $\pm$ standard deviation; the remaining baseline results are from TALAS~\citep{dao2026talas}. For setting (c), we report the epoch checkpoint with the highest overall average.}
 \label{tab:main_results}
 \setlength{\tabcolsep}{2.4pt}
 \resizebox{\textwidth}{!}{%
@@ -51,7 +51,7 @@ Jasper and Stella
 & 73.96 & 67.90 & 75.65
 & 70.71 & 78.62 & 75.98 \\
 DistillCSE
-& 90.94 & 70.90 & 60.80
+& \underline{90.94} & 70.90 & 60.80
 & 82.86 & 78.98 & 68.63
 & 75.12 & 72.61 & 77.08
 & 68.84 & 78.57 & 75.32 \\
@@ -61,15 +61,15 @@ EMO
 & 75.66 & 68.83 & 77.17
 & 71.47 & 79.14 & 76.58 \\
 TALAS
-& \underline{91.43} & \textbf{74.30} & \textbf{70.71}
-& \textbf{86.47} & \underline{82.66} & 69.24
-& \textbf{78.38} & \textbf{75.40} & \underline{80.88}
-& \textbf{73.61} & \textbf{81.44} & \textbf{78.83} \\
+& $90.44 \pm 0.13$ & \textbf{$74.62 \pm 0.17$} & \textbf{$70.87 \pm 0.52$}
+& \textbf{$85.90 \pm 0.10$} & \underline{$81.78 \pm 0.29$} & $68.84 \pm 0.15$
+& \textbf{$77.56 \pm 0.10$} & \underline{$73.12 \pm 0.30$} & \underline{$79.24 \pm 0.10$}
+& \underline{$72.98 \pm 0.19$} & \underline{$80.57 \pm 0.01$} & \underline{$78.04 \pm 0.07$} \\
 \textbf{RIPPLE}
 & \textbf{91.86} & 73.06 & \underline{69.20}
 & 84.72 & \textbf{86.19} & 67.19
-& \underline{77.54} & \underline{74.19} & \textbf{83.14}
-& \underline{73.17} & \underline{81.26} & \underline{78.56} \\
+& \underline{77.54} & \textbf{74.19} & \textbf{83.14}
+& \textbf{73.17} & \textbf{81.26} & \textbf{78.56} \\
 \midrule
 \multicolumn{13}{c}{\textit{(b) BGE-M3 $\rightarrow$ MiniLMv2-H768 (66M)}} \\
 \midrule
@@ -105,7 +105,7 @@ Jasper and Stella
 & 74.35 & 66.80 & 74.55
 & 68.58 & 78.33 & 75.08 \\
 DistillCSE
-& 90.50 & 72.70 & 59.88
+& \underline{90.50} & 72.70 & 59.88
 & 84.39 & 78.48 & 69.49
 & 73.97 & \underline{70.00} & 73.73
 & 67.70 & 78.34 & 74.79 \\
@@ -115,10 +115,10 @@ EMO
 & 75.41 & 67.06 & 76.35
 & 68.71 & 78.84 & 75.46 \\
 TALAS
-& \underline{90.62} & \textbf{74.81} & \underline{63.30}
-& \textbf{87.05} & \underline{81.94} & 66.28
-& \underline{76.86} & 69.04 & \underline{79.01}
-& \underline{69.53} & \underline{80.05} & \underline{76.55} \\
+& $89.72 \pm 0.19$ & \textbf{$75.38 \pm 0.11$} & \underline{$65.83 \pm 0.58$}
+& \textbf{$87.58 \pm 0.02$} & \underline{$82.90 \pm 0.12$} & $66.96 \pm 0.07$
+& \underline{$75.82 \pm 0.11$} & $68.11 \pm 0.20$ & \underline{$77.51 \pm 0.18$}
+& \underline{$70.10 \pm 0.13$} & \underline{$79.92 \pm 0.05$} & \underline{$76.64 \pm 0.04$} \\
 \textbf{RIPPLE}
 & \textbf{90.86} & 73.08 & \textbf{69.50}
 & 85.74 & \textbf{83.57} & 65.77
@@ -166,18 +166,18 @@ DistillCSE
 EMO
 & 87.03 & \underline{71.67} & 59.63
 & \underline{83.45} & 78.17 & \textbf{68.89}
-& 70.81 & 65.78 & 71.42
-& 66.65 & 76.15 & 72.98 \\
+& \underline{70.81} & 65.78 & 71.42
+& \underline{66.65} & 76.15 & 72.98 \\
 TALAS
-& 86.69 & \textbf{72.77} & \underline{60.94}
-& \textbf{85.10} & \textbf{81.42} & 66.65
-& \underline{72.51} & \underline{70.77} & \underline{76.22}
-& \underline{67.94} & \textbf{78.21} & \underline{74.79} \\
+& $84.16 \pm 0.15$ & \textbf{$72.82 \pm 0.11$} & \underline{$61.13 \pm 0.52$}
+& \textbf{$84.85 \pm 0.10$} & \textbf{$80.91 \pm 0.27$} & $66.32 \pm 0.07$
+& $70.72 \pm 0.15$ & $67.80 \pm 0.08$ & \underline{$72.39 \pm 0.31$}
+& $66.61 \pm 0.24$ & \underline{$76.88 \pm 0.07$} & \underline{$73.46 \pm 0.10$} \\
 \textbf{RIPPLE}
 & \textbf{88.31} & 70.41 & \textbf{67.13}
 & 83.00 & \underline{80.60} & 65.51
 & \textbf{73.98} & \textbf{72.14} & \textbf{76.90}
-& \textbf{69.85} & \underline{78.07} & \textbf{75.33} \\
+& \textbf{69.85} & \textbf{78.07} & \textbf{75.33} \\
 \bottomrule
 \end{tabular}%
 }

@@ -1,13 +1,13 @@
 # Fdb version 4
-["bibtex main"] 1787205240.16807 "main.aux" "main.bbl" "main" 1787205241.3433 0
+["bibtex main"] 1787239322.50019 "main.aux" "main.bbl" "main" 1787239324.02941 0
   "./iclr2027_conference.bst" 1787038361.07213 26973 af983813ca1a1414954dbceae7baa2a1 ""
-  "./ripple.bib" 1787202559.67823 39905 954031609990f12aee06b946da9a4b5e ""
-  "main.aux" 1787205241.04065 18553 d279efbf1b9560be4a875f3915ee2c2e "pdflatex"
+  "./ripple.bib" 1787207337.29311 39905 954031609990f12aee06b946da9a4b5e ""
+  "main.aux" 1787239323.70677 18705 9c90ea7f8b0b331eaf30497a10c1d250 "pdflatex"
   (generated)
   "main.bbl"
   "main.blg"
   (rewritten before read)
-["pdflatex"] 1787205240.27938 "main.tex" "main.pdf" "main" 1787205241.34376 0
+["pdflatex"] 1787239322.73417 "main.tex" "main.pdf" "main" 1787239324.02967 0
   "/etc/texmf/web2c/texmf.cnf" 1773138757.194 475 c0e671620eb5563b2130f56340a5fde8 ""
   "/usr/share/texlive/texmf-dist/fonts/enc/dvips/base/8r.enc" 1165713224 4850 80dc9bab7f31fb78a000ccfed0e27cab ""
   "/usr/share/texlive/texmf-dist/fonts/map/fontname/texfonts.map" 1577235249 3524 cb3e574dea2d1052e39280babc910dc8 ""
@@ -126,20 +126,20 @@
   "/var/lib/texmf/web2c/pdftex/pdflatex.fmt" 1773138815 8213355 5c73132d1f44e382582447bfc6ff5c5e ""
   "fancyhdr.sty" 1787038361.07213 20521 e5d13d98d57bd53d4fed3aa61bd29c86 ""
   "iclr2027_conference.sty" 1787038361.07213 9025 1b4bb9c2e12c712c56f4eb1232b88dd6 ""
-  "main.aux" 1787205241.04065 18553 d279efbf1b9560be4a875f3915ee2c2e "pdflatex"
-  "main.bbl" 1787205240.26931 18146 12cc6c5e0b0cf01ebb8b901cb7d81e93 "bibtex main"
-  "main.out" 1787205241.04498 5788 570c088a0f43a6717e4d2ce433fa87ec "pdflatex"
-  "main.tex" 1787202303.57738 1194 e8eb9eb7454ac32d21b75b259385e2fc ""
+  "main.aux" 1787239323.70677 18705 9c90ea7f8b0b331eaf30497a10c1d250 "pdflatex"
+  "main.bbl" 1787239322.72743 18146 12cc6c5e0b0cf01ebb8b901cb7d81e93 "bibtex main"
+  "main.out" 1787239323.7111 5788 570c088a0f43a6717e4d2ce433fa87ec "pdflatex"
+  "main.tex" 1787207141.1469 1194 e8eb9eb7454ac32d21b75b259385e2fc ""
   "natbib.sty" 1787038361.07213 45154 40088ce024445d7ee2bca59e704cdd01 ""
-  "sections/00_abstract.tex" 1787204341.70255 2086 72e0bec1cd80a13cfec78de32d97d724 ""
-  "sections/01_introduction.tex" 1787204361.2671 5587 fabb2f05d416c179d6894616e0296c49 ""
+  "sections/00_abstract.tex" 1787239184.32073 2054 4a179271ef979e566c7f04ce2e11b308 ""
+  "sections/01_introduction.tex" 1787239184.77573 5555 13ab8ee45a6ee2bdaddff9f54868955f ""
   "sections/02_related_work.tex" 1787202617.58424 5834 cdeed51863641d390b8a87c6053d8d94 ""
   "sections/03_theory.tex" 1787204341.70255 5401 c79ab3f80dc48cd1d756bfc29be3eb4a ""
-  "sections/04_methodology.tex" 1787205193.51259 16930 d177925500552f2e3c2f97533afe65a7 ""
-  "sections/05_experiments.tex" 1787205193.51259 11381 1e78d3b9a8fa788c40eb44a46066eb91 ""
-  "sections/appendix_hyperparams.tex" 1787205193.51692 6850 8b70f15a3c77f695ef1a04625ea89a53 ""
+  "sections/04_methodology.tex" 1787207337.29311 16930 d177925500552f2e3c2f97533afe65a7 ""
+  "sections/05_experiments.tex" 1787239227.58458 11363 ba7b2781fda055878486b37fb4eb69a4 ""
+  "sections/appendix_hyperparams.tex" 1787207337.30177 6850 8b70f15a3c77f695ef1a04625ea89a53 ""
   "sections/appendix_proofs.tex" 1787203991.27313 18355 a79ebf9f24f7b3a2de2077f2cacc5c1f ""
-  "tables/main_results.tex" 1787202280.3498 5438 af4dbae6e0b3db9e61602459652ef7f3 ""
+  "tables/main_results.tex" 1787239316.5481 5897 f7e560e01dfee4cac68a107a7fbd6382 ""
   (generated)
   "main.aux"
   "main.log"
