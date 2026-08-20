@@ -12,16 +12,22 @@ class HeatGeoConfig(BaseConfig):
     teacher_special_token = "G"
 
     # ---- Objective -----------------------------------------------------------
-    # Temperature ties, enforced by HeatGeoDistillation (it rejects the removed
-    # knobs scale_temps / walk_temp / direct_student_temp):
+    # No student temperature on the diffusion ladder is a free parameter. The
+    # criterion rejects scale_temps / broad_scale_temps / walk_temp /
+    # direct_student_temp and derives all of them:
     #   tau_1 = graph_temp   the r=1 target IS the transition row, a softmax of
     #                        teacher cosines at graph_temp -- any other student
-    #                        temperature makes zero loss unattainable;
+    #                        temperature makes zero loss unattainable. Under
+    #                        `perplexity` this is read per row: tau_1(i) = tau_i;
+    #   tau_r = sqrt(r) tau_1   the spread of a diffusion grows as sqrt of its
+    #                        time, so scale r is matched at the resolution its own
+    #                        target already has. At graph_temp = 0.05 this is
+    #                        (0.0707, 0.1000) for r = 2, 4 -- the values that were
+    #                        previously written out by hand as (0.07, 0.10);
     #   tau_w = graph_temp   walk targets are transition rows, same argument;
     #   direct scale         one temperature (direct_temp) on both teacher and
     #                        student side (Hinton et al. 2015 convention).
-    # Only the broader diffusion scales keep free student temperatures.
-    broad_scale_temps = (0.07, 0.10)  # student temps for r = 2, 4; r = 1 uses graph_temp
+    # direct_temp is the only student temperature left to choose.
     share_in_batch = True
 
     # ---- Direct Scale (r=0) --------------------------------------------------
@@ -44,7 +50,10 @@ class HeatGeoConfig(BaseConfig):
     # the other.
     graph_temp = 0.05
     diffusion_scales = (1, 2, 4)
-    scale_weights = (1.0, 0.5, 0.25)
+    # omega_r = 1/r, and omega_0 = omega_1: each scale is weighted by the inverse of
+    # its diffusion time. Written as the rule rather than as (1.0, 0.5, 0.25), which
+    # is what it evaluates to. Only the ratios matter -- the criterion normalizes.
+    scale_weights = tuple(1.0 / r for r in diffusion_scales)
     
     # ---- Random Walk Kernel Matching -----------------------------------------
     # L_walk is a KL against the teacher's own transition row, so it shares the

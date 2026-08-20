@@ -61,14 +61,21 @@ def test_heatgeo_temperature_ties():
         student_dim=4,
         teacher_dim=4,
         scale_weights=(1.0, 0.5, 0.25),
-        broad_scale_temps=(0.07, 0.10),
+        diffusion_scales=(1, 2, 4),
         graph_temp=0.05,
     )
-    # tau_1 = tau_w = graph_temp: not knobs, derived.
+    # tau_1 = tau_w = graph_temp and tau_r = sqrt(r) tau_1: not knobs, derived.
     assert criterion.walk_temp == pytest.approx(0.05)
-    assert criterion.scale_temps.tolist() == pytest.approx([0.05, 0.07, 0.10])
+    assert criterion.scale_temps.tolist() == pytest.approx(
+        [0.05, 0.05 * 2 ** 0.5, 0.05 * 2.0]
+    )
 
-    for removed in ("scale_temps", "walk_temp", "direct_student_temp"):
+    for removed in (
+        "scale_temps",
+        "broad_scale_temps",
+        "walk_temp",
+        "direct_student_temp",
+    ):
         with pytest.raises(ValueError, match=removed):
             HeatGeoDistillation(
                 student_dim=4,

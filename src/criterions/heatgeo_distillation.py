@@ -174,16 +174,23 @@ class HeatGeoDistillation(nn.Module):
       make the direct target attainable only as a rescaling of teacher cosines,
       which is the calibration distortion the scale exists to prevent.
 
-    ``broad_scale_temps`` holds the student temperatures of the *remaining*
-    diffusion scales (r > 1, sharpest first); those are genuine design choices.
-    Passing the removed knobs (``scale_temps``, ``walk_temp``,
-    ``direct_student_temp``) raises rather than being silently absorbed.
+    * ``tau_r = sqrt(r) * tau_1`` for the broader diffusion scales: the spread of
+      a diffusion grows as sqrt of its time, so scale r is matched at the
+      resolution its own target already has. This is a stated rule, not a
+      derivation -- the lazy walk takes r/2 real steps in expectation, so a
+      strict derivation would carry a different constant -- but it removes the
+      last free student temperatures, and under ``row_temps`` it inherits the
+      per-row tie automatically: tau_r(i) = sqrt(r) * tau_i.
+
+    Passing the removed knobs (``scale_temps``, ``broad_scale_temps``,
+    ``walk_temp``, ``direct_student_temp``) raises rather than being silently
+    absorbed.
     """
 
     _TIED_KNOBS = {
         "scale_temps": (
-            "the sharpest scale's temperature is tied to graph_temp; pass only "
-            "broad_scale_temps for the scales after it"
+            "the whole ladder is derived: tau_1 is tied to graph_temp (or to the "
+            "per-row bandwidth) and tau_r = sqrt(r) * tau_1"
         ),
         "walk_temp": (
             "tied to graph_temp: the walk target is a transition row, i.e. a "
@@ -193,6 +200,10 @@ class HeatGeoDistillation(nn.Module):
             "tied to direct_temp: the direct scale uses one temperature on both "
             "the teacher and the student side (Hinton et al., 2015)"
         ),
+        "broad_scale_temps": (
+            "tied to the sharpest scale by tau_r = sqrt(r) * tau_1; pass "
+            "diffusion_scales instead and the ladder is derived from it"
+        ),
     }
 
     def __init__(
@@ -200,8 +211,7 @@ class HeatGeoDistillation(nn.Module):
         student_dim: int,
         teacher_dim: int,
         scale_weights: Sequence[float],
-        broad_scale_temps: Sequence[float] | None = None,
-        student_temp: float = 0.07,
+        diffusion_scales: Sequence[int] | None = None,
         eps_norm: float = 1e-8,
         diag_topk: int = 8,
         share_in_batch: bool = True,
@@ -225,7 +235,6 @@ class HeatGeoDistillation(nn.Module):
         self.student_dim = student_dim
         self.teacher_dim = teacher_dim
         self.graph_temp = float(graph_temp)
-        self.student_temp = student_temp
 
         # Per-row temperatures (entropic affinities). The tie tau_1 = tau_w =
         # "the temperature this row's target was built at" is unchanged; it is
@@ -296,19 +305,25 @@ class HeatGeoDistillation(nn.Module):
         weights = weights / weights.sum().clamp_min(1e-12)
         self.register_buffer("scale_weights", weights)
 
-        # The sharpest scale is matched at graph_temp -- its target is the
-        # transition row itself -- and only the broader scales carry free student
-        # temperatures. `_resolved` pads by repeating the last entry when the
-        # artifact has more scales than temperatures were given.
-        if broad_scale_temps is None or len(tuple(broad_scale_temps)) == 0:
-            broad = [float(student_temp)]
+        # The whole diffusion ladder is derived from the sharpest scale by
+        # tau_r = sqrt(r) * tau_1. The sharpest scale is itself tied (its target IS
+        # the transition row), so no student temperature on this ladder is free.
+        # `scale_sqrt` holds sqrt(r / r_sharpest) so it is 1.0 at the sharpest scale
+        # and multiplies whichever tau_1 applies -- graph_temp, or the per-row tau_i
+        # of the entropic-affinity graph. `_resolved` pads by repeating the last
+        # entry when the artifact carries more scales than were declared.
+        if diffusion_scales is None or len(tuple(diffusion_scales)) == 0:
+            scales = (1,)
         else:
-            broad = [float(t) for t in broad_scale_temps]
-        temps = torch.tensor([self.graph_temp] + broad, dtype=torch.float32)
-        if (temps <= 0).any():
-            raise ValueError(
-                f"broad_scale_temps must be positive, got {temps[1:].tolist()}"
-            )
+            scales = tuple(int(r) for r in diffusion_scales)
+        if min(scales) < 1:
+            raise ValueError(f"diffusion_scales must be >= 1, got {scales}")
+        self.diffusion_scales = scales
+        sqrt_r = torch.tensor(
+            [(r / scales[0]) ** 0.5 for r in scales], dtype=torch.float32
+        )
+        self.register_buffer("scale_sqrt", sqrt_r)
+        temps = self.graph_temp * sqrt_r
         self.register_buffer("scale_temps", temps)
         self.temps_tied = bool(temps.numel() == 1 or torch.allclose(temps, temps[0]))
 
@@ -629,17 +644,20 @@ class HeatGeoDistillation(nn.Module):
         # The sharpest diffusion scale is the one whose target IS the anchor's
         # transition row, so it is the scale the temperature tie binds. With
         # entropic affinities that temperature is per anchor, not global.
-        sharpest = 1 if self.direct_active else 0
+        offset = 1 if self.direct_active else 0
         row_tau = None
         if self.row_temps is not None and anchor_idx is not None:
             row_tau = self.row_temps.index_select(0, anchor_idx).view(-1, 1)
+        # tau_r(i) = sqrt(r) * tau_i: the tie at the sharpest scale propagates up the
+        # ladder, so with per-row bandwidths every diffusion scale is per-row too.
+        sqrt_r = self._resolved(self.scale_sqrt, n_scales - offset)
 
         kl_per_scale = []
         log_probs_per_scale = []
         for scale_idx in range(n_scales):
             is_direct = self.direct_active and scale_idx == 0
-            if row_tau is not None and scale_idx == sharpest:
-                logits = similarity / row_tau
+            if row_tau is not None and not is_direct:
+                logits = similarity / (row_tau * sqrt_r[scale_idx - offset])
             else:
                 logits = similarity / temps[scale_idx]
             logits = logits.masked_fill(self_mask if is_direct else diffusion_mask,
