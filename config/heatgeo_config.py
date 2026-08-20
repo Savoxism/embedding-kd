@@ -46,6 +46,10 @@ class HeatGeoConfig(BaseConfig):
     # walk_temp is gone: it is tied to graph_temp inside the criterion.
     walk_start_epoch = 1
     walk_topk = None
+    # Which rows the walk supervises, never what they are matched against: a step may
+    # not return to the node it came from (except out of a degree-1 node, where that
+    # is the only edge). Same walk budget, more distinct rows, and no new temperature.
+    walk_non_backtracking = True
     
     hard_neg_pool = 200
     walk_keep_topk = 2048

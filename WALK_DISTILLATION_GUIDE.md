@@ -15,15 +15,39 @@ The trajectory still does real work, but at the level of *identifiability* rathe
 In `config/heatgeo_config.py`:
 
 ```python
-num_walks = 4          # Walks per anchor per epoch (0 = disabled)
-walk_length = 4        # Steps per walk
-walk_weight = 0.5      # Lambda in L = L_diff + lambda * L_walk
-walk_start_epoch = 1   # Curriculum: enable from this epoch
+num_walks = 4                 # Walks per anchor per epoch (0 = disabled)
+walk_length = 4               # Steps per walk
+walk_weight = 0.5             # Lambda in L = L_diff + lambda * L_walk
+walk_start_epoch = 1          # Curriculum: enable from this epoch
+walk_non_backtracking = True  # A step may not return to the node it came from
 ```
 
 There is no `walk_temp` knob: the student temperature of the walk term is tied to `graph_temp` inside `HeatGeoDistillation` (passing `walk_temp` raises). The teacher row is itself a softmax of teacher cosines at `graph_temp`, so equal temperatures make the target exactly attainable and give the term an infimum of 0. Detuning it would turn the achievable solution set from a shift family into an affine one and break the gauge argument, which is why the tie is enforced in code rather than left as a convention.
 
 Set `num_walks = 0` to disable; the run is then bit-identical to diffusion-only HeatGeo.
+
+### Non-backtracking walks
+
+`walk_non_backtracking` forbids the step at time `t+1` from returning to the node occupied at `t-1`. The one exception is a degree-1 node, where the edge the walk arrived on is the only way out; retreating there beats stalling on a self-loop, which would re-supervise a row already seen. Non-backtracking walks are the ones with mixing and cover-time guarantees (Alon, Benjamini, Lubetzky and Sodin, 2007).
+
+**This changes the sampling measure `nu`, never a target.** The row matched at a visited node is still the full transition row `P(.|j)` at `graph_temp`, read from the artifact by the criterion, so the temperature tie, the term's infimum of 0, and Proposition `prop:walkgauge` are all untouched. Choosing `nu` was already a free design decision -- ablation (g) below tests occupancy-weighted selection against uniform selection from the pool -- so this is a move within that freedom rather than a new modelling assumption. It is also **not** a hyperparameter reduction: `walk_temp` was removed earlier by the temperature tie, and nothing here removes a knob.
+
+Two things it recovers. Rows are supervised with weight equal to visit count, so an `A -> B -> A -> B` excursion spends the whole walk budget on two rows. And the gauge argument identifies offsets by *traversed edges*, so a repeated edge adds no constraint.
+
+Degree-dependent reweighting (preferring low-degree neighbours, the "minimum degree local rule") is deliberately **not** applied on top: on a mutual-kNN graph the out-degrees are already near-constant at `graph_k`, the penalty would tilt `nu` without a matching correction, and its strength would be a new knob with no evidence behind it.
+
+**Measured effect (`scripts/walk_coverage_probe.py`).** The gain is a graph property, so it can be read off before training. On a synthetic clustered kNN graph it is small at the production setting and grows as the graph sharpens or sparsens:
+
+| graph | distinct rows / walk (plain -> NBW) | immediate returns |
+|---|---|---|
+| `graph_k=200, graph_temp=0.05, L=4` | 3.943 -> 3.982 (**+1.0%**) | 1.95% -> 0% |
+| `graph_k=200, graph_temp=0.02, L=4` | 3.812 -> 3.979 (+4.4%) | 7.5% -> 0% |
+| `graph_k=20, graph_temp=0.05, L=4` | 3.805 -> 3.978 (+4.5%) | 8.2% -> 0.2% |
+| `graph_k=20, graph_temp=0.05, L=8` | 7.247 -> 7.748 (+6.9%) | 8.6% -> 0.2% |
+
+At the production graph the effect is near the noise floor -- honest reading: this removes a strictly wasteful behaviour at zero cost, not a source of large gains. Run the probe against the real artifact (`python scripts/walk_coverage_probe.py <artifact>.pt`) before claiming a number in the paper; the synthetic cosine spread is not the teacher's.
+
+The same probe reports `hops_reached`, the BFS distance from anchor to walk endpoint, and at `graph_k=200` it sits at ~1.0 for **both** walk rules: with degree ~170 the walk rarely leaves the anchor's own one-hop neighbourhood. If more structural reach is wanted, the lever is `graph_k` or `walk_length`, not the backtracking rule.
 
 ## How It Works
 
@@ -95,11 +119,14 @@ Read them together. A low `walk_node_hit_ratio` means walks leave the candidate 
 (e) Walk weight sweep:     walk_weight in {0.1, 0.3, 0.5, 1.0}
 (f) Curriculum:            walk_start_epoch in {0, 1, 2}
 (g) Source selection:      walk-sampled rows vs. rows drawn uniformly from the pool
+(h) Walk rule:             walk_non_backtracking in {True, False}   <- --walk_non_backtracking 0
 ```
 
 (b) is not optional. Enabling walks replaces up to `num_walks * walk_length` random negatives with walk nodes, which changes the candidate composition that `L_diff` and the ambient scale see. Without (b), the (c)-(a) gap conflates the walk loss with a different negative distribution.
 
 (g) is the honest test of the walk itself: the loss only needs a *set of rows*, so if occupancy-weighted selection does not beat uniform selection from the pool, the walk mechanism is not earning its place -- only the extra supervision is.
+
+(h) is cheap to pre-screen: `scripts/walk_coverage_probe.py` gives the coverage difference from the artifact alone, and at the production graph it is ~1%. Run the training arm only if that number, measured on the real artifact, is large enough for a benchmark difference to be attributable rather than noise.
 
 ## Technical Notes
 

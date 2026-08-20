@@ -12,6 +12,21 @@ from config import (
 from distiller import KnowledgeDistiller
 
 
+def _bool_override(value: str) -> bool:
+    """0/1/true/false for knobs whose config default is True.
+
+    `store_true` cannot express "turn this off", and the override loop below reads
+    `None` as "leave the config default alone", so a flag that defaults to on needs
+    an explicit value rather than presence.
+    """
+    normalized = value.strip().lower()
+    if normalized in {"1", "true", "yes", "on"}:
+        return True
+    if normalized in {"0", "false", "no", "off"}:
+        return False
+    raise argparse.ArgumentTypeError(f"expected a boolean value, got {value!r}")
+
+
 def parse_args():
     parser = argparse.ArgumentParser(
         description="Knowledge Distillation for Embeddings Model"
@@ -88,6 +103,11 @@ def parse_args():
     # --walk_temp was removed: the criterion ties it to --graph_temp.
     parser.add_argument('--walk_start_epoch', type=int, default=None)
     parser.add_argument('--walk_topk', type=int, default=None)
+    # Ablation switch, not a tuned quantity: --walk_non_backtracking 0 restores the
+    # plain Markov walk for the (a)/(b) arms of the walk ablation.
+    parser.add_argument(
+        '--walk_non_backtracking', type=_bool_override, default=None
+    )
     parser.add_argument('--candidate_size', type=int, default=None)
     parser.add_argument('--diffusion_quota', type=int, default=None)
     parser.add_argument('--hard_neg_k', type=int, default=None)
@@ -227,6 +247,7 @@ def get_config(method: str, args):
         'walk_weight',
         'walk_start_epoch',
         'walk_topk',
+        'walk_non_backtracking',
         'candidate_size',
         'diffusion_quota',
         'hard_neg_k',

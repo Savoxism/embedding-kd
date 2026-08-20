@@ -658,6 +658,9 @@ class KnowledgeDistiller:
                     num_walks=getattr(cfg, "num_walks", 0),
                     walk_length=getattr(cfg, "walk_length", 4),
                     walk_topk=getattr(cfg, "walk_topk", None),
+                    walk_non_backtracking=getattr(
+                        cfg, "walk_non_backtracking", True
+                    ),
                 )
                 anchor_texts = df[self.heatgeo_anchor_column].astype(str).tolist()
                 self.train_ds = TextPairWithTeacherAndHeatGeo(
