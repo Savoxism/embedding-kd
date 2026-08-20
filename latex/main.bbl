@@ -24,6 +24,13 @@ Mohammad~Kalim Akram, Saba Sturua, Nastia Havriushenko, Quentin Herreros,
 \newblock \doi{10.48550/arXiv.2602.15547}.
 \newblock URL \url{https://arxiv.org/abs/2602.15547}.
 
+\bibitem[Alon et~al.(2007)Alon, Benjamini, Lubetzky, and
+  Sodin]{alon2007nonbacktracking}
+Noga Alon, Itai Benjamini, Eyal Lubetzky, and Sasha Sodin.
+\newblock Non-backtracking random walks mix faster.
+\newblock \emph{Communications in Contemporary Mathematics}, 9\penalty0
+  (4):\penalty0 585--603, 2007.
+
 \bibitem[Alqahtani et~al.(2021)Alqahtani, Lalwani, Zhang, Romeo, and
   Mansour]{alqahtani2021ot}
 Sawsan Alqahtani, Garima Lalwani, Yi~Zhang, Salvatore Romeo, and Saab Mansour.
@@ -45,14 +52,6 @@ Anshumann, Mohd~Abbas Zaidi, Akhil Kedia, Jinwoo Ahn, Taehwak Kwon, Kangwook
   Linguistics.
 \newblock \doi{10.18653/v1/2025.acl-long.885}.
 \newblock URL \url{https://aclanthology.org/2025.acl-long.885/}.
-
-\bibitem[Bronstein \& Kokkinos(2010)Bronstein and
-  Kokkinos]{bronstein2010scalehks}
-Michael~M. Bronstein and Iasonas Kokkinos.
-\newblock Scale-invariant heat kernel signatures for non-rigid shape
-  recognition.
-\newblock In \emph{Proc. {IEEE} Conference on Computer Vision and Pattern
-  Recognition ({CVPR})}, pp.\  1704--1711, 2010.
 
 \bibitem[Calder \& Trillos(2022)Calder and Trillos]{calder2022improved}
 Jeff Calder and Nicol{\'a}s~Garc{\'i}a Trillos.
@@ -77,29 +76,12 @@ Yijie Chen, Yijin Liu, Fandong Meng, Yufeng Chen, Jinan Xu, and Jie Zhou.
 \newblock \doi{10.48550/arXiv.2502.11104}.
 \newblock URL \url{https://arxiv.org/abs/2502.11104}.
 
-\bibitem[Chung et~al.(2025)Chung, Kerboua, Kardos, Solomatin, and
-  Enevoldsen]{chung2025maintainingmteb}
-Isaac Chung, Imene Kerboua, Marton Kardos, Roman Solomatin, and Kenneth
-  Enevoldsen.
-\newblock Maintaining {MTEB}: Towards long term usability and reproducibility
-  of embedding benchmarks.
-\newblock \emph{CoRR}, abs/2506.21182, 2025.
-\newblock \doi{10.48550/arXiv.2506.21182}.
-\newblock URL \url{https://arxiv.org/abs/2506.21182}.
-
 \bibitem[Coifman \& Lafon(2006)Coifman and Lafon]{coifman2006diffusionmaps}
 Ronald~R. Coifman and St{\'e}phane Lafon.
 \newblock Diffusion maps.
 \newblock \emph{Applied and Computational Harmonic Analysis}, 21\penalty0
   (1):\penalty0 5--30, 2006.
 \newblock \doi{10.1016/j.acha.2006.04.006}.
-
-\bibitem[Coifman \& Maggioni(2006)Coifman and
-  Maggioni]{coifman2006diffusionwavelets}
-Ronald~R. Coifman and Mauro Maggioni.
-\newblock Diffusion wavelets.
-\newblock \emph{Applied and Computational Harmonic Analysis}, 21\penalty0
-  (1):\penalty0 53--94, 2006.
 
 \bibitem[Dao et~al.(2026)Dao, Nguyen, Pham, Ngo~Van, Nguyen, Nguyen, and
   Le]{dao2026talas}
@@ -135,11 +117,26 @@ Tianyu Gao, Xingcheng Yao, and Danqi Chen.
 \newblock \doi{10.18653/v1/2021.emnlp-main.552}.
 \newblock URL \url{https://aclanthology.org/2021.emnlp-main.552/}.
 
+\bibitem[Hinton \& Roweis(2002)Hinton and Roweis]{hinton2002sne}
+Geoffrey~E. Hinton and Sam~T. Roweis.
+\newblock Stochastic neighbor embedding.
+\newblock In \emph{Advances in Neural Information Processing Systems},
+  volume~15, pp.\  857--864, 2002.
+
 \bibitem[Hinton et~al.(2015)Hinton, Vinyals, and Dean]{hinton2015distilling}
 Geoffrey~E. Hinton, Oriol Vinyals, and Jeffrey Dean.
 \newblock Distilling the knowledge in a neural network.
 \newblock \emph{CoRR}, abs/1503.02531, 2015.
 \newblock URL \url{http://arxiv.org/abs/1503.02531}.
+
+\bibitem[Huguet et~al.(2023)Huguet, Tong, De~Brouwer, Zhang, Wolf, Adelstein,
+  and Krishnaswamy]{huguet2023heatgeo}
+Guillaume Huguet, Alexander Tong, Edward De~Brouwer, Yanlei Zhang, Guy Wolf,
+  Ian Adelstein, and Smita Krishnaswamy.
+\newblock A heat diffusion perspective on geodesic preserving dimensionality
+  reduction.
+\newblock In \emph{Advances in Neural Information Processing Systems},
+  volume~36, 2023.
 
 \bibitem[Jiao et~al.(2020)Jiao, Yin, Shang, Jiang, Chen, Li, Wang, and
   Liu]{jiao2019tinybert}
@@ -151,6 +148,15 @@ Xiaoqi Jiao, Yichun Yin, Lifeng Shang, Xin Jiang, Xiao Chen, Linlin Li, Fang
   Online, November 2020. Association for Computational Linguistics.
 \newblock \doi{10.18653/v1/2020.findings-emnlp.372}.
 \newblock URL \url{https://aclanthology.org/2020.findings-emnlp.372/}.
+
+\bibitem[Kim et~al.(2023)Kim, Rawat, Zaheer, Jayasumana, Sadhanala, Jitkrittum,
+  Menon, Fergus, and Kumar]{kim2023embeddistill}
+Seungyeon Kim, Ankit~Singh Rawat, Manzil Zaheer, Sadeep Jayasumana,
+  Veeranjaneyulu Sadhanala, Wittawat Jitkrittum, Aditya~Krishna Menon, Rob
+  Fergus, and Sanjiv Kumar.
+\newblock Embeddistill: A geometric knowledge distillation for information
+  retrieval.
+\newblock \emph{arXiv preprint arXiv:2301.12005}, 2023.
 
 \bibitem[Kim et~al.(2025)Kim, Shin, Kang, Na, and Moon]{kim2025csd}
 Yeongmin Kim, Donghyeok Shin, Mina Kang, Byeonghu Na, and Il-Chul Moon.
@@ -238,13 +244,6 @@ Victor Sanh, Lysandre Debut, Julien Chaumond, and Thomas Wolf.
 \newblock \emph{CoRR}, abs/1910.01108, 2019.
 \newblock URL \url{http://arxiv.org/abs/1910.01108}.
 
-\bibitem[Sun et~al.(2009)Sun, Ovsjanikov, and Guibas]{sun2009hks}
-Jian Sun, Maks Ovsjanikov, and Leonidas~J. Guibas.
-\newblock A concise and provably informative multi-scale signature based on
-  heat diffusion.
-\newblock \emph{Computer Graphics Forum (Proc. SGP)}, 28\penalty0 (5):\penalty0
-  1383--1392, 2009.
-
 \bibitem[Thakur et~al.(2021)Thakur, Reimers, R{\"u}ckl{\'e}, Srivastava, and
   Gurevych]{thakur2021beir}
 Nandan Thakur, Nils Reimers, Andreas R{\"u}ckl{\'e}, Abhishek Srivastava, and
@@ -271,13 +270,19 @@ Nicol{\'a}s~Garc{\'i}a Trillos and Dejan Slep{\v{c}}ev.
 \newblock \emph{Applied and Computational Harmonic Analysis}, 45\penalty0
   (2):\penalty0 239--281, 2018.
 
-\bibitem[Tsitsulin et~al.(2018)Tsitsulin, Mottin, Karras, Bronstein, and
-  M{\"u}ller]{tsitsulin2018netlsd}
-Anton Tsitsulin, Davide Mottin, Panagiotis Karras, Alexander~M. Bronstein, and
-  Emmanuel M{\"u}ller.
-\newblock {NetLSD}: Hearing the shape of a graph.
-\newblock In \emph{Proc. {ACM} {SIGKDD} International Conference on Knowledge
-  Discovery and Data Mining ({KDD})}, pp.\  2347--2356, 2018.
+\bibitem[van~der Maaten \& Hinton(2008)van~der Maaten and
+  Hinton]{maaten2008tsne}
+Laurens van~der Maaten and Geoffrey Hinton.
+\newblock Visualizing data using t-{SNE}.
+\newblock \emph{Journal of Machine Learning Research}, 9\penalty0
+  (86):\penalty0 2579--2605, 2008.
+
+\bibitem[Vladymyrov \& Carreira-Perpi{\~n}{\'a}n(2013)Vladymyrov and
+  Carreira-Perpi{\~n}{\'a}n]{vladymyrov2013entropic}
+Max Vladymyrov and Miguel~{\'A}. Carreira-Perpi{\~n}{\'a}n.
+\newblock Entropic affinities: Properties and efficient numerical computation.
+\newblock In \emph{Proceedings of the 30th International Conference on Machine
+  Learning}, volume~28 of \emph{PMLR}, pp.\  477--485, 2013.
 
 \bibitem[von Luxburg et~al.(2008)von Luxburg, Belkin, and
   Bousquet]{vonluxburg2008consistency}
@@ -329,13 +334,6 @@ Dun Zhang, Jiacheng Li, Ziyang Zeng, and Fulong Wang.
 \newblock \doi{10.48550/arXiv.2412.19048}.
 \newblock URL \url{https://arxiv.org/abs/2412.19048}.
 
-\bibitem[Zhang et~al.(2025{\natexlab{a}})Zhang, Zou, and Zhou]{zhang2025dewey}
-Dun Zhang, Panxiang Zou, and Yudong Zhou.
-\newblock Dewey long context embedding model: A technical report.
-\newblock \emph{CoRR}, abs/2503.20376, 2025{\natexlab{a}}.
-\newblock \doi{10.48550/arXiv.2503.20376}.
-\newblock URL \url{https://arxiv.org/abs/2503.20376}.
-
 \bibitem[Zhang et~al.(2022)Zhang, Liu, Sun, and Shah]{zhang2022glnn}
 Shichang Zhang, Yozen Liu, Yizhou Sun, and Neil Shah.
 \newblock Graph-less neural networks: Teaching old mlps new tricks via
@@ -356,13 +354,13 @@ Songming Zhang, Xue Zhang, Zengkui Sun, Yufeng Chen, and Jinan Xu.
 \newblock \doi{10.18653/v1/2024.emnlp-main.1010}.
 \newblock URL \url{https://aclanthology.org/2024.emnlp-main.1010/}.
 
-\bibitem[Zhang et~al.(2025{\natexlab{b}})Zhang, Li, Long, Zhang, Lin, Yang,
-  Xie, Yang, Liu, Lin, Huang, and Zhou]{zhang2025qwen3embedding}
+\bibitem[Zhang et~al.(2025)Zhang, Li, Long, Zhang, Lin, Yang, Xie, Yang, Liu,
+  Lin, Huang, and Zhou]{zhang2025qwen3embedding}
 Yanzhao Zhang, Mingxin Li, Dingkun Long, Xin Zhang, Huan Lin, Baosong Yang,
   Pengjun Xie, An~Yang, Dayiheng Liu, Junyang Lin, Fei Huang, and Jingren Zhou.
 \newblock {Qwen3} embedding: Advancing text embedding and reranking through
   foundation models.
-\newblock \emph{CoRR}, abs/2506.05176, 2025{\natexlab{b}}.
+\newblock \emph{CoRR}, abs/2506.05176, 2025.
 \newblock \doi{10.48550/arXiv.2506.05176}.
 \newblock URL \url{https://arxiv.org/abs/2506.05176}.
 

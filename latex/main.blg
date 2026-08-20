@@ -2,45 +2,45 @@ This is BibTeX, Version 0.99d (TeX Live 2023/Debian)
 Capacity: max_strings=200000, hash_size=200000, hash_prime=170003
 The top-level auxiliary file: main.aux
 The style file: iclr2027_conference.bst
-Database file #1: heatgeo.bib
+Database file #1: ripple.bib
 You've used 41 entries,
             2773 wiz_defined-function locations,
-            863 strings with 16410 characters,
-and the built_in function-call counts, 26491 in all, are:
+            863 strings with 16418 characters,
+and the built_in function-call counts, 26735 in all, are:
 = -- 2351
-> -- 2065
-< -- 22
-+ -- 688
-- -- 644
-* -- 2377
-:= -- 4126
-add.period$ -- 186
+> -- 2119
+< -- 26
++ -- 705
+- -- 662
+* -- 2407
+:= -- 4165
+add.period$ -- 182
 call.type$ -- 41
-change.case$ -- 330
-chr.to.int$ -- 38
+change.case$ -- 336
+chr.to.int$ -- 39
 cite$ -- 82
 duplicate$ -- 1020
-empty$ -- 1709
-format.name$ -- 701
-if$ -- 5538
-int.to.chr$ -- 4
+empty$ -- 1715
+format.name$ -- 721
+if$ -- 5580
+int.to.chr$ -- 3
 int.to.str$ -- 1
 missing$ -- 40
-newline$ -- 265
+newline$ -- 261
 num.names$ -- 174
-pop$ -- 595
+pop$ -- 615
 preamble$ -- 1
-purify$ -- 289
+purify$ -- 295
 quote$ -- 0
-skip$ -- 907
+skip$ -- 912
 stack$ -- 0
-substring$ -- 792
-swap$ -- 205
-text.length$ -- 14
+substring$ -- 782
+swap$ -- 204
+text.length$ -- 17
 text.prefix$ -- 0
 top$ -- 0
 type$ -- 451
 warning$ -- 0
 while$ -- 180
 width$ -- 0
-write$ -- 655
+write$ -- 648

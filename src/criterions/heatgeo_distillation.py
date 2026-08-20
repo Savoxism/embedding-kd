@@ -149,24 +149,60 @@ class HeatGeoDistillation(nn.Module):
     ranks within the anchor's own draw, the direct scale calibrates across the batch,
     and the walk term ranks within a *non-anchor* node's teacher neighbourhood.
 
-    **Temperature ties.** The sharpest diffusion target and each walk target are
-    transition rows. They are therefore matched at the temperature used to build
-    that row: ``row_temps[i]`` for entropic affinities, or ``graph_temp`` for the
-    fixed-bandwidth baseline. The direct teacher and student distributions share
-    ``direct_temp``. Only ``broad_scale_temps`` (r > 1) remain free.
+    **Temperature ties.** Three temperatures are not free parameters and are
+    therefore not constructor arguments:
+
+    * ``tau_1 = graph_temp``: the r=1 target after dropping self-mass IS the
+      transition row, a softmax of teacher cosines at graph_temp. Matching it at
+      the same temperature makes zero loss attainable exactly on the shift family
+      cos_S = cos_T + a_i; any other temperature forces the affine family
+      cos_S = (tau_1/graph_temp) cos_T + a_i, which contradicts the direct scale
+      on the same row (it pins unrescaled gaps), so the joint zero set is empty
+      unless the teacher cosines are constant.
+
+      With ``row_temps`` supplied -- the entropic-affinity graph, where each row
+      is solved for a fixed perplexity instead of sharing one temperature -- the
+      tie is read row by row: row i's target was built at tau_i, so row i is
+      matched at tau_i. Nothing in the argument above depends on the *value* of
+      the temperature, only on the two sides sharing it, and the attainable set is
+      the same shift family; so the proposition holds per row, and the gauge
+      argument that chains it along walk edges is untouched.
+    * ``walk_temp = graph_temp``: the walk targets are transition rows too --
+      the same argument verbatim, and the tie the gauge-reduction proof assumes.
+    * ``direct student temp = direct_temp``: the classic same-temperature
+      convention of distillation (Hinton et al., 2015). Unequal temperatures
+      make the direct target attainable only as a rescaling of teacher cosines,
+      which is the calibration distortion the scale exists to prevent.
+
+    * ``tau_r = sqrt(r) * tau_1`` for the broader diffusion scales: the spread of
+      a diffusion grows as sqrt of its time, so scale r is matched at the
+      resolution its own target already has. This is a stated rule, not a
+      derivation -- the lazy walk takes r/2 real steps in expectation, so a
+      strict derivation would carry a different constant -- but it removes the
+      last free student temperatures, and under ``row_temps`` it inherits the
+      per-row tie automatically: tau_r(i) = sqrt(r) * tau_i.
+
+    Passing the removed knobs (``scale_temps``, ``broad_scale_temps``,
+    ``walk_temp``, ``direct_student_temp``) raises rather than being silently
+    absorbed.
     """
 
     _TIED_KNOBS = {
         "scale_temps": (
-            "the sharpest scale is tied to the transition-row temperature; pass "
-            "only broad_scale_temps for the remaining scales"
+            "the whole ladder is derived: tau_1 is tied to graph_temp (or to the "
+            "per-row bandwidth) and tau_r = sqrt(r) * tau_1"
         ),
         "walk_temp": (
             "tied to graph_temp: the walk target is a transition row, i.e. a "
             "softmax of teacher cosines at graph_temp"
         ),
         "direct_student_temp": (
-            "tied to direct_temp on both sides of the direct scale"
+            "tied to direct_temp: the direct scale uses one temperature on both "
+            "the teacher and the student side (Hinton et al., 2015)"
+        ),
+        "broad_scale_temps": (
+            "tied to the sharpest scale by tau_r = sqrt(r) * tau_1; pass "
+            "diffusion_scales instead and the ladder is derived from it"
         ),
     }
 
@@ -175,8 +211,7 @@ class HeatGeoDistillation(nn.Module):
         student_dim: int,
         teacher_dim: int,
         scale_weights: Sequence[float],
-        broad_scale_temps: Sequence[float] | None = None,
-        student_temp: float = 0.07,
+        diffusion_scales: Sequence[int] | None = None,
         eps_norm: float = 1e-8,
         diag_topk: int = 8,
         share_in_batch: bool = True,
@@ -200,7 +235,13 @@ class HeatGeoDistillation(nn.Module):
         self.student_dim = student_dim
         self.teacher_dim = teacher_dim
         self.graph_temp = float(graph_temp)
-        self.student_temp = student_temp
+
+        # Per-row temperatures (entropic affinities). The tie tau_1 = tau_w =
+        # "the temperature this row's target was built at" is unchanged; it is
+        # simply no longer the same number for every row. Zero loss is still
+        # attainable exactly on the shift family cos_S(i,.) = cos_T(i,.) + a_i,
+        # which is independent of tau_i, so the proposition and the gauge argument
+        # that chains it along walk edges both carry over row by row.
         if row_temps is not None:
             temps_row = row_temps.detach().to(torch.float32).reshape(-1)
             if not bool(torch.isfinite(temps_row).all()) or bool((temps_row <= 0).any()):
@@ -247,8 +288,13 @@ class HeatGeoDistillation(nn.Module):
                 teacher_embeddings.float(), p=2, dim=-1, eps=eps_norm
             ).half()
             self.register_buffer("teacher_bank", normalized, persistent=False)
+            # One temperature for both sides of the direct scale (same-temperature
+            # distillation, Hinton et al. 2015): the student softmax at scale 0 in
+            # forward() reuses this exact value.
             self.direct_temp = float(direct_temp)
-            self.register_buffer("direct_weight", torch.tensor([float(direct_weight)]))
+            self.register_buffer(
+                "direct_weight", torch.tensor([float(direct_weight)])
+            )
         else:
             self.teacher_bank = None
             self.direct_temp = float(direct_temp)
@@ -259,15 +305,25 @@ class HeatGeoDistillation(nn.Module):
         weights = weights / weights.sum().clamp_min(1e-12)
         self.register_buffer("scale_weights", weights)
 
-        if broad_scale_temps is None or len(tuple(broad_scale_temps)) == 0:
-            broad = [float(student_temp)]
+        # The whole diffusion ladder is derived from the sharpest scale by
+        # tau_r = sqrt(r) * tau_1. The sharpest scale is itself tied (its target IS
+        # the transition row), so no student temperature on this ladder is free.
+        # `scale_sqrt` holds sqrt(r / r_sharpest) so it is 1.0 at the sharpest scale
+        # and multiplies whichever tau_1 applies -- graph_temp, or the per-row tau_i
+        # of the entropic-affinity graph. `_resolved` pads by repeating the last
+        # entry when the artifact carries more scales than were declared.
+        if diffusion_scales is None or len(tuple(diffusion_scales)) == 0:
+            scales = (1,)
         else:
-            broad = [float(t) for t in broad_scale_temps]
-        temps = torch.tensor([self.graph_temp] + broad, dtype=torch.float32)
-        if (temps <= 0).any():
-            raise ValueError(
-                f"broad_scale_temps must be positive, got {temps[1:].tolist()}"
-            )
+            scales = tuple(int(r) for r in diffusion_scales)
+        if min(scales) < 1:
+            raise ValueError(f"diffusion_scales must be >= 1, got {scales}")
+        self.diffusion_scales = scales
+        sqrt_r = torch.tensor(
+            [(r / scales[0]) ** 0.5 for r in scales], dtype=torch.float32
+        )
+        self.register_buffer("scale_sqrt", sqrt_r)
+        temps = self.graph_temp * sqrt_r
         self.register_buffer("scale_temps", temps)
         self.temps_tied = bool(temps.numel() == 1 or torch.allclose(temps, temps[0]))
 
@@ -310,8 +366,9 @@ class HeatGeoDistillation(nn.Module):
             dtype=teacher_probs.dtype,
             device=teacher_probs.device,
         )
-        scatter_index = inverse.view(batch_size, 1, candidate_size).expand(
-            batch_size, n_scales, candidate_size
+        scatter_index = (
+            inverse.view(batch_size, 1, candidate_size)
+            .expand(batch_size, n_scales, candidate_size)
         )
         target.scatter_add_(2, scatter_index, teacher_probs)
 
@@ -415,9 +472,7 @@ class HeatGeoDistillation(nn.Module):
         keep = keep & (nb_pos != src_pos.unsqueeze(1))
 
         target = torch.zeros(src_nodes.numel(), pool_size, device=device)
-        target.scatter_add_(
-            1, nb_pos, torch.where(keep, probs, torch.zeros_like(probs))
-        )
+        target.scatter_add_(1, nb_pos, torch.where(keep, probs, torch.zeros_like(probs)))
         allowed = target > 0
 
         # Two live columns is the smallest denominator on which a softmax has any
@@ -437,6 +492,8 @@ class HeatGeoDistillation(nn.Module):
         weight = src_counts[usable].float()
         target = target / target.sum(dim=1, keepdim=True).clamp_min(1e-12)
 
+        # One temperature per supervised row: the walk target at node j is j's own
+        # transition row, so it is matched at the temperature that row was built at.
         if self.row_temps is not None:
             walk_tau = self.row_temps.index_select(0, src_nodes[usable]).view(-1, 1)
         else:
@@ -510,9 +567,7 @@ class HeatGeoDistillation(nn.Module):
             batch_size * candidate_size, -1
         )
 
-        share = (
-            self.share_in_batch and candidate_idx is not None and anchor_idx is not None
-        )
+        share = self.share_in_batch and candidate_idx is not None and anchor_idx is not None
         if share:
             (
                 pool_embeddings,
@@ -554,9 +609,7 @@ class HeatGeoDistillation(nn.Module):
         # Scale r=0: the teacher's own similarity over every scored column. Without
         # it, every column outside the anchor's diffusion pool carries target 0 and
         # is pushed toward maximal dissimilarity regardless of what the teacher says.
-        self.direct_active = (
-            self.use_direct and anchor_idx is not None and column_idx is not None
-        )
+        self.direct_active = self.use_direct and anchor_idx is not None and column_idx is not None
         if self.direct_active:
             direct = self._direct_target(anchor_idx, column_idx, self_mask, share)
             target = torch.cat([direct.unsqueeze(1).to(target.dtype), target], dim=1)
@@ -588,24 +641,27 @@ class HeatGeoDistillation(nn.Module):
         # across the full pool. Complementary instead of opposed.
         diffusion_mask = self_mask | ~own_mask
 
-        # The sharpest diffusion target is the anchor's transition row, so an
-        # entropic-affinity artifact must match it at that anchor's row temperature.
-        sharpest = 1 if self.direct_active else 0
+        # The sharpest diffusion scale is the one whose target IS the anchor's
+        # transition row, so it is the scale the temperature tie binds. With
+        # entropic affinities that temperature is per anchor, not global.
+        offset = 1 if self.direct_active else 0
         row_tau = None
         if self.row_temps is not None and anchor_idx is not None:
             row_tau = self.row_temps.index_select(0, anchor_idx).view(-1, 1)
+        # tau_r(i) = sqrt(r) * tau_i: the tie at the sharpest scale propagates up the
+        # ladder, so with per-row bandwidths every diffusion scale is per-row too.
+        sqrt_r = self._resolved(self.scale_sqrt, n_scales - offset)
 
         kl_per_scale = []
         log_probs_per_scale = []
         for scale_idx in range(n_scales):
             is_direct = self.direct_active and scale_idx == 0
-            if row_tau is not None and scale_idx == sharpest:
-                logits = similarity / row_tau
+            if row_tau is not None and not is_direct:
+                logits = similarity / (row_tau * sqrt_r[scale_idx - offset])
             else:
                 logits = similarity / temps[scale_idx]
-            logits = logits.masked_fill(
-                self_mask if is_direct else diffusion_mask, float("-inf")
-            )
+            logits = logits.masked_fill(self_mask if is_direct else diffusion_mask,
+                                        float("-inf"))
             log_probs = F.log_softmax(logits, dim=-1)
             log_probs_per_scale.append(log_probs)
             scale_target = target[:, scale_idx, :]
@@ -634,7 +690,9 @@ class HeatGeoDistillation(nn.Module):
                 )
             elif not self._warned_walk_needs_sharing:
                 self._warned_walk_needs_sharing = True
-                print("HeatGeo: walk loss requires share_in_batch=True; term disabled.")
+                print(
+                    "HeatGeo: walk loss requires share_in_batch=True; term disabled."
+                )
 
         total_loss = loss_diff + self.walk_weight * loss_walk
 
@@ -728,8 +786,8 @@ class HeatGeoDistillation(nn.Module):
         )
         mixture_entropy = -(mixture * log_mixture).sum(dim=-1)
         group_entropy = (target_entropy[:, offset:] * w_norm).sum(dim=-1)
-        js_floor = w_total.squeeze(-1) * (mixture_entropy - group_entropy).clamp_min(
-            0.0
+        js_floor = (
+            w_total.squeeze(-1) * (mixture_entropy - group_entropy).clamp_min(0.0)
         )
 
         # Full-stack weighted entropy: loss_diff = CE - H holds over every scale that

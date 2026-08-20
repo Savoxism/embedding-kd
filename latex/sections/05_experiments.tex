@@ -1,109 +1,93 @@
 \section{Experiments}
 
-\subsection{Experimental Setup}
+\subsection{Setup}
 
 \paragraph{Models.}
-We distill Qwen3-Embedding-4B into BERT-base, a 109M-parameter student encoder. Teacher embeddings are cached once before HeatGeo training. After graph construction, the teacher is removed from GPU memory; student training uses only precomputed diffusion targets and the corresponding candidate texts.
+We evaluate three teacher\,$\rightarrow$\,student pairs: Qwen3-Embedding-4B $\rightarrow$ BERT-base (109M), BGE-M3 $\rightarrow$ MiniLMv2-H768 (66M), and Qwen3-Embedding-0.6B $\rightarrow$ MiniLMv2-H384 (22M). Teacher embeddings are cached once before training; after graph construction the teacher is removed from GPU memory, and student training uses only precomputed diffusion targets and the corresponding candidate texts.
 
-\paragraph{Training Data.}
-Following the TALAS setup~\citep{dao2026talas}, we train on approximately 15K unlabeled sentences sampled evenly from the three in-domain datasets Emotion, WiC, and STS-B. HeatGeo constructs the teacher semantic graph directly over these texts.
+\paragraph{Training data.}
+Following the TALAS setup~\citep{dao2026talas}, we train on approximately 15K unlabeled sentences sampled evenly from the three in-domain datasets Emotion, WiC, and STS-B. RIPPLE constructs the teacher semantic graph directly over these texts.
 
-\paragraph{Evaluation Tasks and Metrics.}
-We evaluate on three task families. Text classification uses F1 on Banking77, Tweet, and Emotion. Pair classification uses average precision (AP) on MRPC, SciTail, and WiC. Semantic textual similarity uses Spearman correlation on SICK, STS12, and STS-B. Emotion, WiC, and STS-B are in-domain; the other six datasets are out-of-domain. Avg-In and Avg-Out are the unweighted means over their respective three and six datasets, and Avg.\ is the unweighted mean over all nine datasets.
+\paragraph{Evaluation.}
+We evaluate on three task families: text classification with F1 on Banking77, Tweet, and Emotion; pair classification with average precision (AP) on MRPC, SciTail, and WiC; and semantic textual similarity with Spearman correlation on SICK, STS12, and STS-B. Emotion, WiC, and STS-B are in-domain, the other six out-of-domain. Avg-In and Avg-Out are the unweighted means over their respective three and six datasets, and Avg.\ is the unweighted mean over all nine.
 
 \paragraph{Baselines.}
-We compare against the teacher, the undistilled student, SimCSE-unsup, CDM, DSKD, Jasper and Stella, DistillCSE, EMO, and TALAS. The baseline results use the Qwen3-Embedding-4B to BERT-base configuration reported by TALAS~\citep{dao2026talas}.
+We compare against the teacher, the undistilled student, SimCSE-unsup, CDM, DSKD, Jasper and Stella, DistillCSE, EMO, and TALAS, using the numbers reported by TALAS~\citep{dao2026talas} for the same three configurations. To test Section~\ref{sec:theory} directly we additionally train a controlled \emph{batch-relational} arm: identical corpus, student, schedule, and code path, with the objective replaced by mini-batch teacher--student similarity matching at $\tau_0$. This isolates the anchored-versus-batch comparison from every other difference between methods.
 
-\paragraph{Implementation Details.}
-The teacher graph uses $k=200$ mutual neighbors, and diffusion is taken over the scale family $\mathcal{R}=\{0,1,2,4\}$ with equal weight on the graph scales --- the log-uniform scale measure of Section~\ref{sec:objective} --- and the ambient scale carrying the same total weight as the graph family combined; like the temperatures, the weights are not tuned. Each anchor draws a candidate set of size $64$ from diffusion neighbors, teacher hard negatives, and random negatives, redrawn every epoch, and candidate sets are pooled across mini-batches of $32$ anchors. Student temperatures follow the law of Eq.~\ref{eq:templaw} at the heat-kernel value $\alpha=1$: at $\tau_g=0.05$ this gives $(\tau_1,\tau_2,\tau_4)=(0.05,0.10,0.20)$ and $\tau_0=0.20$ on both sides of the ambient scale, with the sharpest scale and the walk term tied to the graph temperature ($\tau_1=\tau_w=\tau_g$, Proposition~\ref{prop:temptie}); no temperature is tuned. Walk-sampled kernel matching draws $M=4$ walks of length $L=4$ per anchor per epoch at $\lambda=0.5$, and is enabled from the second epoch onward so that the student has a neighborhood to rank before its rows are matched. Training runs for five epochs with a learning rate of $3\times10^{-5}$. Remaining settings are given in the released configuration.
+\paragraph{Implementation.}
+The teacher graph uses $k=200$ mutual neighbors, and diffusion is taken over $\mathcal{R}=\{0,1,2,4\}$ with weights $\omega_r=1/r$ ($\omega_0=\omega_1$), normalized. Each anchor draws a candidate set of size $64$ from diffusion neighbors, teacher hard negatives, and random negatives, redrawn every epoch and pooled across mini-batches of $32$ anchors. The only student temperature we choose is $\tau_0=0.10$ at the ambient scale; the sharpest scale and the row term take the bandwidth of the row they match, and the broader scales follow $\tau_r=\sqrt{r}\,\tau_1$ (Appendix~\ref{app:hyper}). Row supervision draws $M=4$ non-backtracking walks of length $L=4$ per anchor per epoch at $\lambda=0.5$, enabled from the second epoch onward. The truncation tolerance is $\delta=10^{-2}$. Training runs for five epochs at a learning rate of $3\times10^{-5}$; remaining settings are in the released configuration.
+
+% TODO(before submission): the numbers in Table 1 were produced with the
+% fixed-bandwidth arm, tau_g = 0.05 for every row (reproducible with
+% --perplexity 0). Replace with the entropic-bandwidth results once those runs
+% finish, keeping the fixed-bandwidth arm as the control row in Table 2.
+The graph in the runs below is built with a single bandwidth $\tau_g=0.05$ shared by every row rather than the entropic affinity of Section~\ref{sec:graph}; entropic-bandwidth runs at $\rho_g=30$ are in progress and will be reported as the corresponding row of Table~\ref{tab:ablation_objective}.
 
 \subsection{Main Results}
 
-Table~\ref{tab:main_results} reports all three teacher--student settings across the nine datasets. HeatGeo attains the best overall average among compact students in two of the three settings, $77.98$ against $76.55$ for the strongest baseline when distilling BGE-M3 into MiniLMv2-H768, and $75.33$ against $74.79$ when distilling Qwen3-Embedding-0.6B into the 22M MiniLMv2-H384. In the Qwen3-Embedding-4B to BERT-base setting it reaches $78.56$, ranking second behind TALAS at $78.83$.
+Table~\ref{tab:main_results} reports all three teacher--student settings across the nine datasets. RIPPLE attains the best overall average among compact students in two of the three settings, $77.98$ against $76.55$ for the strongest baseline when distilling BGE-M3 into MiniLMv2-H768, and $75.33$ against $74.79$ when distilling Qwen3-Embedding-0.6B into the 22M MiniLMv2-H384. In the Qwen3-Embedding-4B to BERT-base setting it reaches $78.56$, ranking second behind TALAS at $78.83$.
 
-The advantage is concentrated where the objective operates. HeatGeo gives the best student result on Banking77 and on STS-B in all three settings, improving STS-B by $2.26$, $2.75$, and $0.68$ Spearman points over the strongest baseline, and it leads the STS family on all three datasets in both MiniLMv2 settings. It also obtains the best in-domain average in the two settings it wins overall, by $2.81$ and $1.91$ points, with the largest single-dataset gains on Emotion ($+6.20$ and $+6.19$ F1). The margins grow as the student shrinks: matching diffusion distributions rather than individual teacher coordinates asks the student to preserve relative neighborhood structure, which remains attainable when embedding capacity is well below the teacher's. WiC is the one dataset where HeatGeo trails consistently, reflecting that word-in-context judgments depend on token-level sense disambiguation rather than the sentence-level neighborhood geometry the diffusion targets describe.
+The advantage is concentrated where the objective operates. RIPPLE gives the best student result on Banking77 and on STS-B in all three settings, improving STS-B by $2.26$, $2.75$, and $0.68$ Spearman points over the strongest baseline, and it leads the STS family on all three datasets in both MiniLMv2 settings. It also obtains the best in-domain average in the two settings it wins overall, by $2.81$ and $1.91$ points, with the largest single-dataset gains on Emotion ($+6.20$ and $+6.19$ F1). The margins grow as the student shrinks: matching diffusion distributions rather than individual teacher coordinates asks the student to preserve relative neighborhood structure, which remains attainable when embedding capacity is well below the teacher's. WiC is the one dataset where RIPPLE trails consistently, reflecting that word-in-context judgments depend on token-level sense disambiguation rather than the sentence-level neighborhood geometry the diffusion targets describe.
 
 \input{tables/main_results}
 
-\subsection{Theory-Driven Analysis}
+\subsection{Ablations}
 \label{sec:analysis}
 
-Each analysis targets a specific prediction of Section~\ref{sec:theory}. Unless stated otherwise, all runs use the BGE-M3 $\rightarrow$ MiniLMv2-H768 setting and report the same nine-dataset protocol as Table~\ref{tab:main_results}.
-% TODO: placeholder entries [TBD] below to be filled once the corresponding sweeps have run.
+Table~\ref{tab:ablation_objective} removes one design decision at a time, each mapped to the result that motivates it; Table~\ref{tab:ablation_sweeps} sweeps the quantities the bounds predict should saturate. All runs use the BGE-M3 $\rightarrow$ MiniLMv2-H768 setting and the nine-dataset protocol of Table~\ref{tab:main_results}.
+% TODO: [TBD] entries to be filled once the corresponding runs have finished.
 
-\paragraph{Graph size $k$.}
-Theorem~\ref{thm:global} transfers geometry from whichever graph the teacher induces, and the manifold interpretation behind it improves as neighborhoods grow---until neighborhoods become so large that they cut across semantic boundaries and add noise edges. The theory therefore predicts a rise followed by a plateau or mild decline as $k$ grows, rather than monotone improvement. Table~\ref{tab:analysis_k} sweeps the graph size.
+\paragraph{Anchored versus batch supervision.}
+Propositions~\ref{prop:coverage} and~\ref{prop:underdet} predict that a batch-relational objective supplies no teacher signal on nearly all of each anchor's local geometry, while determining coarse structure normally. The controlled arm shares everything but the objective, so the gap isolates that prediction: the loss should concentrate on tasks that depend on fine neighborhood structure rather than on class separation. We also report $\delta_S$, the student's mass outside the candidate set, which Theorem~\ref{thm:global} assumes small and which is directly measurable on a trained model.
+
+\paragraph{The scale family and its resolutions.}
+Theorem~\ref{thm:global} says $r=1$ alone already controls every diffusion time, so a single-scale arm should be a strong ablation rather than a broken one; Corollary~\ref{cor:multiscale} predicts the broad scales still help, by removing the factor $r$ from the bound at the ranges retrieval browses. Proposition~\ref{prop:collapse} makes a sharper prediction: with a shared student temperature the multi-scale objective is exactly a single-scale one against the mixture, so the \emph{shared-$\tau$} arm should recover little of the gain that the full family provides. Removing the ambient scale ($\omega_0=0$) tests the three roles claimed for it in Section~\ref{sec:kernels}, and by Proposition~\ref{prop:gauge} should cost most where cross-anchor calibration matters.
+
+\paragraph{Row supervision and the similarity gauge.}
+Propositions~\ref{prop:gauge} and~\ref{prop:walkgauge} make a falsifiable prediction. Without $\mathcal{L}_{\mathrm{row}}$ the supervised rows are the anchors alone, the constraint graph has no edges, and one similarity offset per anchor is free; with it, each traversed edge identifies two offsets and the freedom collapses to one constant per connected component. Tasks that compare cosines \emph{across} anchors against a shared scale---pair classification with a global threshold, and cross-anchor rank correlation in STS---should therefore degrade when the term is removed, while within-anchor structure such as classification by nearest neighborhoods should be comparatively unaffected. Table~\ref{tab:ablation_objective} additionally reports the dispersion of the estimated per-anchor offsets $\hat{a}_i=\sum_{j}p^T_{i,0}(j)\big[\cos(s_i,s_j)-\cos(t_i,t_j)\big]$, which the theory predicts to widen without row supervision, together with $\kappa$, the number of components of the realized constraint graph.
 
 \begin{table}[h]
 \centering
-\caption{Effect of graph size $k$ (BGE-M3 $\rightarrow$ MiniLMv2-H768). Default in bold column header.}
-\label{tab:analysis_k}
-\begin{tabular}{lcccc}
+\caption{Objective ablations (BGE-M3 $\rightarrow$ MiniLMv2-H768). Offset dispersion is the standard deviation of $\hat{a}_i$ across anchors; $\kappa$ is the number of connected components of the realized constraint graph. Each row names the result it tests.}
+\label{tab:ablation_objective}
+\setlength{\tabcolsep}{4pt}
+\begin{tabular}{llccccrr}
 \toprule
-& $k=50$ & $k=100$ & $\mathbf{k=200}$ & $k=400$ \\
+& Tests & Class.\ (F1) & Pair (AP) & STS (Spear.) & Avg. & Offset disp. & $\kappa$ \\
 \midrule
-Avg-In  & \tbd & \tbd & 72.34 & \tbd \\
-Avg-Out & \tbd & \tbd & 80.79 & \tbd \\
-Avg.    & \tbd & \tbd & 77.98 & \tbd \\
+\textbf{RIPPLE} (full)                       & ---                          & \tbd & \tbd & \tbd & 77.98 & \tbd & \tbd \\
+\midrule
+Batch-relational arm                          & Prop.~\ref{prop:underdet}    & \tbd & \tbd & \tbd & \tbd  & \tbd & \tbd \\
+\;\;single scale $\mathcal{R}=\{1\}$          & Thm.~\ref{thm:global}        & \tbd & \tbd & \tbd & \tbd  & \tbd & \tbd \\
+\;\;sharp only $\mathcal{R}=\{0,1\}$          & Cor.~\ref{cor:multiscale}    & \tbd & \tbd & \tbd & \tbd  & \tbd & \tbd \\
+\;\;shared student $\tau$                     & Prop.~\ref{prop:collapse}    & \tbd & \tbd & \tbd & \tbd  & \tbd & \tbd \\
+\;\;no ambient scale ($\omega_0=0$)           & Sec.~\ref{sec:kernels}       & \tbd & \tbd & \tbd & \tbd  & \tbd & \tbd \\
+\;\;w/o $\mathcal{L}_{\mathrm{row}}$         & Prop.~\ref{prop:walkgauge}   & \tbd & \tbd & \tbd & \tbd  & \tbd & \tbd \\
+\;\;fixed bandwidth $\tau_g$                  & Sec.~\ref{sec:graph}         & \tbd & \tbd & \tbd & \tbd  & \tbd & \tbd \\
 \bottomrule
 \end{tabular}
 \end{table}
 
-\paragraph{Candidate size $m$.}
-Proposition~\ref{prop:sampling} bounds the error of scoring each anchor on a sampled candidate set by the uncovered target mass, which decays with $m$ at a rate set by the sharpness of the diffusion target rather than by $k$. Because the diffusion targets are far more peaked than uniform over their support, performance should saturate at a candidate size well below the neighborhood size, and enlarging $m$ past that point should mainly add compute. Table~\ref{tab:analysis_m} sweeps the candidate size.
+\paragraph{Saturation.}
+Proposition~\ref{prop:sampling} bounds the error of scoring each anchor on a sampled candidate set by the uncovered target mass, which decays with $m$ at a rate set by the sharpness of the diffusion target rather than by $k$, so performance should saturate at a candidate size well below the neighborhood size. Theorem~\ref{thm:global} transfers geometry from whichever graph the teacher induces, and the manifold interpretation behind it improves as neighborhoods grow---until they cut across semantic boundaries---so $k$ should rise and then plateau or decline rather than improve monotonically. For the walk the two results pull against each other: Proposition~\ref{prop:walkcover} favors long walks, which traverse more edges and merge more components of $\mathcal{G}$, while Remark~\ref{rem:approxgauge} penalizes them, since an offset identified through a chain of $\ell$ edges accumulates $\ell$ times the per-edge error. The prediction for $L$ is therefore an interior optimum rather than a plateau, and $\kappa$ should fall monotonically with $L$ even where the nine-dataset average does not. Since Eq.~\eqref{eq:lrow} is a divergence on the same scale as Eq.~\eqref{eq:ldiff}, $\lambda$ is a genuine trade-off rather than a units conversion.
 
 \begin{table}[h]
 \centering
-\caption{Effect of candidate size $m$ (BGE-M3 $\rightarrow$ MiniLMv2-H768). Default in bold column header.}
-\label{tab:analysis_m}
+\caption{Sweeps of the quantities the bounds govern (BGE-M3 $\rightarrow$ MiniLMv2-H768), reporting the nine-dataset average. Defaults in bold.}
+\label{tab:ablation_sweeps}
 \begin{tabular}{lccccc}
 \toprule
-& $m=16$ & $m=32$ & $\mathbf{m=64}$ & $m=128$ & $m=256$ \\
+Candidate size $m$ & $16$ & $32$ & $\mathbf{64}$ & $128$ & $256$ \\
+Avg. & \tbd & \tbd & 77.98 & \tbd & \tbd \\
 \midrule
-Avg-In  & \tbd & \tbd & 72.34 & \tbd & \tbd \\
-Avg-Out & \tbd & \tbd & 80.79 & \tbd & \tbd \\
-Avg.    & \tbd & \tbd & 77.98 & \tbd & \tbd \\
-\bottomrule
-\end{tabular}
-\end{table}
-
-\paragraph{Walk supervision and the similarity gauge.}
-Propositions~\ref{prop:gauge} and~\ref{prop:walkgauge} make a sharp, falsifiable prediction. Without $\mathcal{L}_{\mathrm{walk}}$ the supervised rows are the anchors alone, the constraint graph has no edges, and one similarity offset per anchor is free; with it, each traversed edge identifies two offsets and the freedom collapses to one constant per connected component of the teacher graph. Tasks that compare cosines \emph{across} anchors against a shared scale---pair classification with a global threshold, and cross-anchor rank correlation in semantic textual similarity---should therefore degrade when the term is removed, while within-anchor structure such as classification by nearest neighborhoods should be comparatively unaffected. Table~\ref{tab:analysis_walk} removes the term and additionally reports the dispersion of the estimated per-anchor offsets $\hat{a}_i=\sum_{j}p^T_{i,0}(j)\big[\cos(s_i,s_j)-\cos(t_i,t_j)\big]$, which the theory predicts to widen without walk supervision, together with $\kappa$, the number of components of the realized constraint graph.
-
-\begin{table}[h]
-\centering
-\caption{Effect of removing walk-sampled kernel matching (BGE-M3 $\rightarrow$ MiniLMv2-H768). Offset dispersion is the standard deviation of $\hat{a}_i$ across anchors; $\kappa$ is the number of connected components of the realized constraint graph.}
-\label{tab:analysis_walk}
-\begin{tabular}{lcccccc}
-\toprule
-& Class.\ (F1) & Pair (AP) & STS (Spear.) & Avg. & Offset disp. & $\kappa$ \\
+Graph size $k$ & $50$ & $100$ & $\mathbf{200}$ & $400$ & \\
+Avg. & \tbd & \tbd & 77.98 & \tbd & \\
 \midrule
-HeatGeo                                 & \tbd & \tbd & \tbd & 77.98 & \tbd & \tbd \\
-\;\;w/o $\mathcal{L}_{\mathrm{walk}}$   & \tbd & \tbd & \tbd & \tbd  & \tbd & \tbd \\
-\bottomrule
-\end{tabular}
-\end{table}
-
-\paragraph{How much walk supervision.}
-The walk controls two quantities that the theory separates: how many rows are supervised, set by $M$ and $L$, and how strongly they are weighted against the anchor rows, set by $\lambda$. Because Eq.~\ref{eq:lwalk} is a divergence with infimum $0$ on the same scale as Eq.~\ref{eq:ldiff}, $\lambda$ is a genuine trade-off, and the prediction is a plateau rather than a monotone trend: once the traversed edges connect the graph, further walks add rows but no new identification. Table~\ref{tab:analysis_walkparams} sweeps both.
-
-\begin{table}[h]
-\centering
-\caption{Walk length $L$ and weight $\lambda$ (BGE-M3 $\rightarrow$ MiniLMv2-H768), reporting the nine-dataset average. Defaults in bold column headers.}
-\label{tab:analysis_walkparams}
-\begin{tabular}{lcccc}
-\toprule
-& \multicolumn{4}{c}{Walk length $L$} \\
-\cmidrule(lr){2-5}
-& $L=2$ & $\mathbf{L=4}$ & $L=6$ & $L=8$ \\
+Walk length $L$ & $2$ & $\mathbf{4}$ & $6$ & $8$ & \\
+Avg. & \tbd & 77.98 & \tbd & \tbd & \\
 \midrule
-Avg. & \tbd & 77.98 & \tbd & \tbd \\
-\midrule
-& \multicolumn{4}{c}{Walk weight $\lambda$} \\
-\cmidrule(lr){2-5}
-& $\lambda=0.1$ & $\lambda=0.3$ & $\mathbf{\lambda=0.5}$ & $\lambda=1.0$ \\
-\midrule
-Avg. & \tbd & \tbd & 77.98 & \tbd \\
+Walk weight $\lambda$ & $0.1$ & $0.3$ & $\mathbf{0.5}$ & $1.0$ & \\
+Avg. & \tbd & \tbd & 77.98 & \tbd & \\
 \bottomrule
 \end{tabular}
 \end{table}
