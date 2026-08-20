@@ -39,6 +39,9 @@ class TALASConfig(BaseConfig):
     paper_pair = DEFAULT_TALAS_PAIR
     student_model_name = TALAS_PAPER_PAIRS[paper_pair]["student"]
     teacher_model_name = TALAS_PAPER_PAIRS[paper_pair]["teacher"]
+    # Some MiniLM checkpoints are stored in fp16. TALAS uses GradScaler before
+    # the ASAM perturbation, which requires fp32 trainable master weights.
+    student_dtype = "float32"
     teacher_dtype = "bfloat16"
     
     student_special_token = "##"

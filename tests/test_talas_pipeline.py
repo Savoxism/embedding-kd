@@ -48,6 +48,7 @@ def test_talas_paper_pair_presets_are_exact():
     assert config.teacher_model_name == preset["teacher"]
     assert config.student_model_name == preset["student"]
     assert config.pooling_method == preset["pooling_method"]
+    assert config.student_dtype == "float32"
 
 
 def test_unknown_talas_pair_fails():
