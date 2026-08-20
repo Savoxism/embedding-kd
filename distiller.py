@@ -70,6 +70,15 @@ from src.heatgeo import HeatGeoCandidateSampler, build_or_load_heatgeo_artifact
 from src.loss import info_nce, pair_inbatch_similarity_loss
 from src.pooling import last_token_pool
 
+# Global gradient-norm ceiling, applied after `scaler.unscale_`. Not configuration:
+# 1.0 is the standard convention for transformer fine-tuning (Devlin et al., 2019;
+# it is also the HuggingFace `Trainer` default), applied here without modification.
+# The step used to have no ceiling at all -- only a finiteness check that skipped
+# the update outright -- so a single anchor whose softmax sat at a per-row bandwidth
+# near tau_min could take an arbitrarily large step, and the only evidence of it
+# would be the loss curve afterwards.
+MAX_GRAD_NORM = 1.0
+
 
 def is_finite(x: torch.Tensor) -> bool:
     return torch.is_tensor(x) and torch.isfinite(x).all().item()
@@ -1005,6 +1014,17 @@ class KnowledgeDistiller:
                 self.scheduler.step()
                 return loss, {**metrics, "skip": "grad_inf"}
 
+            # Every parameter the optimizer will move, not just the student's: the
+            # multi-layer branch adds `proj_s2t` at 2x the learning rate, and a
+            # ceiling that skips it is not a ceiling.
+            clipped = [
+                p
+                for group in self.optimizer.param_groups
+                for p in group["params"]
+                if p.grad is not None
+            ]
+            grad_norm = torch.nn.utils.clip_grad_norm_(clipped, MAX_GRAD_NORM)
+            metrics["grad_norm"] = float(grad_norm)
             self.scaler.step(self.optimizer)
             self.scaler.update()
             assert_module_parameters_finite(

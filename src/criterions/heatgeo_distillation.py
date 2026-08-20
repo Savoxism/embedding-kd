@@ -182,6 +182,14 @@ class HeatGeoDistillation(nn.Module):
       last free student temperatures, and under ``row_temps`` it inherits the
       per-row tie automatically: tau_r(i) = sqrt(r) * tau_i.
 
+    **Scale weights.** ``omega_r = 1/r`` with ``omega_0 = omega_1``: a scale's
+    influence falls off with the diffusion time it describes, and the ambient scale
+    sits at the sharpest scale's weight. ``omega_0`` is ``direct_weight`` and
+    ``omega_r`` for r >= 1 is ``scale_weights``; the two live on one scale and are
+    normalized together, once, in ``forward``. ``scale_weights`` is therefore held
+    unnormalized -- normalizing it on its own would silently redefine what
+    ``direct_weight`` is measured against.
+
     Passing the removed knobs (``scale_temps``, ``broad_scale_temps``,
     ``walk_temp``, ``direct_student_temp``) raises rather than being silently
     absorbed.
@@ -229,7 +237,9 @@ class HeatGeoDistillation(nn.Module):
         super().__init__()
         for name, why in self._TIED_KNOBS.items():
             if name in kwargs:
-                raise ValueError(f"HeatGeoDistillation no longer accepts {name!r}: {why}")
+                raise ValueError(
+                    f"HeatGeoDistillation no longer accepts {name!r}: {why}"
+                )
         if graph_temp <= 0.0:
             raise ValueError("graph_temp must be positive")
         self.student_dim = student_dim
@@ -244,7 +254,9 @@ class HeatGeoDistillation(nn.Module):
         # that chains it along walk edges both carry over row by row.
         if row_temps is not None:
             temps_row = row_temps.detach().to(torch.float32).reshape(-1)
-            if not bool(torch.isfinite(temps_row).all()) or bool((temps_row <= 0).any()):
+            if not bool(torch.isfinite(temps_row).all()) or bool(
+                (temps_row <= 0).any()
+            ):
                 raise ValueError("row_temps must be finite and positive")
             self.register_buffer("row_temps", temps_row, persistent=False)
         else:
@@ -292,17 +304,28 @@ class HeatGeoDistillation(nn.Module):
             # distillation, Hinton et al. 2015): the student softmax at scale 0 in
             # forward() reuses this exact value.
             self.direct_temp = float(direct_temp)
-            self.register_buffer(
-                "direct_weight", torch.tensor([float(direct_weight)])
-            )
+            self.register_buffer("direct_weight", torch.tensor([float(direct_weight)]))
         else:
             self.teacher_bank = None
             self.direct_temp = float(direct_temp)
 
+        # Stored *unnormalized*, on purpose. The stated rule is omega_r = 1/r with
+        # omega_0 = omega_1, and omega_0 is `direct_weight`, which is concatenated
+        # onto this vector in forward(). Normalizing here first would put
+        # direct_weight on a different scale from the ladder it is supposed to tie
+        # to: with (1, 1/2, 1/4) the ladder became (0.571, 0.286, 0.143) and
+        # direct_weight=1.0 then bought the ambient scale 0.5 of the total instead
+        # of the 0.364 that omega_0 = omega_1 asks for -- the diffusion group was
+        # 21% light against the rule the paper states. forward() normalizes once,
+        # after the concatenation, which is the only point where the full weight
+        # vector exists.
         weights = torch.tensor(list(scale_weights), dtype=torch.float32)
         if weights.numel() == 0:
             weights = torch.ones(1, dtype=torch.float32)
-        weights = weights / weights.sum().clamp_min(1e-12)
+        if not bool(torch.isfinite(weights).all()) or bool((weights < 0).any()):
+            raise ValueError("scale_weights must be finite and non-negative")
+        if float(weights.sum()) <= 0.0:
+            raise ValueError("scale_weights must not sum to zero")
         self.register_buffer("scale_weights", weights)
 
         # The whole diffusion ladder is derived from the sharpest scale by
@@ -318,6 +341,33 @@ class HeatGeoDistillation(nn.Module):
             scales = tuple(int(r) for r in diffusion_scales)
         if min(scales) < 1:
             raise ValueError(f"diffusion_scales must be >= 1, got {scales}")
+        # Two conditions the rest of the class assumes and nothing used to enforce.
+        #
+        # *Sorted and unique.* The artifact stores its scales through `_as_tuple`,
+        # which sorts and deduplicates, so `pool_probs[r]` is indexed by rank in the
+        # sorted order. This class indexes `scale_sqrt` and `scale_weights` by
+        # position in the tuple as given. Pass (4, 1, 2) and the artifact holds
+        # (1, 2, 4) while the criterion matches them at tau = (tau_1, tau_1/2,
+        # tau_1/sqrt(2)) and weights them by 1/4, 1, 1/2 -- every scale supervised
+        # at another scale's temperature, silently.
+        #
+        # *Sharpest scale is r = 1.* The whole temperature ladder hangs off
+        # tau_1 = "the bandwidth this row's target was built at", which holds
+        # because the r=1 lazy-walk target after dropping self-mass IS the
+        # transition row. At r >= 2 it is not, so the tie is simply false and
+        # tau_r = sqrt(r/r_0) tau_1 is anchored to nothing.
+        if scales != tuple(sorted(set(scales))):
+            raise ValueError(
+                f"diffusion_scales must be sorted and unique, got {scales}: the "
+                f"artifact stores them sorted, so any other order matches each "
+                f"scale at another scale's temperature and weight"
+            )
+        if scales[0] != 1:
+            raise ValueError(
+                f"diffusion_scales must start at 1, got {scales}: the temperature "
+                f"tie tau_1 = graph bandwidth holds because the r=1 target is the "
+                f"transition row, and the whole ladder is derived from it"
+            )
         self.diffusion_scales = scales
         sqrt_r = torch.tensor(
             [(r / scales[0]) ** 0.5 for r in scales], dtype=torch.float32
@@ -366,9 +416,8 @@ class HeatGeoDistillation(nn.Module):
             dtype=teacher_probs.dtype,
             device=teacher_probs.device,
         )
-        scatter_index = (
-            inverse.view(batch_size, 1, candidate_size)
-            .expand(batch_size, n_scales, candidate_size)
+        scatter_index = inverse.view(batch_size, 1, candidate_size).expand(
+            batch_size, n_scales, candidate_size
         )
         target.scatter_add_(2, scatter_index, teacher_probs)
 
@@ -472,7 +521,9 @@ class HeatGeoDistillation(nn.Module):
         keep = keep & (nb_pos != src_pos.unsqueeze(1))
 
         target = torch.zeros(src_nodes.numel(), pool_size, device=device)
-        target.scatter_add_(1, nb_pos, torch.where(keep, probs, torch.zeros_like(probs)))
+        target.scatter_add_(
+            1, nb_pos, torch.where(keep, probs, torch.zeros_like(probs))
+        )
         allowed = target > 0
 
         # Two live columns is the smallest denominator on which a softmax has any
@@ -567,7 +618,9 @@ class HeatGeoDistillation(nn.Module):
             batch_size * candidate_size, -1
         )
 
-        share = self.share_in_batch and candidate_idx is not None and anchor_idx is not None
+        share = (
+            self.share_in_batch and candidate_idx is not None and anchor_idx is not None
+        )
         if share:
             (
                 pool_embeddings,
@@ -609,7 +662,9 @@ class HeatGeoDistillation(nn.Module):
         # Scale r=0: the teacher's own similarity over every scored column. Without
         # it, every column outside the anchor's diffusion pool carries target 0 and
         # is pushed toward maximal dissimilarity regardless of what the teacher says.
-        self.direct_active = self.use_direct and anchor_idx is not None and column_idx is not None
+        self.direct_active = (
+            self.use_direct and anchor_idx is not None and column_idx is not None
+        )
         if self.direct_active:
             direct = self._direct_target(anchor_idx, column_idx, self_mask, share)
             target = torch.cat([direct.unsqueeze(1).to(target.dtype), target], dim=1)
@@ -660,8 +715,9 @@ class HeatGeoDistillation(nn.Module):
                 logits = similarity / (row_tau * sqrt_r[scale_idx - offset])
             else:
                 logits = similarity / temps[scale_idx]
-            logits = logits.masked_fill(self_mask if is_direct else diffusion_mask,
-                                        float("-inf"))
+            logits = logits.masked_fill(
+                self_mask if is_direct else diffusion_mask, float("-inf")
+            )
             log_probs = F.log_softmax(logits, dim=-1)
             log_probs_per_scale.append(log_probs)
             scale_target = target[:, scale_idx, :]
@@ -690,9 +746,7 @@ class HeatGeoDistillation(nn.Module):
                 )
             elif not self._warned_walk_needs_sharing:
                 self._warned_walk_needs_sharing = True
-                print(
-                    "HeatGeo: walk loss requires share_in_batch=True; term disabled."
-                )
+                print("HeatGeo: walk loss requires share_in_batch=True; term disabled.")
 
         total_loss = loss_diff + self.walk_weight * loss_walk
 
@@ -786,8 +840,8 @@ class HeatGeoDistillation(nn.Module):
         )
         mixture_entropy = -(mixture * log_mixture).sum(dim=-1)
         group_entropy = (target_entropy[:, offset:] * w_norm).sum(dim=-1)
-        js_floor = (
-            w_total.squeeze(-1) * (mixture_entropy - group_entropy).clamp_min(0.0)
+        js_floor = w_total.squeeze(-1) * (mixture_entropy - group_entropy).clamp_min(
+            0.0
         )
 
         # Full-stack weighted entropy: loss_diff = CE - H holds over every scale that
