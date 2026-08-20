@@ -54,7 +54,7 @@ if (( FREE_KB < 30 * 1024 * 1024 )); then
 fi
 
 "$PYTHON_BIN" - <<'PY'
-from huggingface_hub import snapshot_download
+from huggingface_hub import scan_cache_dir
 from config.talas_config import TALAS_PAPER_PAIRS
 
 model_ids = {
@@ -62,8 +62,20 @@ model_ids = {
     for value in TALAS_PAPER_PAIRS.values()
     for name in ("teacher", "student")
 }
+cached_repos = {repo.repo_id: repo for repo in scan_cache_dir().repos}
 for model_id in sorted(model_ids):
-    snapshot_download(repo_id=model_id, local_files_only=True)
+    repo = cached_repos.get(model_id)
+    if repo is None:
+        raise RuntimeError(f"model is absent from the local Hugging Face cache: {model_id}")
+    files = {
+        file.file_name
+        for revision in repo.revisions
+        for file in revision.files
+    }
+    if "config.json" not in files:
+        raise RuntimeError(f"cached model has no config.json: {model_id}")
+    if not any(name.endswith((".safetensors", ".bin")) for name in files):
+        raise RuntimeError(f"cached model has no weight file: {model_id}")
     print(f"offline model ready: {model_id}")
 PY
 
