@@ -13,9 +13,10 @@ baseline values unchanged.
 - Rank methods by the displayed mean only; the standard deviation does not
   affect rank.
 - Within each teacher--student setting and metric column, bold the highest
-  compact-model mean and underline the second-highest compact-model mean.
-- Exclude the teacher row from ranking. Include all student/baseline rows,
-  including the undistilled student and SimCSE-unsup.
+  adaptation/distillation mean and underline the second-highest mean.
+- Preserve the table's established ranking convention: exclude the teacher and
+  undistilled `Student base` rows; include methods from SimCSE-unsup through
+  RIPPLE.
 - Preserve the existing table layout and method ordering.
 
 ## Caption
