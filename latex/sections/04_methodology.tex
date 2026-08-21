@@ -24,7 +24,16 @@ which suppresses one-directional hub edges. The weighted adjacency and transitio
     \qquad
     P^T=(D^T)^{-1}W^T,
 \end{equation}
-where $D^T$ is the diagonal degree matrix. The main experiments use a fixed bandwidth $\tau_i=\tau_g$ for every row. The implementation also supports entropic per-row bandwidths with fixed target perplexity~\citep{hinton2002sne,maaten2008tsne,vladymyrov2013entropic}; all results below apply row-wise and require only that the student use the bandwidth with which the corresponding teacher row was constructed. Isolated nodes fall back to their directed teacher neighbors. After this preprocessing step, the teacher model is no longer needed.
+where $D^T$ is the diagonal degree matrix. RIPPLE fixes a target perplexity $\rho$ rather than a global graph bandwidth. For a row of degree $d_i>\rho$, its bandwidth $\tau_i$ is chosen so that
+\begin{equation}
+\label{eq:entropic-bandwidth}
+    H(P_i^T)
+    =
+    -\sum_{j\in\mathcal M_k^T(i)}P_{ij}^T\log P_{ij}^T
+    =
+    \log\rho.
+\end{equation}
+Thus every sufficiently high-degree transition row has the same effective neighborhood size despite differences in the scale and density of teacher similarities~\citep{hinton2002sne,maaten2008tsne,vladymyrov2013entropic}. For non-degenerate rows the entropy is monotone in $\tau_i$, so the solution is obtained by bisection; when $d_i\leq\rho$, the target is clipped just below the maximum attainable entropy and the row is nearly uniform. The solved $\tau_i$ values are stored with the graph and reused by the corresponding student and walk readouts. They are derived preprocessing quantities, not tunable model parameters. Moreover, under an affine rescaling $c^T_{ij}\mapsto a c^T_{ij}+b$ with $a>0$, the solution changes as $\tau_i\mapsto a\tau_i$ and $P_i^T$ is unchanged. Isolated nodes fall back to their directed teacher neighbors. After this preprocessing step, the teacher model is no longer needed.
 
 Each row $P_i^T$ is a teacher-selected conditional neighborhood distribution. Unlike an in-batch target, its support is tied to corpus geometry and is available whenever $x_i$ is sampled as an anchor. We use the lazy operator $\widetilde P^T=\tfrac12(I+P^T)$ to define longer walks without periodicity.
 
@@ -132,7 +141,7 @@ Let $p$ be a target distribution and let $C$ contain $m$ independent draws from 
     \qquad
     \mathrm{Tail}_p(t)=\sum_{j:p_j<t}p_j.
 \end{equation}
-If every supported atom has mass at least $c/\rho$, where $\rho=e^{H(p)}$ is the target perplexity, the expected missed mass is at most $e^{-cm/\rho}$.
+If every supported atom has mass at least $c/\rho_p$, where $\rho_p=e^{H(p)}$ is the effective support of the particular target $p$, the expected missed mass is at most $e^{-cm/\rho_p}$.
 \end{proposition}
 
 The relevant budget is therefore the target's effective support, not the corpus size and not the raw number of nodes reachable by diffusion. In the regime studied here, this permits $m\ll k$. The implementation draws high-mass diffusion candidates without replacement using Gumbel top-$k$ sampling~\citep{efraimidis2006weighted,kool2019stochastic}, then adds teacher hard negatives and random negatives. These negatives expose the student to columns outside the retained diffusion mass and empirically control the student leakage term $\delta_S$ in Theorem~\ref{thm:global}; the theorem keeps this quantity as an explicit hypothesis.

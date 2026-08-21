@@ -1,7 +1,24 @@
 \section{Implementation Notes and Analysis Protocols}
 \label{app:hyper}
 
-This appendix records the temperature ladder and the graph, walk, and analysis details deferred from Section~\ref{sec:method}. The implementation has no separate teacher and student temperature knobs for transition-row or ambient matching: each such term reuses the temperature with which its target was constructed.
+This appendix records graph-bandwidth calibration, the temperature ladder, and the walk and analysis details deferred from Section~\ref{sec:method}. The implementation has no separate teacher and student temperature knobs for transition-row or ambient matching: each such term reuses the temperature with which its target was constructed.
+
+\subsection{Entropic row-bandwidth calibration}
+\label{app:entropic-bandwidth}
+
+For one mutual-neighborhood row, write $p_j(\beta)\propto\exp(\beta c^T_{ij})$ with inverse bandwidth $\beta=1/\tau_i$. Its entropy satisfies
+\begin{equation}
+    H_i(\beta)
+    =
+    \log Z_i(\beta)-\beta\,\mathbb E_{p(\beta)}[c^T_{ij}],
+    \qquad
+    \frac{\mathrm dH_i}{\mathrm d\beta}
+    =
+    -\beta\,\operatorname{Var}_{p(\beta)}[c^T_{ij}].
+\end{equation}
+Hence $H_i$ decreases monotonically with $\beta$ and, for a non-degenerate row whenever the requested entropy is attainable, Eq.~\eqref{eq:entropic-bandwidth} has a unique positive solution. We find it by bracketing and bisection. A row with degree $d_i\leq\rho$ cannot attain perplexity $\rho$; its target entropy is clipped to $(1-10^{-3})\log d_i$ to keep the numerical solution finite. A degree-one or constant-score row is assigned its only meaningful uniform distribution. We store the resulting $\tau_i$ with each transition row and report the number of clipped rows during graph construction.
+
+This calibration also removes teacher-specific similarity scale from the graph distribution. If $c'_{ij}=a c^T_{ij}+b$ for $a>0$, then $\tau'_i=a\tau_i$ yields exactly the same normalized row. The experimental hyperparameter is therefore the effective neighborhood size $\rho=30$, not a corpus-wide temperature.
 
 \subsection{The rest of the temperature ladder}
 \label{app:hyper-ladder}

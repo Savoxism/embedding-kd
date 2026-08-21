@@ -48,9 +48,11 @@ Edges are kept only when both endpoints agree (mutual kNN). Isolated nodes fall 
 
 ### 3. Transition Distribution
 
-Each graph row becomes a transition distribution with temperature $\tau_g$:
+Each graph row becomes a transition distribution with a row-specific bandwidth $\tau_i$:
 
-$$P_{ij} = \frac{\exp(\cos(t_i, t_j) / \tau_g)}{\sum_{u \in \mathcal{N}(i)} \exp(\cos(t_i, t_u) / \tau_g)}$$
+$$P_{ij} = \frac{\exp(\left(\cos(t_i, t_j) / \tau_i\right)}{\sum_{u \in \mathcal{N}(i)} \exp(\left(\cos(t_i, t_u) / \tau_i\right)}$$
+
+The bandwidth is not tuned globally. For every non-degenerate row, the graph builder solves $H(P_i)=\log\rho$ with target perplexity $\rho=30$. Rows whose degree is at most $\rho$ are clipped near their maximum attainable entropy. The solved bandwidths are stored in the graph artifact and reused by the student readouts.
 
 ### 4. Multi-Scale Diffusion Targets
 
@@ -94,9 +96,9 @@ All hyperparameters are in `config/heatgeo_config.py`. Key groups:
 
 | Group | Parameters | Description |
 |:---|:---|:---|
-| Teacher Graph | `graph_k`, `graph_temp`, `diffusion_scales`, `pool_size` | kNN construction and diffusion |
+| Teacher Graph | `graph_k`, `perplexity`, `diffusion_scales`, `truncation_tolerance` | kNN construction, adaptive row bandwidths, and diffusion |
 | Candidate Sampling | `candidate_size`, `diffusion_quota`, `hard_neg_k`, `random_neg_k` | Per-anchor candidate composition |
-| Walk Distillation | `num_walks`, `walk_length`, `walk_weight`, `walk_start_epoch` | Random walk trajectory loss (its temperature is tied to `graph_temp`) |
+| Walk Distillation | `num_walks`, `walk_length`, `walk_weight`, `walk_start_epoch` | Walk-selected row matching; each row reuses its stored bandwidth |
 | Training | `batch_size`, `epochs`, `learning_rate`, `min_lr` | Standard training setup |
 | Objectives | `direct_weight`, `direct_temp`, `scale_weights` | Loss component weights |
 
