@@ -111,7 +111,7 @@ Let all graph scales for anchor $i$ share the same student distribution $q_i^S$ 
 so optimization is equivalent to matching the single mixture $\sum_r\omega_rp^T_{i,r}$.
 \end{proposition}
 
-Scale-specific temperatures make the student distributions distinct functions of the same cosine scores, preventing this algebraic collapse. The temperature tie at $r=1$ and the remaining ladder are discussed in Appendix~\ref{app:hyper}.
+Scale-specific temperatures make the student distributions distinct functions of the same cosine scores, preventing this algebraic collapse. By construction, the $r=1$ and walk readouts reuse the bandwidth of their teacher transition row, and the ambient target uses the same $\tau_0$ on both sides; Appendix~\ref{app:hyper} records the remaining temperature ladder.
 
 \subsection{Efficient Candidate Sampling}
 \label{sec:candidates}

@@ -1,41 +1,12 @@
-\section{Objective Constraints and Implementation Notes}
+\section{Implementation Notes and Analysis Protocols}
 \label{app:hyper}
 
-This appendix collects material deferred from Section~\ref{sec:method}: the constraint that fixes the student temperature at any term whose target is a transition row, and three details of the graph and walk construction.
-
-\subsection{Temperatures tied to transition-row targets}
-\label{app:hyper-temptie}
-
-Section~\ref{sec:objective} gives each scale its own student temperature. Two terms have none to give: the sharpest graph scale and the row term both match transition rows, and Theorem~\ref{thm:global} and Proposition~\ref{prop:walkgauge} are statements about the student's row at the graph's own bandwidth. Matching at any other temperature would leave those results describing a different object than the one optimized. The proposition below records what goes wrong directly at the level of the loss.
-
-\begin{proposition}[Temperature ties]
-\label{prop:temptie}
-Let $\Omega$ be a column set with $|\Omega|\geq2$, and consider a term with target $\mathrm{softmax}_{\Omega}(c^T_{i\cdot}/\tau)$ and student distribution $\mathrm{softmax}_{\Omega}(c^S_{i\cdot}/\tau_S)$.
-(i) Over score assignments $c^S_{i\cdot}$ the term has infimum $0$, attained exactly on the affine family $c^S_{ij}=(\tau_S/\tau)\,c^T_{ij}+a_i$ on $\Omega$ --- a shift family when $\tau_S=\tau$ and a rescaling otherwise.
-(ii) Suppose the ambient term at the same row also vanishes, on a set $\Omega_0$ such that $\Omega\cap\Omega_0$ contains columns $j,j'$ with $c^T_{ij}\neq c^T_{ij'}$. Then $\tau_S=\tau$.
-\end{proposition}
-
-\paragraph{Proof.}
-(i) If the divergence vanishes, the two softmax distributions coincide on $\Omega$, and taking log-ratios of any two columns $j,j'\in\Omega$ (as in Appendix~\ref{app:proof-gauge}) gives
-\begin{equation}
-    \frac{c^S_{ij}-c^S_{ij'}}{\tau_S}
-    =\frac{c^T_{ij}-c^T_{ij'}}{\tau},
-\end{equation}
-so $c^S_{ij}-(\tau_S/\tau)\,c^T_{ij}$ is constant on $\Omega$; call it $a_i$. Conversely, any score assignment of that form produces identical softmax distributions and zero divergence, so the infimum $0$ is attained exactly on the stated family.
-
-(ii) The ambient term carries the same temperature $\tau_0$ on both sides, so its vanishing gives, by the shift case of (i), $c^S_{ij}=c^T_{ij}+b_i$ on $\Omega_0$. Combining with (i) on the overlap,
-\begin{equation}
-    \Big(1-\frac{\tau_S}{\tau}\Big)\,c^T_{ij}=a_i-b_i
-    \qquad\text{for every } j\in\Omega\cap\Omega_0,
-\end{equation}
-and evaluating at two columns with $c^T_{ij}\neq c^T_{ij'}$ forces $\tau_S=\tau$. \qed
-
-Part (ii) is the operative statement: with the ambient scale in the objective, a softmax-of-cosines target must be matched \emph{at its own temperature}, or the two zero sets are disjoint and the objective acquires an artificial floor. The $r=1$ target is the transition row $P^T_i$, a softmax of teacher cosines at the bandwidth $\tau_i$, so $\tau_1(i)=\tau_i$; the walk targets are transition rows as well, so $\tau_w(j)=\tau_j$, which is the tie Proposition~\ref{prop:walkgauge} assumes. The proposition is stated for one row and constrains only the \emph{tie}, saying nothing about the value of $\tau$, so it applies unchanged when every row carries its own bandwidth. The ambient scale uses one $\tau_0$ on both sides, the same-temperature convention of knowledge distillation~\citep{hinton2015distilling}, which by (i) makes its zero set exactly the shift family of Proposition~\ref{prop:gauge}.
+This appendix records the temperature ladder and the graph, walk, and analysis details deferred from Section~\ref{sec:method}. The implementation has no separate teacher and student temperature knobs for transition-row or ambient matching: each such term reuses the temperature with which its target was constructed.
 
 \subsection{The rest of the temperature ladder}
 \label{app:hyper-ladder}
 
-The tie fixes $\tau_1$; the broader diffusion scales are then set by $\tau_r=\sqrt{r}\,\tau_1$, the $\sqrt{t}$ spread of a diffusion at nominal time $r$. We state this as a rule rather than derive it: the lazy walk takes $r/2$ real steps in expectation, so a strict derivation would carry a different constant, and at $r=1$ the tie fixes the value regardless. What the rule buys is that the ladder has no free entries and inherits the per-row tie automatically --- under entropic bandwidths $\tau_r(i)=\sqrt{r}\,\tau_i$ varies by row exactly as $\tau_1$ does. The scale weights are set by the same principle in the other direction, $\omega_r=1/r$ with $\omega_0=\omega_1$, so a scale's influence falls off with the diffusion time it describes.
+The $r=1$ readout uses the graph bandwidth, $\tau_1(i)=\tau_i$. Broader scales are set by $\tau_r(i)=\sqrt{r}\,\tau_i$, following the $\sqrt{t}$ spread of a diffusion at nominal time $r$. This is a rule rather than a derivation: the lazy walk takes $r/2$ real steps in expectation, so a strict derivation would carry a different constant. The ladder therefore has no free entries and automatically inherits entropic per-row bandwidths. Scale weights follow the complementary rule $\omega_r=1/r$ with $\omega_0=\omega_1$, so influence falls with diffusion time.
 
 \subsection{Truncation tolerance}
 \label{app:hyper-truncation}
