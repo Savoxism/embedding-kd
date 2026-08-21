@@ -1,19 +1,9 @@
-\begin{thebibliography}{41}
+\begin{thebibliography}{28}
 \providecommand{\natexlab}[1]{#1}
 \providecommand{\url}[1]{\texttt{#1}}
 \expandafter\ifx\csname urlstyle\endcsname\relax
   \providecommand{\doi}[1]{doi: #1}\else
   \providecommand{\doi}{doi: \begingroup \urlstyle{rm}\Url}\fi
-
-\bibitem[Agarwal et~al.(2024)Agarwal, Vieillard, Zhou, Stanczyk, Garea, Geist,
-  and Bachem]{agarwal2024onpolicy}
-Rishabh Agarwal, Nino Vieillard, Yongchao Zhou, Piotr Stanczyk, Sabela~Ramos
-  Garea, Matthieu Geist, and Olivier Bachem.
-\newblock On-policy distillation of language models: Learning from
-  self-generated mistakes.
-\newblock In \emph{The Twelfth International Conference on Learning
-  Representations, {ICLR} 2024}. OpenReview.net, 2024.
-\newblock URL \url{https://openreview.net/forum?id=3zKtaqxLhW}.
 
 \bibitem[Akram et~al.(2026)Akram, Sturua, Havriushenko, Herreros, G{\"u}nther,
   Werk, and Xiao]{akram2026jinaembeddingsv5}
@@ -30,51 +20,6 @@ Noga Alon, Itai Benjamini, Eyal Lubetzky, and Sasha Sodin.
 \newblock Non-backtracking random walks mix faster.
 \newblock \emph{Communications in Contemporary Mathematics}, 9\penalty0
   (4):\penalty0 585--603, 2007.
-
-\bibitem[Alqahtani et~al.(2021)Alqahtani, Lalwani, Zhang, Romeo, and
-  Mansour]{alqahtani2021ot}
-Sawsan Alqahtani, Garima Lalwani, Yi~Zhang, Salvatore Romeo, and Saab Mansour.
-\newblock Using optimal transport as alignment objective for fine-tuning
-  multilingual contextualized embeddings.
-\newblock \emph{CoRR}, abs/2110.02887, 2021.
-\newblock \doi{10.48550/arXiv.2110.02887}.
-\newblock URL \url{https://arxiv.org/abs/2110.02887}.
-
-\bibitem[Anshumann et~al.(2025)Anshumann, Zaidi, Kedia, Ahn, Kwon, Lee, Lee,
-  and Lee]{anshumann2025sparse}
-Anshumann, Mohd~Abbas Zaidi, Akhil Kedia, Jinwoo Ahn, Taehwak Kwon, Kangwook
-  Lee, Haejun Lee, and Joohyung Lee.
-\newblock Sparse logit sampling: Accelerating knowledge distillation in {LLM}s.
-\newblock In Wanxiang Che, Joyce Nabende, Ekaterina Shutova, and Mohammad~Taher
-  Pilehvar (eds.), \emph{Proceedings of the 63rd Annual Meeting of the
-  Association for Computational Linguistics (Volume 1: Long Papers)}, pp.\
-  18085--18108, Vienna, Austria, July 2025. Association for Computational
-  Linguistics.
-\newblock \doi{10.18653/v1/2025.acl-long.885}.
-\newblock URL \url{https://aclanthology.org/2025.acl-long.885/}.
-
-\bibitem[Calder \& Trillos(2022)Calder and Trillos]{calder2022improved}
-Jeff Calder and Nicol{\'a}s~Garc{\'i}a Trillos.
-\newblock Improved spectral convergence rates for graph laplacians on
-  $\varepsilon$-graphs and k-nn graphs.
-\newblock \emph{Applied and Computational Harmonic Analysis}, 60:\penalty0
-  123--175, 2022.
-
-\bibitem[Chen et~al.(2024)Chen, Xiao, Zhang, Luo, Lian, and Liu]{chen2024bgem3}
-Jianlv Chen, Shitao Xiao, Peitian Zhang, Kun Luo, Defu Lian, and Zheng Liu.
-\newblock {BGE} {M3}-embedding: Multi-lingual, multi-functionality,
-  multi-granularity text embeddings through self-knowledge distillation.
-\newblock \emph{CoRR}, abs/2402.03216, 2024.
-\newblock \doi{10.48550/arXiv.2402.03216}.
-\newblock URL \url{https://arxiv.org/abs/2402.03216}.
-
-\bibitem[Chen et~al.(2025)Chen, Liu, Meng, Chen, Xu, and Zhou]{chen2025cdm}
-Yijie Chen, Yijin Liu, Fandong Meng, Yufeng Chen, Jinan Xu, and Jie Zhou.
-\newblock Enhancing cross-tokenizer knowledge distillation with contextual
-  dynamical mapping.
-\newblock \emph{CoRR}, abs/2502.11104, 2025.
-\newblock \doi{10.48550/arXiv.2502.11104}.
-\newblock URL \url{https://arxiv.org/abs/2502.11104}.
 
 \bibitem[Coifman \& Lafon(2006)Coifman and Lafon]{coifman2006diffusionmaps}
 Ronald~R. Coifman and St{\'e}phane Lafon.
@@ -98,24 +43,22 @@ Pavlos~S. Efraimidis and Paul~G. Spirakis.
 \newblock \emph{Information Processing Letters}, 97\penalty0 (5):\penalty0
   181--185, 2006.
 
-\bibitem[Gao et~al.(2021{\natexlab{a}})Gao, Wu, Wang, Wang, Zang, Wang, and
+\bibitem[Gao et~al.(2021)Gao, Wu, Wang, Wang, Zang, Wang, and
   Hu]{gao2021distilcse}
 Chaochen Gao, Xing Wu, Peng Wang, Jue Wang, Liangjun Zang, Zhongyuan Wang, and
   Songlin Hu.
 \newblock {DistilCSE}: Effective knowledge distillation for contrastive
   sentence embeddings.
-\newblock \emph{CoRR}, abs/2112.05638, 2021{\natexlab{a}}.
+\newblock \emph{CoRR}, abs/2112.05638, 2021.
 \newblock \doi{10.48550/arXiv.2112.05638}.
 \newblock URL \url{https://arxiv.org/abs/2112.05638}.
 
-\bibitem[Gao et~al.(2021{\natexlab{b}})Gao, Yao, and Chen]{gao2021simcse}
-Tianyu Gao, Xingcheng Yao, and Danqi Chen.
-\newblock {SimCSE}: Simple contrastive learning of sentence embeddings.
-\newblock In \emph{Proceedings of the 2021 Conference on Empirical Methods in
-  Natural Language Processing}, pp.\  6894--6910. Association for Computational
-  Linguistics, 2021{\natexlab{b}}.
-\newblock \doi{10.18653/v1/2021.emnlp-main.552}.
-\newblock URL \url{https://aclanthology.org/2021.emnlp-main.552/}.
+\bibitem[Gou et~al.(2025)Gou, Xin, Yu, Song, Zhang, and Wan]{xin2025nrkd}
+Jianping Gou, Xiaomeng Xin, Baosheng Yu, Heping Song, Weiyong Zhang, and
+  Shaohua Wan.
+\newblock Neighborhood relation-based knowledge distillation for image
+  classification.
+\newblock \emph{Neural Networks}, 188:\penalty0 107429, 2025.
 
 \bibitem[Hinton \& Roweis(2002)Hinton and Roweis]{hinton2002sne}
 Geoffrey~E. Hinton and Sam~T. Roweis.
@@ -158,26 +101,6 @@ Seungyeon Kim, Ankit~Singh Rawat, Manzil Zaheer, Sadeep Jayasumana,
   retrieval.
 \newblock \emph{arXiv preprint arXiv:2301.12005}, 2023.
 
-\bibitem[Kim et~al.(2025)Kim, Shin, Kang, Na, and Moon]{kim2025csd}
-Yeongmin Kim, Donghyeok Shin, Mina Kang, Byeonghu Na, and Il-Chul Moon.
-\newblock Distillation of large language models via concrete score matching.
-\newblock \emph{CoRR}, abs/2509.25837, 2025.
-\newblock \doi{10.48550/arXiv.2509.25837}.
-\newblock URL \url{https://arxiv.org/abs/2509.25837}.
-
-\bibitem[Ko et~al.(2025)Ko, Chen, Kim, Ding, Liang, Zharkov, and
-  Yun]{ko2025distillm2}
-Jongwoo Ko, Tianyi Chen, Sungnyun Kim, Tianyu Ding, Luming Liang, Ilya Zharkov,
-  and Se-Young Yun.
-\newblock {D}isti{LLM}-2: A contrastive approach boosts the distillation of
-  {LLM}s.
-\newblock In Aarti Singh, Maryam Fazel, Daniel Hsu, Simon Lacoste-Julien, Felix
-  Berkenkamp, Tegan Maharaj, Kiri Wagstaff, and Jerry Zhu (eds.),
-  \emph{Proceedings of the 42nd International Conference on Machine Learning},
-  volume 267 of \emph{Proceedings of Machine Learning Research}, pp.\
-  31044--31062. PMLR, 2025.
-\newblock URL \url{https://proceedings.mlr.press/v267/ko25a.html}.
-
 \bibitem[Kool et~al.(2019)Kool, van Hoof, and Welling]{kool2019stochastic}
 Wouter Kool, Herke van Hoof, and Max Welling.
 \newblock Stochastic beams and where to find them: The gumbel-top-k trick for
@@ -185,15 +108,6 @@ Wouter Kool, Herke van Hoof, and Max Welling.
 \newblock In \emph{Proceedings of the 36th International Conference on Machine
   Learning, {ICML} 2019, Long Beach, California, {USA}}, pp.\  3499--3508.
   {PMLR}, 2019.
-
-\bibitem[Kornblith et~al.(2019)Kornblith, Norouzi, Lee, and
-  Hinton]{kornblith2019similarity}
-Simon Kornblith, Mohammad Norouzi, Honglak Lee, and Geoffrey Hinton.
-\newblock Similarity of neural network representations revisited.
-\newblock In \emph{Proceedings of the 36th International Conference on Machine
-  Learning}, volume~97 of \emph{Proceedings of Machine Learning Research}, pp.\
-   3519--3529. PMLR, 2019.
-\newblock URL \url{https://proceedings.mlr.press/v97/kornblith19a.html}.
 
 \bibitem[Lee et~al.(2024)Lee, Dai, Ren, Chen, Cer, Cole, Hui, Boratko, Kapadia,
   Ding, Luan, Duddu, Abrego, Shi, Gupta, Kusupati, Jain, Jonnalagadda, Chang,
@@ -209,16 +123,6 @@ Jinhyuk Lee, Zhuyun Dai, Xiaoqi Ren, Blair Chen, Daniel Cer, Jeremy~R. Cole,
 \newblock \doi{10.48550/arXiv.2403.20327}.
 \newblock URL \url{https://arxiv.org/abs/2403.20327}.
 
-\bibitem[Muennighoff et~al.(2023)Muennighoff, Tazi, Magne, and
-  Reimers]{muennighoff2023mteb}
-Niklas Muennighoff, Nouamane Tazi, Lo{\"\i}c Magne, and Nils Reimers.
-\newblock {MTEB}: Massive text embedding benchmark.
-\newblock In \emph{Proceedings of the 17th Conference of the European Chapter
-  of the Association for Computational Linguistics}, pp.\  2014--2037.
-  Association for Computational Linguistics, 2023.
-\newblock \doi{10.18653/v1/2023.eacl-main.148}.
-\newblock URL \url{https://aclanthology.org/2023.eacl-main.148/}.
-
 \bibitem[Park et~al.(2019)Park, Kim, Lu, and Cho]{park2019rkd}
 Wonpyo Park, Dongju Kim, Yan Lu, and Minsu Cho.
 \newblock Relational knowledge distillation.
@@ -226,16 +130,13 @@ Wonpyo Park, Dongju Kim, Yan Lu, and Minsu Cho.
   and Pattern Recognition}, pp.\  3967--3976, 2019.
 \newblock URL \url{https://arxiv.org/abs/1904.05068}.
 
-\bibitem[Reimers \& Gurevych(2019)Reimers and
-  Gurevych]{reimers2019sentencebert}
-Nils Reimers and Iryna Gurevych.
-\newblock Sentence-{BERT}: Sentence embeddings using {Siamese} {BERT}-networks.
-\newblock In \emph{Proceedings of the 2019 Conference on Empirical Methods in
-  Natural Language Processing and the 9th International Joint Conference on
-  Natural Language Processing}, pp.\  3982--3992. Association for Computational
-  Linguistics, 2019.
-\newblock \doi{10.18653/v1/D19-1410}.
-\newblock URL \url{https://aclanthology.org/D19-1410/}.
+\bibitem[Passalis et~al.(2021)Passalis, Tzelepi, and Tefas]{passalis2020pkt}
+Nikolaos Passalis, Maria Tzelepi, and Anastasios Tefas.
+\newblock Probabilistic knowledge transfer for lightweight deep representation
+  learning.
+\newblock \emph{IEEE Transactions on Neural Networks and Learning Systems},
+  32\penalty0 (5):\penalty0 2030--2039, 2021.
+\newblock \doi{10.1109/TNNLS.2020.2995884}.
 
 \bibitem[Sanh et~al.(2019)Sanh, Debut, Chaumond, and Wolf]{sanh2019distilbert}
 Victor Sanh, Lysandre Debut, Julien Chaumond, and Thomas Wolf.
@@ -244,15 +145,10 @@ Victor Sanh, Lysandre Debut, Julien Chaumond, and Thomas Wolf.
 \newblock \emph{CoRR}, abs/1910.01108, 2019.
 \newblock URL \url{http://arxiv.org/abs/1910.01108}.
 
-\bibitem[Thakur et~al.(2021)Thakur, Reimers, R{\"u}ckl{\'e}, Srivastava, and
-  Gurevych]{thakur2021beir}
-Nandan Thakur, Nils Reimers, Andreas R{\"u}ckl{\'e}, Abhishek Srivastava, and
-  Iryna Gurevych.
-\newblock {BEIR}: A heterogeneous benchmark for zero-shot evaluation of
-  information retrieval models.
-\newblock In \emph{Proceedings of the Neural Information Processing Systems
-  Track on Datasets and Benchmarks}, 2021.
-\newblock URL \url{https://openreview.net/forum?id=wCu6T5xFjeJ}.
+\bibitem[Singh \& Wang(2024)Singh and Wang]{singh2024coss}
+Aditya Singh and Haohan Wang.
+\newblock Simple unsupervised knowledge distillation with space similarity.
+\newblock \emph{arXiv preprint arXiv:2409.13939}, 2024.
 
 \bibitem[Tian et~al.(2025)Tian, Pei, Zhang, Zhang, and
   Chawla]{yang2023graphkd_survey}
@@ -262,13 +158,6 @@ Yijun Tian, Shichao Pei, Xiangliang Zhang, Chuxu Zhang, and Nitesh~V. Chawla.
   2025.
 \newblock \doi{10.1145/3711121}.
 \newblock URL \url{https://doi.org/10.1145/3711121}.
-
-\bibitem[Trillos \& Slep{\v{c}}ev(2018)Trillos and
-  Slep{\v{c}}ev]{garciatrillos2018variational}
-Nicol{\'a}s~Garc{\'i}a Trillos and Dejan Slep{\v{c}}ev.
-\newblock A variational approach to the consistency of spectral clustering.
-\newblock \emph{Applied and Computational Harmonic Analysis}, 45\penalty0
-  (2):\penalty0 239--281, 2018.
 
 \bibitem[van~der Maaten \& Hinton(2008)van~der Maaten and
   Hinton]{maaten2008tsne}
@@ -283,13 +172,6 @@ Max Vladymyrov and Miguel~{\'A}. Carreira-Perpi{\~n}{\'a}n.
 \newblock Entropic affinities: Properties and efficient numerical computation.
 \newblock In \emph{Proceedings of the 30th International Conference on Machine
   Learning}, volume~28 of \emph{PMLR}, pp.\  477--485, 2013.
-
-\bibitem[von Luxburg et~al.(2008)von Luxburg, Belkin, and
-  Bousquet]{vonluxburg2008consistency}
-Ulrike von Luxburg, Mikhail Belkin, and Olivier Bousquet.
-\newblock Consistency of spectral clustering.
-\newblock \emph{The Annals of Statistics}, 36\penalty0 (2):\penalty0 555--586,
-  2008.
 
 \bibitem[Vujanic \& Rueckstiess(2025)Vujanic and Rueckstiess]{vujanic2025leaf}
 Robin Vujanic and Thomas Rueckstiess.
@@ -310,6 +192,13 @@ Wenhui Wang, Furu Wei, Li~Dong, Hangbo Bao, Nan Yang, and Ming Zhou.
 \newblock URL
   \url{https://proceedings.neurips.cc/paper/2020/hash/3f5ee243547dee91fbd053c1c4a845aa-Abstract.html}.
 
+\bibitem[Xu et~al.(2022)Xu, Fang, Zhang, Xie, Wang, Dai, Xiong, and
+  Tian]{xu2022bingo}
+Haohang Xu, Jiemin Fang, Xiaopeng Zhang, Lingxi Xie, Xinggang Wang, Wenrui Dai,
+  Hongkai Xiong, and Qi~Tian.
+\newblock Bag of instances aggregation boosts self-supervised distillation.
+\newblock In \emph{International Conference on Learning Representations}, 2022.
+
 \bibitem[Xu et~al.(2023)Xu, Shao, Chen, and Liu]{xu2023distillcse}
 Jiahao Xu, Wei Shao, Lihui Chen, and Lemao Liu.
 \newblock {DistillCSE}: Distilled contrastive learning for sentence embeddings.
@@ -326,11 +215,10 @@ Xiaohan Xu, Ming Li, Chongyang Tao, Tao Shen, Reynold Cheng, Jinyang Li, Can
 \newblock \doi{10.48550/arXiv.2402.13116}.
 \newblock URL \url{https://arxiv.org/abs/2402.13116}.
 
-\bibitem[Zhang et~al.(2024{\natexlab{a}})Zhang, Li, Zeng, and
-  Wang]{zhang2024jasperstella}
+\bibitem[Zhang et~al.(2024)Zhang, Li, Zeng, and Wang]{zhang2024jasperstella}
 Dun Zhang, Jiacheng Li, Ziyang Zeng, and Fulong Wang.
 \newblock Jasper and stella: Distillation of {SOTA} embedding models.
-\newblock \emph{CoRR}, abs/2412.19048, 2024{\natexlab{a}}.
+\newblock \emph{CoRR}, abs/2412.19048, 2024.
 \newblock \doi{10.48550/arXiv.2412.19048}.
 \newblock URL \url{https://arxiv.org/abs/2412.19048}.
 
@@ -342,26 +230,5 @@ Shichang Zhang, Yozen Liu, Yizhou Sun, and Neil Shah.
   Representations, {ICLR} 2022, Virtual Event, April 25-29, 2022}.
   OpenReview.net, 2022.
 \newblock URL \url{https://openreview.net/forum?id=4p6\_5HBWPCw}.
-
-\bibitem[Zhang et~al.(2024{\natexlab{b}})Zhang, Zhang, Sun, Chen, and
-  Xu]{zhang2024dskd}
-Songming Zhang, Xue Zhang, Zengkui Sun, Yufeng Chen, and Jinan Xu.
-\newblock Dual-space knowledge distillation for large language models.
-\newblock In Yaser Al-Onaizan, Mohit Bansal, and Yun-Nung Chen (eds.),
-  \emph{Proceedings of the 2024 Conference on Empirical Methods in Natural
-  Language Processing}, pp.\  18164--18181, Miami, Florida, USA, November
-  2024{\natexlab{b}}. Association for Computational Linguistics.
-\newblock \doi{10.18653/v1/2024.emnlp-main.1010}.
-\newblock URL \url{https://aclanthology.org/2024.emnlp-main.1010/}.
-
-\bibitem[Zhang et~al.(2025)Zhang, Li, Long, Zhang, Lin, Yang, Xie, Yang, Liu,
-  Lin, Huang, and Zhou]{zhang2025qwen3embedding}
-Yanzhao Zhang, Mingxin Li, Dingkun Long, Xin Zhang, Huan Lin, Baosong Yang,
-  Pengjun Xie, An~Yang, Dayiheng Liu, Junyang Lin, Fei Huang, and Jingren Zhou.
-\newblock {Qwen3} embedding: Advancing text embedding and reranking through
-  foundation models.
-\newblock \emph{CoRR}, abs/2506.05176, 2025.
-\newblock \doi{10.48550/arXiv.2506.05176}.
-\newblock URL \url{https://arxiv.org/abs/2506.05176}.
 
 \end{thebibliography}

@@ -1,6 +1,6 @@
 \begin{table}[t]
 \centering
-\caption{Results across three teacher\,$\rightarrow$\,student settings on nine datasets. Emotion, WiC, and STS-B (marked with $\star$) are in-domain; the remaining datasets are out-of-domain. Bold and underlined values denote the best and second-best compact-model results within each setting. TALAS results are reported as mean $\pm$ standard deviation; the remaining baseline results are from TALAS~\citep{dao2026talas}. For setting (c), we report the epoch checkpoint with the highest overall average.}
+\caption{Results across three teacher\,$\rightarrow$\,student settings on nine datasets. Emotion, WiC, and STS-B (marked with $\star$) are in-domain; the remaining datasets are out-of-domain. Bold and underlined values denote the best and second-best results within each setting, excluding the Teacher and Student base reference rows. TALAS and RIPPLE results are reported as mean $\pm$ standard deviation; the remaining baseline results are from TALAS~\citep{dao2026talas}. For setting (c), the epoch checkpoint is selected on the validation average.}
 \label{tab:main_results}
 \setlength{\tabcolsep}{2.4pt}
 \resizebox{\textwidth}{!}{%
@@ -61,15 +61,15 @@ EMO
 & 75.66 & 68.83 & 77.17
 & 71.47 & 79.14 & 76.58 \\
 TALAS
-& $90.44 \pm 0.13$ & \textbf{$74.62 \pm 0.17$} & \textbf{$70.87 \pm 0.52$}
-& \textbf{$85.90 \pm 0.10$} & \underline{$81.78 \pm 0.29$} & $68.84 \pm 0.15$
-& \textbf{$77.56 \pm 0.10$} & \underline{$73.12 \pm 0.30$} & \underline{$79.24 \pm 0.10$}
-& \underline{$72.98 \pm 0.19$} & \underline{$80.57 \pm 0.01$} & \underline{$78.04 \pm 0.07$} \\
+& $90.44 \pm 0.13$ & $\boldsymbol{74.62 \pm 0.17}$ & $\boldsymbol{70.87 \pm 0.52}$
+& $\boldsymbol{85.90 \pm 0.10}$ & \underline{$81.78 \pm 0.29$} & $68.84 \pm 0.15$
+& $\boldsymbol{77.56 \pm 0.10}$ & \underline{$73.12 \pm 0.30$} & \underline{$79.24 \pm 0.10$}
+& $\boldsymbol{72.98 \pm 0.19}$ & \underline{$80.57 \pm 0.01$} & \underline{$78.04 \pm 0.07$} \\
 \textbf{RIPPLE}
-& \textbf{91.86} & 73.06 & \underline{69.20}
-& 84.72 & \textbf{86.19} & 67.19
-& \underline{77.54} & \textbf{74.19} & \textbf{83.14}
-& \textbf{73.17} & \textbf{81.26} & \textbf{78.56} \\
+& $\boldsymbol{91.75 \pm 0.17}$ & $73.49 \pm 0.45$ & \underline{$70.21 \pm 0.57$}
+& $83.38 \pm 0.05$ & $\boldsymbol{83.47 \pm 0.18}$ & $66.58 \pm 0.06$
+& \underline{$77.21 \pm 0.13$} & $\boldsymbol{75.48 \pm 0.19}$ & $\boldsymbol{81.23 \pm 0.09}$
+& \underline{$72.67 \pm 0.14$} & $\boldsymbol{80.80 \pm 0.04}$ & $\boldsymbol{78.09 \pm 0.04}$ \\
 \midrule
 \multicolumn{13}{c}{\textit{(b) BGE-M3 $\rightarrow$ MiniLMv2-H768 (66M)}} \\
 \midrule
@@ -115,15 +115,15 @@ EMO
 & 75.41 & 67.06 & 76.35
 & 68.71 & 78.84 & 75.46 \\
 TALAS
-& $89.72 \pm 0.19$ & \textbf{$75.38 \pm 0.11$} & \underline{$65.83 \pm 0.58$}
-& \textbf{$87.58 \pm 0.02$} & \underline{$82.90 \pm 0.12$} & $66.96 \pm 0.07$
+& $89.72 \pm 0.19$ & $\boldsymbol{75.38 \pm 0.11}$ & \underline{$65.83 \pm 0.58$}
+& $\boldsymbol{87.58 \pm 0.02}$ & \underline{$82.90 \pm 0.12$} & $66.96 \pm 0.07$
 & \underline{$75.82 \pm 0.11$} & $68.11 \pm 0.20$ & \underline{$77.51 \pm 0.18$}
 & \underline{$70.10 \pm 0.13$} & \underline{$79.92 \pm 0.05$} & \underline{$76.64 \pm 0.04$} \\
 \textbf{RIPPLE}
-& \textbf{90.86} & 73.08 & \textbf{69.50}
-& 85.74 & \textbf{83.57} & 65.77
-& \textbf{77.32} & \textbf{74.18} & \textbf{81.76}
-& \textbf{72.34} & \textbf{80.79} & \textbf{77.98} \\
+& $\boldsymbol{90.58 \pm 0.12}$ & $73.97 \pm 0.30$ & $\boldsymbol{71.06 \pm 0.98}$
+& $85.22 \pm 0.09$ & $\boldsymbol{83.92 \pm 0.14}$ & $62.87 \pm 0.15$
+& $\boldsymbol{78.81 \pm 0.09}$ & $\boldsymbol{73.99 \pm 0.20}$ & $\boldsymbol{81.46 \pm 0.22}$
+& $\boldsymbol{71.80 \pm 0.31}$ & $\boldsymbol{81.08 \pm 0.07}$ & $\boldsymbol{77.99 \pm 0.13}$ \\
 \midrule
 \multicolumn{13}{c}{\textit{(c) Qwen3-Embedding-0.6B $\rightarrow$ MiniLMv2-H384 (22M)}} \\
 \midrule
@@ -159,7 +159,7 @@ Jasper and Stella
 & 70.57 & 63.81 & 70.11
 & 65.45 & 75.18 & 71.94 \\
 DistillCSE
-& \underline{88.03} & 69.87 & 54.24
+& \textbf{88.03} & 69.87 & 54.24
 & 83.20 & 77.66 & 67.88
 & 70.09 & 68.19 & 71.53
 & 64.55 & 76.17 & 72.30 \\
@@ -169,15 +169,15 @@ EMO
 & \underline{70.81} & 65.78 & 71.42
 & \underline{66.65} & 76.15 & 72.98 \\
 TALAS
-& $84.16 \pm 0.15$ & \textbf{$72.82 \pm 0.11$} & \underline{$61.13 \pm 0.52$}
-& \textbf{$84.85 \pm 0.10$} & \textbf{$80.91 \pm 0.27$} & $66.32 \pm 0.07$
+& $84.16 \pm 0.15$ & $\boldsymbol{72.82 \pm 0.11}$ & \underline{$61.13 \pm 0.52$}
+& $\boldsymbol{84.85 \pm 0.10}$ & $\boldsymbol{80.91 \pm 0.27}$ & $66.32 \pm 0.07$
 & $70.72 \pm 0.15$ & $67.80 \pm 0.08$ & \underline{$72.39 \pm 0.31$}
 & $66.61 \pm 0.24$ & \underline{$76.88 \pm 0.07$} & \underline{$73.46 \pm 0.10$} \\
 \textbf{RIPPLE}
-& \textbf{88.31} & 70.41 & \textbf{67.13}
-& 83.00 & \underline{80.60} & 65.51
-& \textbf{73.98} & \textbf{72.14} & \textbf{76.90}
-& \textbf{69.85} & \textbf{78.07} & \textbf{75.33} \\
+& \underline{$87.50 \pm 0.24$} & $70.50 \pm 0.29$ & $\boldsymbol{66.40 \pm 0.40}$
+& $81.68 \pm 0.12$ & \underline{$80.73 \pm 0.05$} & $65.34 \pm 0.10$
+& $\boldsymbol{73.69 \pm 0.11}$ & $\boldsymbol{72.08 \pm 0.09}$ & $\boldsymbol{76.29 \pm 0.08}$
+& $\boldsymbol{69.34 \pm 0.13}$ & $\boldsymbol{77.70 \pm 0.11}$ & $\boldsymbol{74.91 \pm 0.08}$ \\
 \bottomrule
 \end{tabular}%
 }

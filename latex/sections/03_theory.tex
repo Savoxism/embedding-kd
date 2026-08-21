@@ -1,10 +1,10 @@
-\section{What Mini-Batch Relations Leave Undetermined}
+\section{Why Mini-Batch Relations Are Insufficient}
 \label{sec:theory}
 
-Relational distillation compares teacher and student similarities over the examples that happen to co-occur in a stochastic mini-batch~\citep{park2019rkd}. This section asks what such an objective determines and what it leaves free. The answer is stark: driving it to zero constrains only the pairs a batch happened to contain, an anchor's own neighbors are almost never among them, and the rest of its local geometry may take arbitrary values without changing the loss. Both are properties of the sampling scheme rather than of the loss or the optimizer, and buying them back by training longer costs a factor of order $N/B$ in epochs. Proofs are in Appendix~\ref{app:proofs}.
+Relational distillation compares teacher and student similarities over examples that happen to co-occur in a stochastic mini-batch~\citep{park2019rkd,passalis2020pkt}. We separate two limitations of this sampling scheme. First, a batch covers almost none of an anchor's teacher neighborhood. Second, relations that are never sampled are absent from the empirical score-level objective. The first is a coverage statement; the second is an identification statement. Neither depends on the optimizer. Proofs are in Appendix~\ref{app:proofs}.
 
 \paragraph{Setup and notation.}
-Let $\mathcal{D}=\{x_i\}_{i=1}^{N}$ be an unlabeled distillation corpus with cached teacher embeddings $t_i$ on the unit sphere, write $c^T_{ij}=\cos(t_i,t_j)$, and let $\mathcal{N}_k(i)$ denote the $k$ nearest neighbors of $x_i$ under $c^T$. A student encoder $S_\theta$ produces embeddings $s_i$ with scores $c^S_{ij}=\cos(s_i,s_j)$. For distributions $p,q$ on a common finite set, $\mathrm{TV}(p,q)=\tfrac12\lVert p-q\rVert_1$, and for a subset $C$ of the support, $p|_C$ denotes restriction to $C$ followed by renormalization. We model an epoch as a uniformly random partition of $\mathcal{D}$ into batches of size $B$, resampled independently across epochs. The batch-relational objective compares, at a temperature $\tau_0$, the restricted distributions
+Let $\mathcal{D}=\{x_i\}_{i=1}^{N}$ be an unlabeled distillation corpus with cached unit-normalized teacher embeddings $t_i$, write $c^T_{ij}=\cos(t_i,t_j)$, and let $\mathcal{N}_k(i)$ be the $k$ nearest neighbors of $x_i$ under $c^T$. A student encoder $S_\theta$ produces embeddings $s_i$ and scores $c^S_{ij}=\cos(s_i,s_j)$. We model each epoch as a uniformly random partition of $\mathcal{D}$ into batches of size $B$, independently resampled between epochs. At temperature $\tau_0$, a representative batch-relational objective compares
 \begin{equation}
     \label{eq:batchrel}
     p^{T,\mathcal{B}}_i(j)\propto\exp\!\big(c^T_{ij}/\tau_0\big),
@@ -17,22 +17,40 @@ through $\mathcal{L}_{\mathcal{B}}=\frac{1}{|\mathcal{B}|}\sum_{i\in\mathcal{B}}
 \begin{proposition}[Neighborhood coverage]
 \label{prop:coverage}
 Fix an anchor $i$ and let $\mathcal{B}\ni i$ be its batch. Then
-(i) $\mathbb{E}\left|\mathcal{B}\cap\mathcal{N}_k(i)\right| = (B-1)\,k/(N-1)$;
-(ii) $\Pr\left[\mathcal{B}\cap\mathcal{N}_k(i)=\emptyset\right] \geq 1-(B-1)\,k/(N-1)$;
-(iii) across $T$ independently resampled epochs, the expected fraction of pairs $\{(i,j):j\in\mathcal{N}_k(i)\}$ that ever co-occur is at most $T(B-1)/(N-1)$.
+\begin{align}
+\mathbb{E}\left|\mathcal{B}\cap\mathcal{N}_k(i)\right|
+&=\frac{(B-1)k}{N-1}, \\
+\Pr\!\left[\mathcal{B}\cap\mathcal{N}_k(i)=\emptyset\right]
+&=\frac{\binom{N-1-k}{B-1}}{\binom{N-1}{B-1}}
+\geq 1-\frac{(B-1)k}{N-1}.
+\end{align}
+Across $T$ independently resampled epochs, the expected fraction of the $k$ neighbor pairs that ever co-occur with $i$ is exactly
+\begin{equation}
+\label{eq:coverage-exact}
+q_T
+=
+1-\left(1-\frac{B-1}{N-1}\right)^T
+\leq
+\frac{T(B-1)}{N-1}
+=O\!\left(\frac{TB}{N}\right).
+\end{equation}
 \end{proposition}
 
-Coverage alone would be a sample-efficiency complaint, repairable by training longer. The next result shows it is not: what a batch never contains is not merely under-supervised but entirely unconstrained, so the objective's own optimum leaves it free.
+Thus $q_T=o(1)$ whenever $TB=o(N)$. The exposed \emph{fraction} is independent of $k$: enlarging the nominal neighborhood increases the absolute number of relevant relations, but uniform batches still reveal the same vanishing fraction of them. Coverage alone could still be viewed as a sample-efficiency problem. The next result states what the realized objective can identify from the comparisons it actually contains.
 
-\begin{proposition}[Under-determination of batch relations]
+\begin{proposition}[Score-level under-identification]
 \label{prop:underdet}
-Fix the batches realized over $T$ epochs and let $\mathcal{S}_i^{T}$ be the union of those containing $i$, with $i$ removed.
-(i) $\mathcal{L}_{\mathcal{B}}=0$ on every realized batch if and only if for each such $\mathcal{B}$ and each $i\in\mathcal{B}$ there is a constant $a_i^{\mathcal{B}}$ with $c^S_{ij}=c^T_{ij}+a_i^{\mathcal{B}}$ for all $j\in\mathcal{B}\setminus\{i\}$.
-(ii) Consequently the scores $\{c^S_{ij}: j\notin\mathcal{S}_i^{T}\}$ are unconstrained: they may be set arbitrarily while the objective stays at zero. Offsets attached to two batches are independent whenever those batches share no element.
+Fix all batches realized over $T$ epochs and let
+$\mathcal{O}_i^T=\bigcup_{\mathcal{B}\ni i}(\mathcal{B}\setminus\{i\})$
+be the columns ever compared with anchor $i$.
+(i) A realized batch term is zero if and only if, for every $i\in\mathcal{B}$, there is a constant $a_i^{\mathcal{B}}$ such that
+$c^S_{ij}=c^T_{ij}+a_i^{\mathcal{B}}$ for all $j\in\mathcal{B}\setminus\{i\}$.
+(ii) Viewed as a function of its score arguments, the empirical objective depends on row $i$ only through $\{c^S_{ij}:j\in\mathcal{O}_i^T\}$. Any two score arrays that agree on these observed entries have exactly the same empirical loss, regardless of their entries outside $\mathcal{O}_i^T$.
+(iii) Two realized batch offsets for the same anchor are forced to agree only if the corresponding column sets overlap (or are connected by a chain of such overlaps).
 \end{proposition}
 
-Part (i) also shows why the defect is not a bias of the teacher target: the perfect student $c^S_{ij}=c^T_{ij}+a_i$ attains zero loss on \emph{every} batch, because target and student are restricted to the same columns and the two restrictions cancel. What fails is identifiability. By Proposition~\ref{prop:coverage}(iii) the constrained fraction of an anchor's neighbors is $T(B-1)/(N-1)\approx TB/N$: it is governed by how many examples an anchor is ever compared against over the whole run, relative to the corpus, and---usefully---it does not depend on $k$, so it is not an artifact of how one chooses to delimit a neighborhood. For the corpus and schedule of our experiments ($N\approx15\text{K}$, $B=32$, five epochs) it is near $1\%$, and it reaches $1$ only at $T$ of order $N/B$, roughly $480$ epochs here against the five we train, and more once repeated draws are accounted for.
+The proposition concerns the information present in the objective, not the realizability of arbitrary score arrays by cosine embeddings. A parametric encoder shares parameters across examples and therefore assigns definite scores even to unseen pairs. Those scores can generalize well, but their values are supplied indirectly by the student's inductive bias rather than identified by a teacher comparison. Likewise, cosine symmetry and Gram-matrix constraints may reduce the formal score-space freedom without adding the missing teacher observations.
 
-On the pairs outside that fraction the objective supplies no signal at all. This does not mean a trained student assigns them arbitrary similarities---an encoder shares parameters across all pairs, so its predictions there are perfectly well determined---but they are determined by the student's own inductive bias rather than by the teacher. Batch-relational distillation therefore delegates local geometry to the student's prior instead of transferring it, which is the gap Section~\ref{sec:method} closes. Part (ii) adds that even the constrained scores carry a separate offset per batch, so similarity levels are not comparable across batches either.
+The perfect score row $c^S_{ij}=c^T_{ij}+a_i$ attains zero loss on every restriction, so the problem is not bias from renormalizing teacher and student on the same batch. It is that the empirical objective observes only the accidental comparison set $\mathcal{O}_i^T$, which Proposition~\ref{prop:coverage} shows excludes nearly all teacher neighbors under practical schedules.
 
-The remedy is to stop letting the batch decide which comparisons an anchor sees. Section~\ref{sec:method} builds each anchor's neighborhood explicitly from cached teacher embeddings and supervises it at every step, and the rest of the method follows from what that shift requires. The identifiability question returns there in a milder form---anchored matching leaves one offset per anchor rather than one per unseen neighbor---and Section~\ref{sec:walk} closes it.
+The remedy is to choose comparisons from teacher geometry, rather than letting the batch choose them. Section~\ref{sec:method} constructs a corpus-level teacher neighborhood operator, explicitly supervises its rows, and then addresses the approximation and row-consistency questions created by that choice.

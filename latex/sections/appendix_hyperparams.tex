@@ -1,41 +1,29 @@
-\section{Objective Constraints and Implementation Notes}
+\section{Implementation Notes and Analysis Protocols}
 \label{app:hyper}
 
-This appendix collects material deferred from Section~\ref{sec:method}: the constraint that fixes the student temperature at any term whose target is a transition row, and three details of the graph and walk construction.
+This appendix records graph-bandwidth calibration, the temperature ladder, and the walk and analysis details deferred from Section~\ref{sec:method}. The implementation has no separate teacher and student temperature knobs for transition-row or ambient matching: each such term reuses the temperature with which its target was constructed.
 
-\subsection{Temperatures tied to transition-row targets}
-\label{app:hyper-temptie}
+\subsection{Entropic row-bandwidth calibration}
+\label{app:entropic-bandwidth}
 
-Section~\ref{sec:objective} gives each scale its own student temperature. Two terms have none to give: the sharpest graph scale and the row term both match transition rows, and Theorem~\ref{thm:global} and Proposition~\ref{prop:walkgauge} are statements about the student's row at the graph's own bandwidth. Matching at any other temperature would leave those results describing a different object than the one optimized. The proposition below records what goes wrong directly at the level of the loss.
-
-\begin{proposition}[Temperature ties]
-\label{prop:temptie}
-Let $\Omega$ be a column set with $|\Omega|\geq2$, and consider a term with target $\mathrm{softmax}_{\Omega}(c^T_{i\cdot}/\tau)$ and student distribution $\mathrm{softmax}_{\Omega}(c^S_{i\cdot}/\tau_S)$.
-(i) Over score assignments $c^S_{i\cdot}$ the term has infimum $0$, attained exactly on the affine family $c^S_{ij}=(\tau_S/\tau)\,c^T_{ij}+a_i$ on $\Omega$ --- a shift family when $\tau_S=\tau$ and a rescaling otherwise.
-(ii) Suppose the ambient term at the same row also vanishes, on a set $\Omega_0$ such that $\Omega\cap\Omega_0$ contains columns $j,j'$ with $c^T_{ij}\neq c^T_{ij'}$. Then $\tau_S=\tau$.
-\end{proposition}
-
-\paragraph{Proof.}
-(i) If the divergence vanishes, the two softmax distributions coincide on $\Omega$, and taking log-ratios of any two columns $j,j'\in\Omega$ (as in Appendix~\ref{app:proof-gauge}) gives
+For one mutual-neighborhood row, write $p_j(\beta)\propto\exp(\beta c^T_{ij})$ with inverse bandwidth $\beta=1/\tau_i$. Its entropy satisfies
 \begin{equation}
-    \frac{c^S_{ij}-c^S_{ij'}}{\tau_S}
-    =\frac{c^T_{ij}-c^T_{ij'}}{\tau},
+    H_i(\beta)
+    =
+    \log Z_i(\beta)-\beta\,\mathbb E_{p(\beta)}[c^T_{ij}],
+    \qquad
+    \frac{\mathrm dH_i}{\mathrm d\beta}
+    =
+    -\beta\,\operatorname{Var}_{p(\beta)}[c^T_{ij}].
 \end{equation}
-so $c^S_{ij}-(\tau_S/\tau)\,c^T_{ij}$ is constant on $\Omega$; call it $a_i$. Conversely, any score assignment of that form produces identical softmax distributions and zero divergence, so the infimum $0$ is attained exactly on the stated family.
+Hence $H_i$ decreases monotonically with $\beta$ and, for a non-degenerate row whenever the requested entropy is attainable, Eq.~\eqref{eq:entropic-bandwidth} has a unique positive solution. We find it by bracketing and bisection. A row with degree $d_i\leq\rho$ cannot attain perplexity $\rho$; its target entropy is clipped to $(1-10^{-3})\log d_i$ to keep the numerical solution finite. A degree-one or constant-score row is assigned its only meaningful uniform distribution. We store the resulting $\tau_i$ with each transition row and report the number of clipped rows during graph construction.
 
-(ii) The ambient term carries the same temperature $\tau_0$ on both sides, so its vanishing gives, by the shift case of (i), $c^S_{ij}=c^T_{ij}+b_i$ on $\Omega_0$. Combining with (i) on the overlap,
-\begin{equation}
-    \Big(1-\frac{\tau_S}{\tau}\Big)\,c^T_{ij}=a_i-b_i
-    \qquad\text{for every } j\in\Omega\cap\Omega_0,
-\end{equation}
-and evaluating at two columns with $c^T_{ij}\neq c^T_{ij'}$ forces $\tau_S=\tau$. \qed
-
-Part (ii) is the operative statement: with the ambient scale in the objective, a softmax-of-cosines target must be matched \emph{at its own temperature}, or the two zero sets are disjoint and the objective acquires an artificial floor. The $r=1$ target is the transition row $P^T_i$, a softmax of teacher cosines at the bandwidth $\tau_i$, so $\tau_1(i)=\tau_i$; the walk targets are transition rows as well, so $\tau_w(j)=\tau_j$, which is the tie Proposition~\ref{prop:walkgauge} assumes. The proposition is stated for one row and constrains only the \emph{tie}, saying nothing about the value of $\tau$, so it applies unchanged when every row carries its own bandwidth. The ambient scale uses one $\tau_0$ on both sides, the same-temperature convention of knowledge distillation~\citep{hinton2015distilling}, which by (i) makes its zero set exactly the shift family of Proposition~\ref{prop:gauge}.
+This calibration also removes teacher-specific similarity scale from the graph distribution. If $c'_{ij}=a c^T_{ij}+b$ for $a>0$, then $\tau'_i=a\tau_i$ yields exactly the same normalized row. The experimental hyperparameter is therefore the effective neighborhood size $\rho=30$, not a corpus-wide temperature.
 
 \subsection{The rest of the temperature ladder}
 \label{app:hyper-ladder}
 
-The tie fixes $\tau_1$; the broader diffusion scales are then set by $\tau_r=\sqrt{r}\,\tau_1$, the $\sqrt{t}$ spread of a diffusion at nominal time $r$. We state this as a rule rather than derive it: the lazy walk takes $r/2$ real steps in expectation, so a strict derivation would carry a different constant, and at $r=1$ the tie fixes the value regardless. What the rule buys is that the ladder has no free entries and inherits the per-row tie automatically --- under entropic bandwidths $\tau_r(i)=\sqrt{r}\,\tau_i$ varies by row exactly as $\tau_1$ does. The scale weights are set by the same principle in the other direction, $\omega_r=1/r$ with $\omega_0=\omega_1$, so a scale's influence falls off with the diffusion time it describes.
+The $r=1$ readout uses the graph bandwidth, $\tau_1(i)=\tau_i$. Broader scales are set by $\tau_r(i)=\sqrt{r}\,\tau_i$, following the $\sqrt{t}$ spread of a diffusion at nominal time $r$. This is a rule rather than a derivation: the lazy walk takes $r/2$ real steps in expectation, so a strict derivation would carry a different constant. The ladder therefore has no free entries and automatically inherits entropic per-row bandwidths. Scale weights follow the complementary rule $\omega_r=1/r$ with $\omega_0=\omega_1$, so influence falls with diffusion time.
 
 \subsection{Truncation tolerance}
 \label{app:hyper-truncation}
@@ -51,3 +39,69 @@ The walk of Eq.~\eqref{eq:walk} is non-backtracking: the step at $t+1$ is drawn 
 \label{app:hyper-dense}
 
 A natural alternative scores the sampled transitions themselves, $-\log p^{S}(j_{t+1}\mid j_{t})$ summed along each path. The walk is first-order and each step is scored on the teacher's own $j_t$, so that path likelihood factorizes into one-step terms whose expectation over the walk is exactly Eq.~\eqref{eq:lrow}: the sampled form is an unbiased but higher-variance estimator of the dense one. Since $P^{T}_{j}$ is already materialized during graph construction, we use the dense form and pay no variance. Nothing in the term couples two consecutive steps; it matches one-step transition rows at walk-visited nodes.
+
+\subsection{Scale-separation diagnostic}
+\label{app:scale-separation}
+
+On a common candidate pool for every scale, the diagnostic in Table~\ref{tab:multiscale_ablation} is
+\begin{equation}
+E_{\mathrm{sep}}
+=\frac{1}{|\mathcal A|\binom{|\mathcal R|}{2}}
+\sum_{i\in\mathcal A}\sum_{r<s}
+\left|
+\mathrm{JS}(p^T_{i,r},p^T_{i,s})
+-\mathrm{JS}(q^S_{i,r},q^S_{i,s})
+\right|,
+\qquad \mathcal R=\{1,2,4\}.
+\end{equation}
+Using a common pool is essential: otherwise changing support could create apparent separation even when two student readouts assign identical scores to shared columns.
+
+\subsection{Per-setting row-loss grid}
+\label{app:lambda-grid}
+
+Table~\ref{tab:lambda_sweep_all} expands the aggregate in Table~\ref{tab:lambda_sweep}. Only $\lambda$ changes and every cell remains the downstream nine-task average; no calibration diagnostic is used for model selection.
+
+\begin{table}[H]
+\centering
+\caption{Per-setting row-loss sweep. Entries are downstream Avg. (mean $\pm$ standard deviation). Results are pending.}
+\label{tab:lambda_sweep_all}
+\setlength{\tabcolsep}{7pt}
+\begin{tabular}{lccccc}
+\toprule
+Setting $\backslash\ \lambda$ & $0$ & $0.1$ & $0.3$ & $0.5$ & $1.0$ \\
+\midrule
+Qwen-4B $\rightarrow$ BERT          & \tbd & \tbd & \tbd & \tbd & \tbd \\
+BGE-M3 $\rightarrow$ MiniLM-768     & \tbd & \tbd & \tbd & \tbd & \tbd \\
+Qwen-0.6B $\rightarrow$ MiniLM-384 & \tbd & \tbd & \tbd & \tbd & \tbd \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Sampling-efficiency measurement protocol}
+\label{app:sampling-efficiency-protocol}
+
+For a fixed probe batch, define the gradient fidelity of an $m$-candidate objective as
+\begin{equation}
+\label{eq:gradient-fidelity}
+G_m=\cos\!\left(\nabla_\theta\mathcal L_{\mathrm{diff}}^{(m)},
+\nabla_\theta\mathcal L_{\mathrm{diff}}^{(\mathrm{full})}\right).
+\end{equation}
+Only $m$ changes across Table~\ref{tab:m_sweep}; the sampler and all other training choices are fixed. Target mass is measured before renormalizing the sampled row. $G_m$ is computed at the same checkpoint and on the same probe batch for every $m$; the full-support gradient is used only for evaluation. Step time excludes graph preprocessing and is averaged after warm-up, while peak accelerator memory is reset immediately before the measured steps. All timing and memory results use the same hardware and software stack.
+
+\begin{table}[H]
+\centering
+\caption{Candidate-budget mechanism test. Only $m$ changes. Results are pending.}
+\label{tab:m_sweep}
+\setlength{\tabcolsep}{4pt}
+\begin{tabular}{rccccc}
+\toprule
+$m$ & Target mass$\uparrow$ & $G_m\uparrow$ & Avg.$\uparrow$ & Time/step$\downarrow$ & Memory$\downarrow$ \\
+\midrule
+16  & \tbd & \tbd & \tbd & \tbd & \tbd \\
+32  & \tbd & \tbd & \tbd & \tbd & \tbd \\
+64  & \tbd & \tbd & \tbd & \tbd & \tbd \\
+128 & \tbd & \tbd & \tbd & \tbd & \tbd \\
+256 & \tbd & \tbd & \tbd & \tbd & \tbd \\
+\bottomrule
+\end{tabular}
+\end{table}

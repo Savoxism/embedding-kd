@@ -1,0 +1,5 @@
+\section{Limitations and Conclusion}
+
+RIPPLE inherits teacher-graph errors and domain bias, and its operator is corpus-dependent. Exact construction costs $O(N^2d_T)$ before sparsification and requires approximate search at scale. Theorem~\ref{thm:global} is conditional on local error and omitted mass; student leakage remains empirical.
+
+RIPPLE nevertheless replaces random batch relations with a teacher-anchored operator: one-step matching gives local-to-global control, broader targets supervise coarser scales, sampling provides efficiency, and overlapping rows improve consistency. The teacher is discarded before training.
