@@ -51,3 +51,69 @@ The walk of Eq.~\eqref{eq:walk} is non-backtracking: the step at $t+1$ is drawn 
 \label{app:hyper-dense}
 
 A natural alternative scores the sampled transitions themselves, $-\log p^{S}(j_{t+1}\mid j_{t})$ summed along each path. The walk is first-order and each step is scored on the teacher's own $j_t$, so that path likelihood factorizes into one-step terms whose expectation over the walk is exactly Eq.~\eqref{eq:lrow}: the sampled form is an unbiased but higher-variance estimator of the dense one. Since $P^{T}_{j}$ is already materialized during graph construction, we use the dense form and pay no variance. Nothing in the term couples two consecutive steps; it matches one-step transition rows at walk-visited nodes.
+
+\subsection{Scale-separation diagnostic}
+\label{app:scale-separation}
+
+On a common candidate pool for every scale, the diagnostic in Table~\ref{tab:multiscale_ablation} is
+\begin{equation}
+E_{\mathrm{sep}}
+=\frac{1}{|\mathcal A|\binom{|\mathcal R|}{2}}
+\sum_{i\in\mathcal A}\sum_{r<s}
+\left|
+\mathrm{JS}(p^T_{i,r},p^T_{i,s})
+-\mathrm{JS}(q^S_{i,r},q^S_{i,s})
+\right|,
+\qquad \mathcal R=\{1,2,4\}.
+\end{equation}
+Using a common pool is essential: otherwise changing support could create apparent separation even when two student readouts assign identical scores to shared columns.
+
+\subsection{Per-setting row-loss grid}
+\label{app:lambda-grid}
+
+Table~\ref{tab:lambda_sweep_all} expands the aggregate in Table~\ref{tab:lambda_sweep}. Only $\lambda$ changes and every cell remains the downstream nine-task average; no calibration diagnostic is used for model selection.
+
+\begin{table}[H]
+\centering
+\caption{Per-setting row-loss sweep. Entries are downstream Avg. (mean $\pm$ standard deviation). Results are pending.}
+\label{tab:lambda_sweep_all}
+\setlength{\tabcolsep}{7pt}
+\begin{tabular}{lccccc}
+\toprule
+Setting $\backslash\ \lambda$ & $0$ & $0.1$ & $0.3$ & $0.5$ & $1.0$ \\
+\midrule
+Qwen-4B $\rightarrow$ BERT          & \tbd & \tbd & \tbd & \tbd & \tbd \\
+BGE-M3 $\rightarrow$ MiniLM-768     & \tbd & \tbd & \tbd & \tbd & \tbd \\
+Qwen-0.6B $\rightarrow$ MiniLM-384 & \tbd & \tbd & \tbd & \tbd & \tbd \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Sampling-efficiency measurement protocol}
+\label{app:sampling-efficiency-protocol}
+
+For a fixed probe batch, define the gradient fidelity of an $m$-candidate objective as
+\begin{equation}
+\label{eq:gradient-fidelity}
+G_m=\cos\!\left(\nabla_\theta\mathcal L_{\mathrm{diff}}^{(m)},
+\nabla_\theta\mathcal L_{\mathrm{diff}}^{(\mathrm{full})}\right).
+\end{equation}
+Only $m$ changes across Table~\ref{tab:m_sweep}; the sampler and all other training choices are fixed. Target mass is measured before renormalizing the sampled row. $G_m$ is computed at the same checkpoint and on the same probe batch for every $m$; the full-support gradient is used only for evaluation. Step time excludes graph preprocessing and is averaged after warm-up, while peak accelerator memory is reset immediately before the measured steps. All timing and memory results use the same hardware and software stack.
+
+\begin{table}[H]
+\centering
+\caption{Candidate-budget mechanism test. Only $m$ changes. Results are pending.}
+\label{tab:m_sweep}
+\setlength{\tabcolsep}{4pt}
+\begin{tabular}{rccccc}
+\toprule
+$m$ & Target mass$\uparrow$ & $G_m\uparrow$ & Avg.$\uparrow$ & Time/step$\downarrow$ & Memory$\downarrow$ \\
+\midrule
+16  & \tbd & \tbd & \tbd & \tbd & \tbd \\
+32  & \tbd & \tbd & \tbd & \tbd & \tbd \\
+64  & \tbd & \tbd & \tbd & \tbd & \tbd \\
+128 & \tbd & \tbd & \tbd & \tbd & \tbd \\
+256 & \tbd & \tbd & \tbd & \tbd & \tbd \\
+\bottomrule
+\end{tabular}
+\end{table}

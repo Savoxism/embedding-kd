@@ -2,188 +2,182 @@
 \providecommand\hyper@newdestlabel[2]{}
 \providecommand\HyField@AuxAddToFields[1]{}
 \providecommand\HyField@AuxAddToCoFields[2]{}
+\citation{park2019rkd,passalis2020pkt}
+\@writefile{toc}{\contentsline {section}{\numberline {1}Introduction}{1}{section.1}\protected@file@percent }
 \citation{hinton2015distilling}
 \citation{sanh2019distilbert,jiao2019tinybert,wang2020minilm,xu2024survey}
-\@writefile{toc}{\contentsline {section}{\numberline {1}Introduction}{1}{section.1}\protected@file@percent }
-\citation{reimers2019sentencebert}
-\citation{gao2021simcse}
-\citation{thakur2021beir,muennighoff2023mteb}
-\citation{chen2024bgem3}
-\citation{zhang2025qwen3embedding}
-\@writefile{toc}{\contentsline {section}{\numberline {2}Related Work}{2}{section.2}\protected@file@percent }
-\@writefile{toc}{\contentsline {paragraph}{Text Embedding Models.}{2}{section*.1}\protected@file@percent }
-\citation{hinton2015distilling}
-\citation{sanh2019distilbert,jiao2019tinybert,wang2020minilm}
-\citation{agarwal2024onpolicy,ko2025distillm2,anshumann2025sparse,kim2025csd,xu2024survey}
-\citation{zhang2024dskd,chen2025cdm}
-\citation{kim2023embeddistill}
-\citation{lee2024gecko}
-\citation{zhang2024jasperstella}
-\citation{vujanic2025leaf}
-\citation{akram2026jinaembeddingsv5}
 \citation{gao2021distilcse,xu2023distillcse}
+\citation{kim2023embeddistill}
+\citation{lee2024gecko,zhang2024jasperstella,vujanic2025leaf,akram2026jinaembeddingsv5}
 \citation{park2019rkd}
-\citation{kornblith2019similarity,alqahtani2021ot}
-\citation{dao2026talas}
+\citation{passalis2020pkt}
+\citation{xin2025nrkd}
+\citation{xu2022bingo}
+\citation{singh2024coss}
 \citation{coifman2006diffusionmaps}
 \citation{huguet2023heatgeo}
 \citation{yang2023graphkd_survey,zhang2022glnn}
-\@writefile{toc}{\contentsline {paragraph}{Distillation for Language and Embedding Models.}{3}{section*.2}\protected@file@percent }
-\@writefile{toc}{\contentsline {paragraph}{Relational and Local Supervision.}{3}{section*.3}\protected@file@percent }
-\@writefile{toc}{\contentsline {paragraph}{Graph, Manifold, and Diffusion Geometry.}{3}{section*.4}\protected@file@percent }
-\citation{park2019rkd}
-\@writefile{toc}{\contentsline {section}{\numberline {3}What Mini-Batch Relations Leave Undetermined}{4}{section.3}\protected@file@percent }
-\newlabel{sec:theory}{{3}{4}{What Mini-Batch Relations Leave Undetermined}{section.3}{}}
-\@writefile{toc}{\contentsline {paragraph}{Setup and notation.}{4}{section*.5}\protected@file@percent }
-\newlabel{eq:batchrel}{{1}{4}{Setup and notation}{equation.3.1}{}}
-\newlabel{prop:coverage}{{1}{4}{Neighborhood coverage}{proposition.1}{}}
-\newlabel{prop:underdet}{{2}{4}{Under-determination of batch relations}{proposition.2}{}}
+\@writefile{toc}{\contentsline {section}{\numberline {2}Related Work}{2}{section.2}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{Embedding distillation.}{2}{section*.1}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{Relational and neighborhood distillation.}{2}{section*.2}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{Graph and diffusion methods.}{2}{section*.3}\protected@file@percent }
+\citation{park2019rkd,passalis2020pkt}
+\@writefile{toc}{\contentsline {section}{\numberline {3}Why Mini-Batch Relations Are Insufficient}{3}{section.3}\protected@file@percent }
+\newlabel{sec:theory}{{3}{3}{Why Mini-Batch Relations Are Insufficient}{section.3}{}}
+\@writefile{toc}{\contentsline {paragraph}{Setup and notation.}{3}{section*.4}\protected@file@percent }
+\newlabel{eq:batchrel}{{1}{3}{Setup and notation}{equation.3.1}{}}
+\newlabel{prop:coverage}{{1}{3}{Neighborhood coverage}{proposition.1}{}}
+\newlabel{eq:coverage-exact}{{4}{3}{Neighborhood coverage}{equation.3.4}{}}
+\newlabel{prop:underdet}{{2}{3}{Score-level under-identification}{proposition.2}{}}
 \citation{hinton2002sne,maaten2008tsne,vladymyrov2013entropic}
 \citation{coifman2006diffusionmaps}
-\citation{vonluxburg2008consistency,garciatrillos2018variational,calder2022improved}
-\@writefile{toc}{\contentsline {section}{\numberline {4}RIPPLE}{5}{section.4}\protected@file@percent }
-\newlabel{sec:method}{{4}{5}{RIPPLE}{section.4}{}}
-\@writefile{toc}{\contentsline {subsection}{\numberline {4.1}The Teacher Manifold Graph}{5}{subsection.4.1}\protected@file@percent }
-\newlabel{sec:graph}{{4.1}{5}{The Teacher Manifold Graph}{subsection.4.1}{}}
-\@writefile{toc}{\contentsline {subsection}{\numberline {4.2}Diffusion Targets}{5}{subsection.4.2}\protected@file@percent }
-\newlabel{sec:kernels}{{4.2}{5}{Diffusion Targets}{subsection.4.2}{}}
-\newlabel{eq:ambient}{{2}{5}{Diffusion Targets}{equation.4.2}{}}
-\newlabel{thm:global}{{1}{5}{Local-to-global transfer}{theorem.1}{}}
+\@writefile{toc}{\contentsline {section}{\numberline {4}RIPPLE: Corpus-Anchored Geometry Distillation}{4}{section.4}\protected@file@percent }
+\newlabel{sec:method}{{4}{4}{RIPPLE: Corpus-Anchored Geometry Distillation}{section.4}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {4.1}Teacher Neighborhood Operator}{4}{subsection.4.1}\protected@file@percent }
+\newlabel{sec:graph}{{4.1}{4}{Teacher Neighborhood Operator}{subsection.4.1}{}}
+\newlabel{eq:teacher-operator}{{6}{4}{Teacher Neighborhood Operator}{equation.4.6}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {4.2}Multi-Scale Diffusion Distillation}{4}{subsection.4.2}\protected@file@percent }
+\newlabel{sec:kernels}{{4.2}{4}{Multi-Scale Diffusion Distillation}{subsection.4.2}{}}
+\newlabel{eq:diffusion-targets}{{7}{4}{Multi-Scale Diffusion Distillation}{equation.4.7}{}}
+\newlabel{eq:student-operator}{{8}{4}{Multi-Scale Diffusion Distillation}{equation.4.8}{}}
 \citation{efraimidis2006weighted,kool2019stochastic}
-\newlabel{cor:multiscale}{{1}{6}{Multi-scale tightening}{corollary.1}{}}
-\@writefile{toc}{\contentsline {subsection}{\numberline {4.3}Sampled Columns}{6}{subsection.4.3}\protected@file@percent }
-\newlabel{sec:candidates}{{4.3}{6}{Sampled Columns}{subsection.4.3}{}}
-\newlabel{prop:sampling}{{3}{6}{Sampling error}{proposition.3}{}}
-\@writefile{toc}{\contentsline {subsection}{\numberline {4.4}The Diffusion Objective}{6}{subsection.4.4}\protected@file@percent }
-\newlabel{sec:objective}{{4.4}{6}{The Diffusion Objective}{subsection.4.4}{}}
-\newlabel{eq:student}{{5}{6}{The Diffusion Objective}{equation.4.5}{}}
-\newlabel{eq:ldiff}{{6}{6}{The Diffusion Objective}{equation.4.6}{}}
-\newlabel{prop:collapse}{{4}{6}{Collapse under a shared student distribution}{proposition.4}{}}
-\@writefile{toc}{\contentsline {subsection}{\numberline {4.5}The Residual Gauge, and Row Supervision}{7}{subsection.4.5}\protected@file@percent }
-\newlabel{sec:walk}{{4.5}{7}{The Residual Gauge, and Row Supervision}{subsection.4.5}{}}
-\newlabel{prop:gauge}{{5}{7}{Gauge of the diffusion loss}{proposition.5}{}}
-\newlabel{eq:walk}{{8}{7}{The Residual Gauge, and Row Supervision}{equation.4.8}{}}
-\newlabel{eq:lrow}{{9}{7}{The Residual Gauge, and Row Supervision}{equation.4.9}{}}
-\newlabel{prop:walkgauge}{{6}{7}{Gauge reduction by row supervision}{proposition.6}{}}
+\newlabel{thm:global}{{1}{5}{Local-to-global operator transfer}{theorem.1}{}}
+\newlabel{eq:local-global-bound}{{9}{5}{Local-to-global operator transfer}{equation.4.9}{}}
+\newlabel{eq:scale-readout}{{10}{5}{Multi-Scale Diffusion Distillation}{equation.4.10}{}}
+\newlabel{cor:multiscale}{{1}{5}{Direct multi-scale tightening}{corollary.1}{}}
+\newlabel{prop:collapse}{{3}{5}{Collapse under a shared resolution}{proposition.3}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {4.3}Efficient Candidate Sampling}{5}{subsection.4.3}\protected@file@percent }
+\newlabel{sec:candidates}{{4.3}{5}{Efficient Candidate Sampling}{subsection.4.3}{}}
+\newlabel{prop:sampling}{{4}{5}{Mass missed by sampled candidates}{proposition.4}{}}
+\newlabel{eq:sampling-bound}{{13}{5}{Mass missed by sampled candidates}{equation.4.13}{}}
+\newlabel{eq:ambient}{{14}{6}{Efficient Candidate Sampling}{equation.4.14}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {4.4}Row Supervision for Cross-Anchor Consistency}{6}{subsection.4.4}\protected@file@percent }
+\newlabel{sec:walk}{{4.4}{6}{Row Supervision for Cross-Anchor Consistency}{subsection.4.4}{}}
+\newlabel{prop:gauge}{{5}{6}{Row-wise additive ambiguity}{proposition.5}{}}
+\newlabel{eq:walk}{{16}{6}{Row Supervision for Cross-Anchor Consistency}{equation.4.16}{}}
+\newlabel{eq:lrow}{{17}{6}{Row Supervision for Cross-Anchor Consistency}{equation.4.17}{}}
+\newlabel{prop:walkgauge}{{6}{6}{Consistency induced by overlapping rows}{proposition.6}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {4.5}Full Objective and Complexity}{6}{subsection.4.5}\protected@file@percent }
+\newlabel{sec:objective}{{4.5}{6}{Full Objective and Complexity}{subsection.4.5}{}}
+\newlabel{eq:student}{{18}{6}{Full Objective and Complexity}{equation.4.18}{}}
 \citation{dao2026talas}
 \citation{dao2026talas}
-\newlabel{prop:walkcover}{{7}{8}{Walk coverage}{proposition.7}{}}
-\newlabel{rem:approxgauge}{{1}{8}{Approximate identification, and what bounds $L$}{remark.1}{}}
-\@writefile{toc}{\contentsline {subsection}{\numberline {4.6}Full Objective}{8}{subsection.4.6}\protected@file@percent }
-\@writefile{toc}{\contentsline {section}{\numberline {5}Experiments}{8}{section.5}\protected@file@percent }
-\@writefile{toc}{\contentsline {subsection}{\numberline {5.1}Setup}{8}{subsection.5.1}\protected@file@percent }
-\@writefile{toc}{\contentsline {paragraph}{Models.}{8}{section*.6}\protected@file@percent }
-\@writefile{toc}{\contentsline {paragraph}{Training data.}{8}{section*.7}\protected@file@percent }
-\@writefile{toc}{\contentsline {paragraph}{Evaluation.}{8}{section*.8}\protected@file@percent }
-\@writefile{toc}{\contentsline {paragraph}{Baselines.}{8}{section*.9}\protected@file@percent }
 \citation{dao2026talas}
 \citation{dao2026talas}
-\@writefile{toc}{\contentsline {paragraph}{Implementation.}{9}{section*.10}\protected@file@percent }
-\@writefile{toc}{\contentsline {subsection}{\numberline {5.2}Main Results}{9}{subsection.5.2}\protected@file@percent }
-\@writefile{toc}{\contentsline {subsection}{\numberline {5.3}Ablations}{9}{subsection.5.3}\protected@file@percent }
-\newlabel{sec:analysis}{{5.3}{9}{Ablations}{subsection.5.3}{}}
-\@writefile{toc}{\contentsline {paragraph}{Anchored versus batch supervision.}{9}{section*.11}\protected@file@percent }
-\@writefile{toc}{\contentsline {paragraph}{The scale family and its resolutions.}{9}{section*.12}\protected@file@percent }
-\@writefile{toc}{\contentsline {paragraph}{Row supervision and the similarity gauge.}{9}{section*.13}\protected@file@percent }
-\@writefile{lot}{\contentsline {table}{\numberline {1}{\ignorespaces Results across three teacher\,$\rightarrow $\,student settings on nine datasets. Emotion, WiC, and STS-B (marked with $\star $) are in-domain; the remaining datasets are out-of-domain. Bold and underlined values denote the best and second-best compact-model results within each setting. TALAS results are reported as mean $\pm $ standard deviation; the remaining baseline results are from TALAS~\citep  {dao2026talas}. For setting (c), we report the epoch checkpoint with the highest overall average.}}{10}{table.1}\protected@file@percent }
-\newlabel{tab:main_results}{{1}{10}{Results across three teacher\,$\rightarrow $\,student settings on nine datasets. Emotion, WiC, and STS-B (marked with $\star $) are in-domain; the remaining datasets are out-of-domain. Bold and underlined values denote the best and second-best compact-model results within each setting. TALAS results are reported as mean $\pm $ standard deviation; the remaining baseline results are from TALAS~\citep {dao2026talas}. For setting (c), we report the epoch checkpoint with the highest overall average}{table.1}{}}
-\@writefile{lot}{\contentsline {table}{\numberline {2}{\ignorespaces Objective ablations (BGE-M3 $\rightarrow $ MiniLMv2-H768). Offset dispersion is the standard deviation of $\hat  {a}_i$ across anchors; $\kappa $ is the number of connected components of the realized constraint graph. Each row names the result it tests.}}{10}{table.2}\protected@file@percent }
-\newlabel{tab:ablation_objective}{{2}{10}{Objective ablations (BGE-M3 $\rightarrow $ MiniLMv2-H768). Offset dispersion is the standard deviation of $\hat {a}_i$ across anchors; $\kappa $ is the number of connected components of the realized constraint graph. Each row names the result it tests}{table.2}{}}
-\@writefile{toc}{\contentsline {paragraph}{Saturation.}{10}{section*.14}\protected@file@percent }
+\newlabel{eq:ldiff}{{19}{7}{Full Objective and Complexity}{equation.4.19}{}}
+\@writefile{toc}{\contentsline {section}{\numberline {5}Experiments}{7}{section.5}\protected@file@percent }
+\newlabel{sec:experiments}{{5}{7}{Experiments}{section.5}{}}
+\@writefile{toc}{\contentsline {paragraph}{Models and data.}{7}{section*.5}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{Evaluation.}{7}{section*.6}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{Baselines and implementation.}{7}{section*.7}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {5.1}Main Results}{7}{subsection.5.1}\protected@file@percent }
+\@writefile{lot}{\contentsline {table}{\numberline {1}{\ignorespaces Results across three teacher\,$\rightarrow $\,student settings on nine datasets. Emotion, WiC, and STS-B (marked with $\star $) are in-domain; the remaining datasets are out-of-domain. Bold and underlined values denote the best and second-best results within each setting, excluding the Teacher and Student base reference rows. TALAS and RIPPLE results are reported as mean $\pm $ standard deviation; the remaining baseline results are from TALAS~\citep  {dao2026talas}. For setting (c), the epoch checkpoint is selected on the validation average.}}{8}{table.1}\protected@file@percent }
+\newlabel{tab:main_results}{{1}{8}{Results across three teacher\,$\rightarrow $\,student settings on nine datasets. Emotion, WiC, and STS-B (marked with $\star $) are in-domain; the remaining datasets are out-of-domain. Bold and underlined values denote the best and second-best results within each setting, excluding the Teacher and Student base reference rows. TALAS and RIPPLE results are reported as mean $\pm $ standard deviation; the remaining baseline results are from TALAS~\citep {dao2026talas}. For setting (c), the epoch checkpoint is selected on the validation average}{table.1}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {5.2}Breadth as an Intervention: Where Does Alignment Travel?}{8}{subsection.5.2}\protected@file@percent }
+\newlabel{sec:analysis}{{5.2}{8}{Breadth as an Intervention: Where Does Alignment Travel?}{subsection.5.2}{}}
+\newlabel{eq:teacher-mass-k}{{21}{8}{Breadth as an Intervention: Where Does Alignment Travel?}{equation.5.21}{}}
+\@writefile{lot}{\contentsline {table}{\numberline {2}{\ignorespaces Neighborhood-breadth intervention. Only $k$ changes. Rank-band and full-corpus columns report teacher--student JS divergence. Off-support improvements are the local-to-global signature. Results are pending.}}{8}{table.2}\protected@file@percent }
+\newlabel{tab:k_sweep}{{2}{8}{Neighborhood-breadth intervention. Only $k$ changes. Rank-band and full-corpus columns report teacher--student JS divergence. Off-support improvements are the local-to-global signature. Results are pending}{table.2}{}}
 \bibdata{ripple}
-\bibcite{agarwal2024onpolicy}{{1}{2024}{{Agarwal et~al.}}{{Agarwal, Vieillard, Zhou, Stanczyk, Garea, Geist, and Bachem}}}
-\bibcite{akram2026jinaembeddingsv5}{{2}{2026}{{Akram et~al.}}{{Akram, Sturua, Havriushenko, Herreros, G{\"u}nther, Werk, and Xiao}}}
-\bibcite{alon2007nonbacktracking}{{3}{2007}{{Alon et~al.}}{{Alon, Benjamini, Lubetzky, and Sodin}}}
-\bibcite{alqahtani2021ot}{{4}{2021}{{Alqahtani et~al.}}{{Alqahtani, Lalwani, Zhang, Romeo, and Mansour}}}
-\bibcite{anshumann2025sparse}{{5}{2025}{{Anshumann et~al.}}{{Anshumann, Zaidi, Kedia, Ahn, Kwon, Lee, Lee, and Lee}}}
-\bibcite{calder2022improved}{{6}{2022}{{Calder \& Trillos}}{{Calder and Trillos}}}
-\bibcite{chen2024bgem3}{{7}{2024}{{Chen et~al.}}{{Chen, Xiao, Zhang, Luo, Lian, and Liu}}}
-\bibcite{chen2025cdm}{{8}{2025}{{Chen et~al.}}{{Chen, Liu, Meng, Chen, Xu, and Zhou}}}
-\bibcite{coifman2006diffusionmaps}{{9}{2006}{{Coifman \& Lafon}}{{Coifman and Lafon}}}
-\bibcite{dao2026talas}{{10}{2026}{{Dao et~al.}}{{Dao, Nguyen, Pham, Ngo~Van, Nguyen, Nguyen, and Le}}}
-\@writefile{lot}{\contentsline {table}{\numberline {3}{\ignorespaces Sweeps of the quantities the bounds govern (BGE-M3 $\rightarrow $ MiniLMv2-H768), reporting the nine-dataset average. Defaults in bold.}}{11}{table.3}\protected@file@percent }
-\newlabel{tab:ablation_sweeps}{{3}{11}{Sweeps of the quantities the bounds govern (BGE-M3 $\rightarrow $ MiniLMv2-H768), reporting the nine-dataset average. Defaults in bold}{table.3}{}}
-\bibcite{efraimidis2006weighted}{{11}{2006}{{Efraimidis \& Spirakis}}{{Efraimidis and Spirakis}}}
-\bibcite{gao2021distilcse}{{12}{2021{a}}{{Gao et~al.}}{{Gao, Wu, Wang, Wang, Zang, Wang, and Hu}}}
-\bibcite{gao2021simcse}{{13}{2021{b}}{{Gao et~al.}}{{Gao, Yao, and Chen}}}
-\bibcite{hinton2002sne}{{14}{2002}{{Hinton \& Roweis}}{{Hinton and Roweis}}}
-\bibcite{hinton2015distilling}{{15}{2015}{{Hinton et~al.}}{{Hinton, Vinyals, and Dean}}}
-\bibcite{huguet2023heatgeo}{{16}{2023}{{Huguet et~al.}}{{Huguet, Tong, De~Brouwer, Zhang, Wolf, Adelstein, and Krishnaswamy}}}
-\bibcite{jiao2019tinybert}{{17}{2020}{{Jiao et~al.}}{{Jiao, Yin, Shang, Jiang, Chen, Li, Wang, and Liu}}}
-\bibcite{kim2023embeddistill}{{18}{2023}{{Kim et~al.}}{{Kim, Rawat, Zaheer, Jayasumana, Sadhanala, Jitkrittum, Menon, Fergus, and Kumar}}}
-\bibcite{kim2025csd}{{19}{2025}{{Kim et~al.}}{{Kim, Shin, Kang, Na, and Moon}}}
-\bibcite{ko2025distillm2}{{20}{2025}{{Ko et~al.}}{{Ko, Chen, Kim, Ding, Liang, Zharkov, and Yun}}}
-\bibcite{kool2019stochastic}{{21}{2019}{{Kool et~al.}}{{Kool, van Hoof, and Welling}}}
-\bibcite{kornblith2019similarity}{{22}{2019}{{Kornblith et~al.}}{{Kornblith, Norouzi, Lee, and Hinton}}}
-\bibcite{lee2024gecko}{{23}{2024}{{Lee et~al.}}{{Lee, Dai, Ren, Chen, Cer, Cole, Hui, Boratko, Kapadia, Ding, Luan, Duddu, Abrego, Shi, Gupta, Kusupati, Jain, Jonnalagadda, Chang, and Naim}}}
-\bibcite{muennighoff2023mteb}{{24}{2023}{{Muennighoff et~al.}}{{Muennighoff, Tazi, Magne, and Reimers}}}
-\bibcite{park2019rkd}{{25}{2019}{{Park et~al.}}{{Park, Kim, Lu, and Cho}}}
-\bibcite{reimers2019sentencebert}{{26}{2019}{{Reimers \& Gurevych}}{{Reimers and Gurevych}}}
-\bibcite{sanh2019distilbert}{{27}{2019}{{Sanh et~al.}}{{Sanh, Debut, Chaumond, and Wolf}}}
-\bibcite{thakur2021beir}{{28}{2021}{{Thakur et~al.}}{{Thakur, Reimers, R{\"u}ckl{\'e}, Srivastava, and Gurevych}}}
-\bibcite{yang2023graphkd_survey}{{29}{2025}{{Tian et~al.}}{{Tian, Pei, Zhang, Zhang, and Chawla}}}
-\bibcite{garciatrillos2018variational}{{30}{2018}{{Trillos \& Slep{\v {c}}ev}}{{Trillos and Slep{\v {c}}ev}}}
-\bibcite{maaten2008tsne}{{31}{2008}{{van~der Maaten \& Hinton}}{{van~der Maaten and Hinton}}}
-\bibcite{vladymyrov2013entropic}{{32}{2013}{{Vladymyrov \& Carreira-Perpi{\~n}{\'a}n}}{{Vladymyrov and Carreira-Perpi{\~n}{\'a}n}}}
-\bibcite{vonluxburg2008consistency}{{33}{2008}{{von Luxburg et~al.}}{{von Luxburg, Belkin, and Bousquet}}}
-\bibcite{vujanic2025leaf}{{34}{2025}{{Vujanic \& Rueckstiess}}{{Vujanic and Rueckstiess}}}
-\bibcite{wang2020minilm}{{35}{2020}{{Wang et~al.}}{{Wang, Wei, Dong, Bao, Yang, and Zhou}}}
-\bibcite{xu2023distillcse}{{36}{2023}{{Xu et~al.}}{{Xu, Shao, Chen, and Liu}}}
-\bibcite{xu2024survey}{{37}{2024}{{Xu et~al.}}{{Xu, Li, Tao, Shen, Cheng, Li, Xu, Tao, and Zhou}}}
-\bibcite{zhang2024jasperstella}{{38}{2024{a}}{{Zhang et~al.}}{{Zhang, Li, Zeng, and Wang}}}
-\bibcite{zhang2022glnn}{{39}{2022}{{Zhang et~al.}}{{Zhang, Liu, Sun, and Shah}}}
-\bibcite{zhang2024dskd}{{40}{2024{b}}{{Zhang et~al.}}{{Zhang, Zhang, Sun, Chen, and Xu}}}
-\bibcite{zhang2025qwen3embedding}{{41}{2025}{{Zhang et~al.}}{{Zhang, Li, Long, Zhang, Lin, Yang, Xie, Yang, Liu, Lin, Huang, and Zhou}}}
+\bibcite{akram2026jinaembeddingsv5}{{1}{2026}{{Akram et~al.}}{{Akram, Sturua, Havriushenko, Herreros, G{\"u}nther, Werk, and Xiao}}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {5.3}Local Control or Memorized Scales?}{9}{subsection.5.3}\protected@file@percent }
+\newlabel{eq:diffusion-error-eval}{{22}{9}{Local Control or Memorized Scales?}{equation.5.22}{}}
+\@writefile{lot}{\contentsline {table}{\numberline {3}{\ignorespaces Multi-scale mechanism test. $E_8,E_{16}$ are held out; $E_{\mathrm  {sep}}$ tests scale distinguishability. Results are pending.}}{9}{table.3}\protected@file@percent }
+\newlabel{tab:multiscale_ablation}{{3}{9}{Multi-scale mechanism test. $E_8,E_{16}$ are held out; $E_{\mathrm {sep}}$ tests scale distinguishability. Results are pending}{table.3}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {5.4}Is Row Supervision Practically Necessary?}{9}{subsection.5.4}\protected@file@percent }
+\@writefile{lot}{\contentsline {table}{\numberline {4}{\ignorespaces Row-loss test. Only $\lambda $ changes; entries are downstream Avg. (mean $\pm $ standard deviation). Results are pending.}}{9}{table.4}\protected@file@percent }
+\newlabel{tab:lambda_sweep}{{4}{9}{Row-loss test. Only $\lambda $ changes; entries are downstream Avg. (mean $\pm $ standard deviation). Results are pending}{table.4}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {5.5}Does Target Mass Predict Sampling Fidelity?}{9}{subsection.5.5}\protected@file@percent }
+\@writefile{toc}{\contentsline {section}{\numberline {6}Limitations and Conclusion}{9}{section.6}\protected@file@percent }
+\bibcite{alon2007nonbacktracking}{{2}{2007}{{Alon et~al.}}{{Alon, Benjamini, Lubetzky, and Sodin}}}
+\bibcite{coifman2006diffusionmaps}{{3}{2006}{{Coifman \& Lafon}}{{Coifman and Lafon}}}
+\bibcite{dao2026talas}{{4}{2026}{{Dao et~al.}}{{Dao, Nguyen, Pham, Ngo~Van, Nguyen, Nguyen, and Le}}}
+\bibcite{efraimidis2006weighted}{{5}{2006}{{Efraimidis \& Spirakis}}{{Efraimidis and Spirakis}}}
+\bibcite{gao2021distilcse}{{6}{2021}{{Gao et~al.}}{{Gao, Wu, Wang, Wang, Zang, Wang, and Hu}}}
+\bibcite{xin2025nrkd}{{7}{2025}{{Gou et~al.}}{{Gou, Xin, Yu, Song, Zhang, and Wan}}}
+\bibcite{hinton2002sne}{{8}{2002}{{Hinton \& Roweis}}{{Hinton and Roweis}}}
+\bibcite{hinton2015distilling}{{9}{2015}{{Hinton et~al.}}{{Hinton, Vinyals, and Dean}}}
+\bibcite{huguet2023heatgeo}{{10}{2023}{{Huguet et~al.}}{{Huguet, Tong, De~Brouwer, Zhang, Wolf, Adelstein, and Krishnaswamy}}}
+\bibcite{jiao2019tinybert}{{11}{2020}{{Jiao et~al.}}{{Jiao, Yin, Shang, Jiang, Chen, Li, Wang, and Liu}}}
+\bibcite{kim2023embeddistill}{{12}{2023}{{Kim et~al.}}{{Kim, Rawat, Zaheer, Jayasumana, Sadhanala, Jitkrittum, Menon, Fergus, and Kumar}}}
+\bibcite{kool2019stochastic}{{13}{2019}{{Kool et~al.}}{{Kool, van Hoof, and Welling}}}
+\bibcite{lee2024gecko}{{14}{2024}{{Lee et~al.}}{{Lee, Dai, Ren, Chen, Cer, Cole, Hui, Boratko, Kapadia, Ding, Luan, Duddu, Abrego, Shi, Gupta, Kusupati, Jain, Jonnalagadda, Chang, and Naim}}}
+\bibcite{park2019rkd}{{15}{2019}{{Park et~al.}}{{Park, Kim, Lu, and Cho}}}
+\bibcite{passalis2020pkt}{{16}{2021}{{Passalis et~al.}}{{Passalis, Tzelepi, and Tefas}}}
+\bibcite{sanh2019distilbert}{{17}{2019}{{Sanh et~al.}}{{Sanh, Debut, Chaumond, and Wolf}}}
+\bibcite{singh2024coss}{{18}{2024}{{Singh \& Wang}}{{Singh and Wang}}}
+\bibcite{yang2023graphkd_survey}{{19}{2025}{{Tian et~al.}}{{Tian, Pei, Zhang, Zhang, and Chawla}}}
+\bibcite{maaten2008tsne}{{20}{2008}{{van~der Maaten \& Hinton}}{{van~der Maaten and Hinton}}}
+\bibcite{vladymyrov2013entropic}{{21}{2013}{{Vladymyrov \& Carreira-Perpi{\~n}{\'a}n}}{{Vladymyrov and Carreira-Perpi{\~n}{\'a}n}}}
+\bibcite{vujanic2025leaf}{{22}{2025}{{Vujanic \& Rueckstiess}}{{Vujanic and Rueckstiess}}}
+\bibcite{wang2020minilm}{{23}{2020}{{Wang et~al.}}{{Wang, Wei, Dong, Bao, Yang, and Zhou}}}
+\bibcite{xu2022bingo}{{24}{2022}{{Xu et~al.}}{{Xu, Fang, Zhang, Xie, Wang, Dai, Xiong, and Tian}}}
+\bibcite{xu2023distillcse}{{25}{2023}{{Xu et~al.}}{{Xu, Shao, Chen, and Liu}}}
+\bibcite{xu2024survey}{{26}{2024}{{Xu et~al.}}{{Xu, Li, Tao, Shen, Cheng, Li, Xu, Tao, and Zhou}}}
+\bibcite{zhang2024jasperstella}{{27}{2024}{{Zhang et~al.}}{{Zhang, Li, Zeng, and Wang}}}
+\bibcite{zhang2022glnn}{{28}{2022}{{Zhang et~al.}}{{Zhang, Liu, Sun, and Shah}}}
 \bibstyle{iclr2027_conference}
-\@writefile{toc}{\contentsline {section}{\numberline {A}Proofs}{14}{appendix.A}\protected@file@percent }
-\newlabel{app:proofs}{{A}{14}{Proofs}{appendix.A}{}}
-\@writefile{toc}{\contentsline {subsection}{\numberline {A.1}Proof of Proposition~\ref {prop:coverage} (neighborhood coverage)}{14}{subsection.A.1}\protected@file@percent }
-\newlabel{app:proof-coverage}{{A.1}{14}{Proof of Proposition~\ref {prop:coverage} (neighborhood coverage)}{subsection.A.1}{}}
-\@writefile{toc}{\contentsline {subsection}{\numberline {A.2}Proof of Proposition~\ref {prop:underdet} (under-determination)}{14}{subsection.A.2}\protected@file@percent }
-\newlabel{app:proof-underdet}{{A.2}{14}{Proof of Proposition~\ref {prop:underdet} (under-determination)}{subsection.A.2}{}}
-\@writefile{toc}{\contentsline {subsection}{\numberline {A.3}Two lemmas behind Theorem~\ref {thm:global}}{15}{subsection.A.3}\protected@file@percent }
-\newlabel{app:proof-perturb}{{A.3}{15}{Two lemmas behind Theorem~\ref {thm:global}}{subsection.A.3}{}}
-\newlabel{lem:perturb}{{1}{15}{One step to $r$ steps}{lemma.1}{}}
-\@writefile{toc}{\contentsline {paragraph}{Proof.}{15}{section*.16}\protected@file@percent }
-\newlabel{lem:restrict}{{2}{15}{Restriction}{lemma.2}{}}
-\@writefile{toc}{\contentsline {paragraph}{Proof.}{15}{section*.17}\protected@file@percent }
-\@writefile{toc}{\contentsline {subsection}{\numberline {A.4}Leakage control: why negatives bound $\delta _S$}{15}{subsection.A.4}\protected@file@percent }
-\newlabel{app:proof-leakage}{{A.4}{15}{Leakage control: why negatives bound $\delta _S$}{subsection.A.4}{}}
-\newlabel{rem:leakage-extension}{{3}{15}{From sampled negatives to the full complement}{remark.3}{}}
-\@writefile{toc}{\contentsline {subsection}{\numberline {A.5}Proof of Theorem~\ref {thm:global} (local-to-global transfer)}{16}{subsection.A.5}\protected@file@percent }
-\newlabel{app:proof-global}{{A.5}{16}{Proof of Theorem~\ref {thm:global} (local-to-global transfer)}{subsection.A.5}{}}
-\@writefile{toc}{\contentsline {subsection}{\numberline {A.6}Proof of Proposition~\ref {prop:collapse} (collapse)}{16}{subsection.A.6}\protected@file@percent }
-\newlabel{app:proof-collapse}{{A.6}{16}{Proof of Proposition~\ref {prop:collapse} (collapse)}{subsection.A.6}{}}
-\@writefile{toc}{\contentsline {subsection}{\numberline {A.7}Truncated walks and proof of Proposition~\ref {prop:sampling}}{16}{subsection.A.7}\protected@file@percent }
-\newlabel{app:proof-sampling}{{A.7}{16}{Truncated walks and proof of Proposition~\ref {prop:sampling}}{subsection.A.7}{}}
-\newlabel{lem:truncation}{{3}{16}{Truncation error}{lemma.3}{}}
-\@writefile{toc}{\contentsline {paragraph}{Proof.}{16}{section*.18}\protected@file@percent }
-\@writefile{toc}{\contentsline {paragraph}{Proof of Proposition~\ref {prop:sampling}.}{16}{section*.19}\protected@file@percent }
+\@writefile{toc}{\contentsline {section}{\numberline {A}Proofs}{12}{appendix.A}\protected@file@percent }
+\newlabel{app:proofs}{{A}{12}{Proofs}{appendix.A}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {A.1}Proof of Proposition~\ref {prop:coverage} (neighborhood coverage)}{12}{subsection.A.1}\protected@file@percent }
+\newlabel{app:proof-coverage}{{A.1}{12}{Proof of Proposition~\ref {prop:coverage} (neighborhood coverage)}{subsection.A.1}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {A.2}Proof of Proposition~\ref {prop:underdet} (under-determination)}{12}{subsection.A.2}\protected@file@percent }
+\newlabel{app:proof-underdet}{{A.2}{12}{Proof of Proposition~\ref {prop:underdet} (under-determination)}{subsection.A.2}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {A.3}Two lemmas behind Theorem~\ref {thm:global}}{12}{subsection.A.3}\protected@file@percent }
+\newlabel{app:proof-perturb}{{A.3}{12}{Two lemmas behind Theorem~\ref {thm:global}}{subsection.A.3}{}}
+\newlabel{lem:perturb}{{1}{12}{One step to $r$ steps}{lemma.1}{}}
+\@writefile{toc}{\contentsline {paragraph}{Proof.}{13}{section*.9}\protected@file@percent }
+\newlabel{lem:restrict}{{2}{13}{Restriction}{lemma.2}{}}
+\@writefile{toc}{\contentsline {paragraph}{Proof.}{13}{section*.10}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {A.4}Leakage control from negative candidates}{13}{subsection.A.4}\protected@file@percent }
+\newlabel{app:proof-leakage}{{A.4}{13}{Leakage control from negative candidates}{subsection.A.4}{}}
+\newlabel{rem:leakage-extension}{{2}{13}{From sampled negatives to the full complement}{remark.2}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {A.5}Proof of Theorem~\ref {thm:global} (local-to-global transfer)}{13}{subsection.A.5}\protected@file@percent }
+\newlabel{app:proof-global}{{A.5}{13}{Proof of Theorem~\ref {thm:global} (local-to-global transfer)}{subsection.A.5}{}}
 \citation{efraimidis2006weighted,kool2019stochastic}
-\@writefile{toc}{\contentsline {paragraph}{Proof of Proposition~\ref {prop:walkcover}.}{17}{section*.20}\protected@file@percent }
-\@writefile{toc}{\contentsline {subsection}{\numberline {A.8}Proofs of Propositions~\ref {prop:gauge} and~\ref {prop:walkgauge} (gauge and its reduction)}{17}{subsection.A.8}\protected@file@percent }
-\newlabel{app:proof-gauge}{{A.8}{17}{Proofs of Propositions~\ref {prop:gauge} and~\ref {prop:walkgauge} (gauge and its reduction)}{subsection.A.8}{}}
-\@writefile{toc}{\contentsline {paragraph}{Invariance.}{17}{section*.21}\protected@file@percent }
-\@writefile{toc}{\contentsline {paragraph}{Zero set.}{17}{section*.22}\protected@file@percent }
-\@writefile{toc}{\contentsline {paragraph}{Walk rows carry the same form of constraint.}{17}{section*.23}\protected@file@percent }
-\@writefile{toc}{\contentsline {paragraph}{Symmetry closes the gauge along edges.}{17}{section*.24}\protected@file@percent }
-\@writefile{toc}{\contentsline {paragraph}{Approximate identification (Remark~\ref {rem:approxgauge}).}{17}{section*.25}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {A.6}Proof of Proposition~\ref {prop:collapse} (collapse)}{14}{subsection.A.6}\protected@file@percent }
+\newlabel{app:proof-collapse}{{A.6}{14}{Proof of Proposition~\ref {prop:collapse} (collapse)}{subsection.A.6}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {A.7}Truncated walks and proof of Proposition~\ref {prop:sampling}}{14}{subsection.A.7}\protected@file@percent }
+\newlabel{app:proof-sampling}{{A.7}{14}{Truncated walks and proof of Proposition~\ref {prop:sampling}}{subsection.A.7}{}}
+\newlabel{lem:truncation}{{3}{14}{Truncation error}{lemma.3}{}}
+\@writefile{toc}{\contentsline {paragraph}{Proof.}{14}{section*.11}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{Proof of Proposition~\ref {prop:sampling}.}{14}{section*.12}\protected@file@percent }
+\newlabel{prop:walkcover}{{7}{14}{Coverage of walk-selected constraints}{proposition.7}{}}
+\@writefile{toc}{\contentsline {paragraph}{Proof of Proposition~\ref {prop:walkcover}.}{14}{section*.13}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {A.8}Proofs of Propositions~\ref {prop:gauge} and~\ref {prop:walkgauge} (gauge and its reduction)}{15}{subsection.A.8}\protected@file@percent }
+\newlabel{app:proof-gauge}{{A.8}{15}{Proofs of Propositions~\ref {prop:gauge} and~\ref {prop:walkgauge} (gauge and its reduction)}{subsection.A.8}{}}
+\@writefile{toc}{\contentsline {paragraph}{Invariance.}{15}{section*.14}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{Zero set.}{15}{section*.15}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{Walk rows carry the same form of constraint.}{15}{section*.16}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{Symmetry closes the gauge along edges.}{15}{section*.17}\protected@file@percent }
+\newlabel{rem:approxgauge}{{5}{15}{Approximate consistency}{remark.5}{}}
+\newlabel{rem:walkedges}{{6}{15}{The walk lays down the edges}{remark.6}{}}
+\newlabel{rem:threshold}{{7}{15}{Downstream tasks are not gauge-invariant}{remark.7}{}}
 \citation{hinton2015distilling}
-\newlabel{rem:walkedges}{{6}{18}{The walk lays down the edges}{remark.6}{}}
-\newlabel{rem:threshold}{{7}{18}{Downstream tasks are not gauge-invariant}{remark.7}{}}
-\@writefile{toc}{\contentsline {section}{\numberline {B}Objective Constraints and Implementation Notes}{18}{appendix.B}\protected@file@percent }
-\newlabel{app:hyper}{{B}{18}{Objective Constraints and Implementation Notes}{appendix.B}{}}
-\@writefile{toc}{\contentsline {subsection}{\numberline {B.1}Temperatures tied to transition-row targets}{18}{subsection.B.1}\protected@file@percent }
-\newlabel{app:hyper-temptie}{{B.1}{18}{Temperatures tied to transition-row targets}{subsection.B.1}{}}
-\newlabel{prop:temptie}{{8}{18}{Temperature ties}{proposition.8}{}}
-\@writefile{toc}{\contentsline {paragraph}{Proof.}{18}{section*.26}\protected@file@percent }
+\@writefile{toc}{\contentsline {section}{\numberline {B}Objective Constraints and Implementation Notes}{16}{appendix.B}\protected@file@percent }
+\newlabel{app:hyper}{{B}{16}{Objective Constraints and Implementation Notes}{appendix.B}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {B.1}Temperatures tied to transition-row targets}{16}{subsection.B.1}\protected@file@percent }
+\newlabel{app:hyper-temptie}{{B.1}{16}{Temperatures tied to transition-row targets}{subsection.B.1}{}}
+\newlabel{prop:temptie}{{8}{16}{Temperature ties}{proposition.8}{}}
+\@writefile{toc}{\contentsline {paragraph}{Proof.}{16}{section*.18}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {B.2}The rest of the temperature ladder}{16}{subsection.B.2}\protected@file@percent }
+\newlabel{app:hyper-ladder}{{B.2}{16}{The rest of the temperature ladder}{subsection.B.2}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {B.3}Truncation tolerance}{16}{subsection.B.3}\protected@file@percent }
+\newlabel{app:hyper-truncation}{{B.3}{16}{Truncation tolerance}{subsection.B.3}{}}
 \citation{alon2007nonbacktracking}
-\@writefile{toc}{\contentsline {subsection}{\numberline {B.2}The rest of the temperature ladder}{19}{subsection.B.2}\protected@file@percent }
-\newlabel{app:hyper-ladder}{{B.2}{19}{The rest of the temperature ladder}{subsection.B.2}{}}
-\@writefile{toc}{\contentsline {subsection}{\numberline {B.3}Truncation tolerance}{19}{subsection.B.3}\protected@file@percent }
-\newlabel{app:hyper-truncation}{{B.3}{19}{Truncation tolerance}{subsection.B.3}{}}
-\@writefile{toc}{\contentsline {subsection}{\numberline {B.4}Non-backtracking walks}{19}{subsection.B.4}\protected@file@percent }
-\newlabel{app:hyper-nonbacktracking}{{B.4}{19}{Non-backtracking walks}{subsection.B.4}{}}
-\@writefile{toc}{\contentsline {subsection}{\numberline {B.5}Dense rather than sampled walk targets}{19}{subsection.B.5}\protected@file@percent }
-\newlabel{app:hyper-dense}{{B.5}{19}{Dense rather than sampled walk targets}{subsection.B.5}{}}
-\gdef \@abspage@last{19}
+\@writefile{toc}{\contentsline {subsection}{\numberline {B.4}Non-backtracking walks}{17}{subsection.B.4}\protected@file@percent }
+\newlabel{app:hyper-nonbacktracking}{{B.4}{17}{Non-backtracking walks}{subsection.B.4}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {B.5}Dense rather than sampled walk targets}{17}{subsection.B.5}\protected@file@percent }
+\newlabel{app:hyper-dense}{{B.5}{17}{Dense rather than sampled walk targets}{subsection.B.5}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {B.6}Scale-separation diagnostic}{17}{subsection.B.6}\protected@file@percent }
+\newlabel{app:scale-separation}{{B.6}{17}{Scale-separation diagnostic}{subsection.B.6}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {B.7}Per-setting row-loss grid}{17}{subsection.B.7}\protected@file@percent }
+\newlabel{app:lambda-grid}{{B.7}{17}{Per-setting row-loss grid}{subsection.B.7}{}}
+\@writefile{lot}{\contentsline {table}{\numberline {5}{\ignorespaces Per-setting row-loss sweep. Entries are downstream Avg. (mean $\pm $ standard deviation). Results are pending.}}{17}{table.5}\protected@file@percent }
+\newlabel{tab:lambda_sweep_all}{{5}{17}{Per-setting row-loss sweep. Entries are downstream Avg. (mean $\pm $ standard deviation). Results are pending}{table.5}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {B.8}Sampling-efficiency measurement protocol}{17}{subsection.B.8}\protected@file@percent }
+\newlabel{app:sampling-efficiency-protocol}{{B.8}{17}{Sampling-efficiency measurement protocol}{subsection.B.8}{}}
+\newlabel{eq:gradient-fidelity}{{42}{17}{Sampling-efficiency measurement protocol}{equation.B.42}{}}
+\@writefile{lot}{\contentsline {table}{\numberline {6}{\ignorespaces Candidate-budget mechanism test. Only $m$ changes. Results are pending.}}{18}{table.6}\protected@file@percent }
+\newlabel{tab:m_sweep}{{6}{18}{Candidate-budget mechanism test. Only $m$ changes. Results are pending}{table.6}{}}
+\gdef \@abspage@last{18}

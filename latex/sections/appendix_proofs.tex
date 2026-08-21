@@ -10,7 +10,14 @@ Within an epoch the corpus is partitioned uniformly at random into batches of si
 \begin{equation}
     \Pr[j\in\mathcal{B}] = \frac{B-1}{N-1}.
 \end{equation}
-(i) follows by linearity over the $k$ neighbors. (ii) is Markov's inequality applied to the nonnegative count $|\mathcal{B}\cap\mathcal{N}_k(i)|$: $\Pr[\text{count}\geq1]\leq\mathbb{E}[\text{count}]$. For (iii), epochs are independent, so with $p_e=(B-1)/(N-1)$ the probability that a given neighbor pair co-occurs within $T$ epochs is $1-(1-p_e)^T\leq Tp_e$, and the expected fraction of the $k$ neighbor pairs of anchor $i$ observed within $T$ epochs is the same bound by linearity. \qed
+The expected count follows by linearity over the $k$ neighbors. The event of seeing no neighbor means that all $B-1$ batch partners are drawn from the $N-1-k$ non-neighbors, giving
+\begin{equation}
+    \Pr[\mathcal B\cap\mathcal N_k(i)=\emptyset]
+    =\frac{\binom{N-1-k}{B-1}}{\binom{N-1}{B-1}}.
+\end{equation}
+The stated lower bound follows from the union bound
+$\Pr[\mathcal B\cap\mathcal N_k(i)\neq\emptyset]\leq(B-1)k/(N-1)$.
+Across epochs, let $p_e=(B-1)/(N-1)$. A fixed neighbor pair is observed at least once with probability $1-(1-p_e)^T$. By linearity this is also the expected observed fraction of the $k$ neighbor pairs, and Bernoulli's inequality gives $1-(1-p_e)^T\leq Tp_e$. \qed
 
 \subsection{Proof of Proposition~\ref{prop:underdet} (under-determination)}
 \label{app:proof-underdet}
@@ -23,10 +30,12 @@ Within an epoch the corpus is partitioned uniformly at random into batches of si
 \end{equation}
 so $c^S_{ij}-c^T_{ij}$ is constant in $j$ on $\mathcal{B}\setminus\{i\}$; call it $a_i^{\mathcal{B}}$. Conversely, if $c^S_{ij}=c^T_{ij}+a_i^{\mathcal{B}}$ on that set then the factor $e^{a_i^{\mathcal{B}}/\tau_0}$ cancels in the normalization and the two distributions coincide, so the divergence is zero.
 
-(ii) The characterization in (i) involves $c^S_{ij}$ only for $j\in\mathcal{B}\setminus\{i\}$, and $\mathcal{S}_i^{T}$ is the union of these sets over the batches containing $i$. Scores to columns outside $\mathcal{S}_i^{T}$ appear in no constraint and may be set arbitrarily. If two batches $\mathcal{B},\mathcal{B}'$ containing $i$ share no element, no column is subject to both constraints, so $a_i^{\mathcal{B}}$ and $a_i^{\mathcal{B}'}$ are unrelated; if they share a column $j$, then both equal $c^S_{ij}-c^T_{ij}$ and coincide. \qed
+(ii) Summing the realized batch terms introduces no additional score arguments: row $i$ occurs only at columns in $\mathcal O_i^T$. Therefore two score arrays that agree on every realized argument give the same value to every batch term and hence to the empirical objective, irrespective of entries outside $\mathcal O_i^T$.
+
+(iii) If two batches $\mathcal B,\mathcal B'$ containing $i$ share a column $j$, then both offsets equal $c^S_{ij}-c^T_{ij}$ and must coincide. Repeating the argument along a chain of overlapping column sets identifies all offsets in that overlap component. With no such chain, the score-level loss contains no equality relating the two constants. This proves the proposition. \qed
 
 \begin{remark}[The defect is identifiability, not bias]
-The in-batch teacher target $p^{T,\mathcal{B}}_i$ is a poor estimator of the teacher's ambient distribution over the corpus, but this does not by itself impugn the objective: the student is restricted to the same columns, so by part (i) the exact solution $c^S=c^T+a_i$ drives the loss to zero on every batch and the two restrictions cancel. The failure is that almost nothing is constrained, which Proposition~\ref{prop:coverage}(iii) quantifies.
+The in-batch teacher target $p^{T,\mathcal{B}}_i$ is a poor estimator of the teacher's ambient distribution over the corpus, but this does not by itself impugn the objective: the student is restricted to the same columns, so by part (i) the exact solution $c^S=c^T+a_i$ drives the loss to zero on every batch and the two restrictions cancel. The failure is that almost nothing is constrained, which Eq.~\eqref{eq:coverage-exact} quantifies.
 \end{remark}
 
 \subsection{Two lemmas behind Theorem~\ref{thm:global}}
@@ -70,7 +79,7 @@ Split the $\ell_1$ distance over $C$ and $\bar{C}$. Outside $C$, $\sum_{\bar{C}}
 \end{equation}
 Adding the two parts and halving yields the claim. \qed
 
-\subsection{Leakage control: why negatives bound $\delta_S$}
+\subsection{Leakage control from negative candidates}
 \label{app:proof-leakage}
 
 The teacher-side defect $\delta_T$ in Theorem~\ref{thm:global} is a property of the candidate construction; the student-side defect $\delta_S$ is what the negatives of Section~\ref{sec:candidates} target. Let $\tilde{p}=p|_C$ and $\tilde{q}=q|_C$ be the restricted teacher and student distributions on $C=C^{+}\cup C^{-}$, and suppose $D_{\mathrm{KL}}(\tilde{p}\,\|\,\tilde{q})\leq\varepsilon$ with $\tilde{p}(C^{-})\leq\varepsilon_{\mathrm{neg}}$. The partition induces binary distributions $(\tilde{p}(C^{+}),\tilde{p}(C^{-}))$ and $(\tilde{q}(C^{+}),\tilde{q}(C^{-}))$, and by the data-processing inequality
@@ -90,7 +99,7 @@ The bound above controls the student's mass on the negative columns actually dra
 \subsection{Proof of Theorem~\ref{thm:global} (local-to-global transfer)}
 \label{app:proof-global}
 
-Fix an anchor $i$. Pinsker's inequality applied to the restricted divergence gives $\mathrm{TV}(p^T_{i,1}|_{C_i},p^S_{i,1})\leq\sqrt{\varepsilon/2}$. Lemma~\ref{lem:restrict} with $p=p^T_{i,1}$, $q$ the student's full row, and $C=C_i$ then bounds the full one-step rows:
+Fix an anchor $i$. Pinsker's inequality applied to the restricted divergence gives $\mathrm{TV}(P_i^T|_{C_i},P_i^S|_{C_i})\leq\sqrt{\varepsilon/2}$. Lemma~\ref{lem:restrict} with $p=P_i^T$, $q=P_i^S$, and $C=C_i$ then bounds the full one-step rows:
 \begin{equation}
     \mathrm{TV}\big(P^{T}_i,\,P^{S}_i\big)
     \leq \sqrt{\varepsilon/2}+\delta_T+\delta_S
@@ -99,10 +108,11 @@ Fix an anchor $i$. Pinsker's inequality applied to the restricted divergence giv
 Applying Lemma~\ref{lem:perturb} with row-wise bound $\varepsilon_{\mathrm{row}}$ yields, for every $r\geq1$,
 $\max_i\mathrm{TV}\big(\delta_i^{\top}(\tilde{P}^{T})^{r},\delta_i^{\top}(\tilde{P}^{S})^{r}\big)\leq r\,\varepsilon_{\mathrm{row}}/2$. \qed
 
-Corollary~\ref{cor:multiscale} is the same argument applied directly to the scale-$r$ family: Pinsker plus Lemma~\ref{lem:restrict} bound the $r$-step rows without invoking Lemma~\ref{lem:perturb}, so no factor of $r$ appears.
+For Corollary~\ref{cor:multiscale}, apply Pinsker directly to
+$p^T_{i,r}|_{C_i}$ and $q^S_{i,r}|_{C_i}$, then use Lemma~\ref{lem:restrict} to extend the comparison to their full score-row domains. Lemma~\ref{lem:perturb} is not invoked, so no factor of $r$ appears. This proves a direct target--readout bound and does not identify $q^S_{i,r}$ with $(\widetilde P^S)^r$.
 
 \begin{remark}[Average-case variant]
-Training controls the divergence averaged over anchors rather than its maximum. By Jensen's inequality, $\frac1N\sum_i\mathrm{TV}(p^T_{i,1}|_{C_i},p^S_{i,1})\leq\sqrt{\bar{\varepsilon}/2}$ with $\bar{\varepsilon}$ the average restricted divergence, and the telescoping argument of Lemma~\ref{lem:perturb} can be carried out under any fixed initial distribution over anchors, giving the same bounds for anchor-averaged errors.
+Training controls the divergence averaged over anchors rather than its maximum. By Jensen's inequality, $\frac1N\sum_i\mathrm{TV}(P^T_i|_{C_i},P^S_i|_{C_i})\leq\sqrt{\bar{\varepsilon}/2}$ with $\bar{\varepsilon}$ the average restricted divergence, and the telescoping argument of Lemma~\ref{lem:perturb} can be carried out under any fixed initial distribution over anchors, giving the same bounds for anchor-averaged errors.
 \end{remark}
 
 \subsection{Proof of Proposition~\ref{prop:collapse} (collapse)}
@@ -150,6 +160,19 @@ The identity $\mathrm{TV}(p|_C,p)=p(\bar{C})$ follows from the first display abo
 \end{equation}
 Fix $t>0$ and split the sum: atoms with $p_j\geq t$ contribute at most $(1-t)^m\sum_j p_j\leq e^{-tm}$, and atoms with $p_j<t$ contribute at most $\mathrm{Tail}_p(t)$. Minimizing over $t$ gives the bound. If every atom in the support of $p$ carries mass at least $c/\rho$, take $t=c/\rho$: no atom falls below $t$, the tail term vanishes, and the bound is $e^{-cm/\rho}$. \qed
 
+\begin{proposition}[Coverage of walk-selected constraints]
+\label{prop:walkcover}
+Let $q$ be the distribution over mutual-neighbor edges traversed by the walks. After $n$ independent traversals, the expected $q$-mass of edges never traversed is
+\begin{equation}
+    \sum_e q_e(1-q_e)^n
+    \leq
+    \min_{t>0}\left(e^{-tn}+\mathrm{Tail}_q(t)\right),
+    \qquad
+    \mathrm{Tail}_q(t)=\sum_{e:q_e<t}q_e.
+\end{equation}
+Adding traversed edges can only merge components of the realized constraint graph, so its component count is non-increasing with additional traversals.
+\end{proposition}
+
 \paragraph{Proof of Proposition~\ref{prop:walkcover}.}
 Index the edges of $\mathcal{M}_k^T$ and let $q_e$ be the probability that edge $e$ is traversed in a given optimization step, independently across steps. The probability that $e$ is never traversed in $n$ steps is $(1-q_e)^n$, so the expected $q$-mass of untraversed edges is $\sum_e q_e(1-q_e)^n$, which is the quantity bounded in Proposition~\ref{prop:sampling} with $p$ replaced by $q$ and $m$ by $n$; the same split at a threshold $t$ gives the same bound. Adding an edge to the traversed set can only merge two components of $\mathcal{G}$ or leave them unchanged, so $\kappa$ is non-increasing in $n$. \qed
 
@@ -182,9 +205,10 @@ Every supervised row $u\in\mathcal{S}$ therefore satisfies $c^S_{uv}=c^T_{uv}+a_
     \qquad
     c^S_{vu}=c^T_{vu}+a_v .
 \end{equation}
-Cosine similarity is symmetric, $c^S_{uv}=c^S_{vu}$ and $c^T_{uv}=c^T_{vu}$, so subtracting gives $a_u=a_v$. A function constant across every edge is constant on every connected component, so $a$ takes at most $\kappa$ distinct values, one per component of $\mathcal{G}$. Conversely, adding a common constant to all cosines within a component leaves every softmax in the objective unchanged, so the invariance group is exactly $\mathbb{R}^{\kappa}$. This proves Proposition~\ref{prop:walkgauge}. \qed
+Cosine similarity is symmetric, $c^S_{uv}=c^S_{vu}$ and $c^T_{uv}=c^T_{vu}$, so subtracting gives $a_u=a_v$. A function constant across every edge is constant on every connected component, so the score-row observation model leaves at most one independent offset per component of $\mathcal{G}$. This is an upper bound on score-level ambiguity; it does not assert that arbitrary shifted score arrays are realizable cosine Gram matrices. This proves Proposition~\ref{prop:walkgauge}. \qed
 
-\paragraph{Approximate identification (Remark~\ref{rem:approxgauge}).}
+\begin{remark}[Approximate consistency]
+\label{rem:approxgauge}
 Suppose a supervised term at row $u$ has divergence at most $\varepsilon$ rather than zero, with teacher target $p$ and student distribution $q$ on $\Omega_u$, both softmaxes at the same temperature $\tau$. Pinsker gives $\lVert p-q\rVert_\infty\leq\mathrm{TV}(p,q)\leq\sqrt{\varepsilon/2}=:\eta$. For any column $j$ with $p_j\geq p_{\min}>\eta$,
 \begin{equation}
     \big|\log q_j-\log p_j\big|
@@ -194,10 +218,11 @@ Suppose a supervised term at row $u$ has divergence at most $\varepsilon$ rather
 so for two columns $j,j'$ the log-ratio identity used above holds up to $2\eta/(p_{\min}-\eta)$, giving
 $\big|(c^S_{uj}-c^S_{uj'})-(c^T_{uj}-c^T_{uj'})\big|\leq 2\tau\eta/(p_{\min}-\eta)$.
 Writing $a_u$ for the offset fitted at row $u$, the same estimate bounds $|a_u-a_v|$ across an edge $\{u,v\}$ of $\mathcal{G}$ by $O(\tau\sqrt{\varepsilon}/p_{\min})$. Along a path of $\ell$ edges the bounds add, so offsets identified through a long chain are looser than those identified through a short one: coverage of $\mathcal{G}$ improves with walk length while the accuracy of each identification degrades with it.
+\end{remark}
 
 \begin{remark}[The walk lays down the edges]
 \label{rem:walkedges}
-Consecutive nodes $j_t,j_{t+1}$ of a walk with $t\geq1$ are adjacent in $\mathcal{M}_k^T$, which is symmetric by construction, and both are supervised rows whenever both lie in $\mathcal{P}_B$. Then $j_{t+1}\in\Omega^w_{j_t}$ and $j_t\in\Omega^w_{j_{t+1}}$, so the step is an edge of $\mathcal{G}$: a walk of length $L$ contributes a path of $L-1$ edges. Without the walk term $\mathcal{S}$ is the set of anchors and $\mathcal{G}$ has no edges unless two anchors happen to appear in each other's pooled columns, so $\kappa=|\mathcal{S}|$ and the gauge is one constant per anchor.
+Consecutive nodes $j_t,j_{t+1}$ of a walk with $t\geq1$ are adjacent in $\mathcal{M}_k^T$, which is symmetric by construction, and both are supervised rows whenever both lie in $\mathcal{P}_B$. Then $j_{t+1}\in\Omega^w_{j_t}$ and $j_t\in\Omega^w_{j_{t+1}}$, so the step is an edge of $\mathcal{G}$: a walk of length $L$ contributes a path of up to $L-1$ edges. Anchor-only supervision can also create an edge if two realized anchor rows contain one another, but this depends on reciprocal inclusion. The walk deliberately selects adjacent rows and therefore densifies such constraints.
 \end{remark}
 
 \begin{remark}[Downstream tasks are not gauge-invariant]

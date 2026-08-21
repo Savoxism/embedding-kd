@@ -3,44 +3,44 @@ Capacity: max_strings=200000, hash_size=200000, hash_prime=170003
 The top-level auxiliary file: main.aux
 The style file: iclr2027_conference.bst
 Database file #1: ripple.bib
-You've used 41 entries,
+You've used 28 entries,
             2773 wiz_defined-function locations,
-            863 strings with 16418 characters,
-and the built_in function-call counts, 26735 in all, are:
-= -- 2351
-> -- 2119
-< -- 26
-+ -- 705
-- -- 662
-* -- 2407
-:= -- 4165
-add.period$ -- 182
-call.type$ -- 41
-change.case$ -- 336
-chr.to.int$ -- 39
-cite$ -- 82
-duplicate$ -- 1020
-empty$ -- 1715
-format.name$ -- 721
-if$ -- 5580
-int.to.chr$ -- 3
+            774 strings with 11989 characters,
+and the built_in function-call counts, 17253 in all, are:
+= -- 1469
+> -- 1426
+< -- 15
++ -- 474
+- -- 446
+* -- 1563
+:= -- 2731
+add.period$ -- 112
+call.type$ -- 28
+change.case$ -- 230
+chr.to.int$ -- 28
+cite$ -- 56
+duplicate$ -- 644
+empty$ -- 1103
+format.name$ -- 488
+if$ -- 3548
+int.to.chr$ -- 1
 int.to.str$ -- 1
-missing$ -- 40
-newline$ -- 261
-num.names$ -- 174
-pop$ -- 615
+missing$ -- 27
+newline$ -- 173
+num.names$ -- 116
+pop$ -- 425
 preamble$ -- 1
-purify$ -- 295
+purify$ -- 202
 quote$ -- 0
-skip$ -- 912
+skip$ -- 577
 stack$ -- 0
-substring$ -- 782
-swap$ -- 204
-text.length$ -- 17
+substring$ -- 426
+swap$ -- 92
+text.length$ -- 8
 text.prefix$ -- 0
 top$ -- 0
-type$ -- 451
+type$ -- 308
 warning$ -- 0
-while$ -- 180
+while$ -- 114
 width$ -- 0
-write$ -- 648
+write$ -- 421
