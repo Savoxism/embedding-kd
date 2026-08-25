@@ -1,14 +1,11 @@
 import argparse
-import os
 import sys
 
-import torch
 from config import (
     BaseConfig,
     CDMConfig,
     DSKDConfig,
     EMOConfig,
-    HeatGeoConfig,
     StellaConfig,
     TALASConfig,
 )
@@ -24,7 +21,7 @@ def parse_args():
         '--method',
         type=str,
         default='cdm',
-        choices=['cdm', 'dskd', 'emo', 'stella', 'talas', 'heatgeo'],
+        choices=['cdm', 'dskd', 'emo', 'stella', 'talas'],
         help='Distillation method to use'
     )
     
@@ -104,18 +101,6 @@ def parse_args():
         help='DTW KD loss weight'
     )
     parser.add_argument(
-        '--sgc_weight',
-        type=float,
-        default=None,
-        help='HeatGeo similarity gauge calibration weight'
-    )
-    parser.add_argument(
-        '--heatgeo_sampling_mode',
-        choices=['diffusion', 'random_hard_direct'],
-        default=None,
-        help='HeatGeo candidate sampling and objective mode'
-    )
-    parser.add_argument(
         '--task_type',
         choices=['single_cls', 'pair_cls', 'pair_reg'],
         default=None,
@@ -139,18 +124,6 @@ def parse_args():
         type=str,
         default=None,
         help='Teacher embedding cache path'
-    )
-    parser.add_argument(
-        '--heatgeo_cache_path',
-        type=str,
-        default=None,
-        help='HeatGeo graph or hard-negative artifact path'
-    )
-    parser.add_argument(
-        '--heatgeo_log_dir',
-        type=str,
-        default=None,
-        help='HeatGeo graph diagnostics directory'
     )
     
     parser.add_argument(
@@ -209,8 +182,6 @@ def get_config(method: str, args):
         config = StellaConfig()
     elif method == 'talas':
         config = TALASConfig()
-    elif method == 'heatgeo':
-        config = HeatGeoConfig()
     else:
         config = BaseConfig()
     
@@ -243,10 +214,6 @@ def get_config(method: str, args):
         config.w_task = args.w_task
     if args.alpha_dtw is not None:
         config.alpha_dtw = args.alpha_dtw
-    if args.sgc_weight is not None:
-        config.sgc_weight = args.sgc_weight
-    if args.heatgeo_sampling_mode is not None:
-        config.candidate_sampling_mode = args.heatgeo_sampling_mode
     if args.task_type is not None:
         config.task_type = args.task_type
     
@@ -256,10 +223,6 @@ def get_config(method: str, args):
         config.weights_dir = args.weights_dir
     if args.cache_path is not None:
         config.cache_path = args.cache_path
-    if args.heatgeo_cache_path is not None:
-        config.heatgeo_cache_path = args.heatgeo_cache_path
-    if args.heatgeo_log_dir is not None:
-        config.heatgeo_log_dir = args.heatgeo_log_dir
     
     if args.seed is not None:
         config.seed = args.seed
@@ -284,13 +247,12 @@ def main():
     
     config = get_config(args.method, args)
     
-    if int(os.environ.get("RANK", "0")) == 0:
-        print("\n" + "="*70)
-        print(f"Configuration for {args.method.upper()} method:")
-        print("="*70)
-        for k, v in config.to_dict().items():
-            print(f"  {k:25s} : {v}")
-        print("="*70 + "\n")
+    print("\n" + "="*70)
+    print(f"Configuration for {args.method.upper()} method:")
+    print("="*70)
+    for k, v in config.to_dict().items():
+        print(f"  {k:25s} : {v}")
+    print("="*70 + "\n")
     
     try:
         distiller = KnowledgeDistiller(config)
@@ -298,8 +260,6 @@ def main():
         print(f"Error creating distiller: {e}")
         import traceback
         traceback.print_exc()
-        if torch.distributed.is_initialized():
-            torch.distributed.destroy_process_group()
         sys.exit(1)
     
     try:

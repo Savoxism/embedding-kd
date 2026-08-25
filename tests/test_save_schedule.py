@@ -6,11 +6,11 @@ from distiller import should_save_epoch
 from main import get_config, parse_args
 
 
-def test_save_every_cli_overrides_heatgeo_default(monkeypatch):
+def test_save_every_cli_overrides_config_default(monkeypatch):
     monkeypatch.setattr(
         sys,
         "argv",
-        ["main.py", "--method", "heatgeo", "--save_every", "3"],
+        ["main.py", "--method", "talas", "--save_every", "3"],
     )
 
     args = parse_args()
@@ -23,7 +23,7 @@ def test_non_positive_save_every_is_rejected(monkeypatch):
     monkeypatch.setattr(
         sys,
         "argv",
-        ["main.py", "--method", "heatgeo", "--save_every", "0"],
+        ["main.py", "--method", "talas", "--save_every", "0"],
     )
 
     args = parse_args()

@@ -1,12 +1,16 @@
-# HeatGeo Reproduction Guide
+# ICLR Embedding KD
 
-This repository trains compact text embedding models with HeatGeo: a heat-diffusion manifold distillation method. The reproduction target follows the Qwen3-4B to BERT-base pair in `docs/TALAS.pdf`:
+This repository distills compact text embedding students from large embedding
+teachers. The reproduction target follows the Qwen3 to BERT-base pair in
+`docs/TALAS.pdf`:
 
 ```text
 Qwen3-Embedding-4B -> BERT-base 109M
 ```
 
-The training corpus follows the TALAS paper setup: about 15K unlabeled sentences sampled from the three in-domain datasets EMOTION, WiC, and STS-B. In this repo, that corpus is:
+The training corpus follows the TALAS paper setup: about 15K unlabeled sentences
+sampled from the three in-domain datasets EMOTION, WiC, and STS-B. In this repo,
+that corpus is:
 
 ```text
 data/train_set/merged_3_data_5k_each.csv
@@ -18,12 +22,12 @@ checked for normalized-text leakage before evaluation.
 
 ## Environment
 
-Do not install packages into the global Python environment. Create and use a project virtual environment:
+Do not install packages into the global Python environment. Create and use a
+project virtual environment:
 
 ```bash
-cd /Users/savoxism/Documents/GitHub/ICLR-MDD
-python3 -m venv venv
-source venv/bin/activate
+python3 -m venv .venv
+source .venv/bin/activate
 pip install -r requirements.txt
 ```
 
@@ -39,142 +43,82 @@ If you want a local/offline W&B run:
 export WANDB_MODE=offline
 ```
 
-## Method
+## Methods
 
-HeatGeo first caches teacher embeddings:
+`--method` selects the distillation objective. Each one has its own config class
+under `config/`, which supplies the defaults that the CLI flags then override:
 
-$$
-t_i = T(x_i)
-$$
+| `--method` | Config | Objective |
+| --- | --- | --- |
+| `talas` | `config/talas_config.py` | Teacher-anchor KD on cached teacher embeddings, with a structural term and SAM |
+| `cdm` | `config/cdm_config.py` | Contextual dynamic mapping across the two tokenizers |
+| `dskd` | `config/dskd_config.py` | Dual-space KD with a learned projection |
+| `emo` | `config/emo_config.py` | Optimal-transport embedding distillation |
+| `stella` | `config/stella_config.py` | Stella multi-dimension student heads |
 
-Then it builds a teacher-induced kNN graph:
+`talas` caches the teacher's sentence embeddings once (`cache_path`) and frees
+the teacher model afterwards; the other methods run the teacher alongside the
+student every step.
 
-$$
-\mathcal N_k(i)=\operatorname{TopK}_{j\neq i}\cos(t_i,t_j)
-$$
+Training is single-process. Two visible CUDA devices place the student on
+`cuda:0` and the teacher on `cuda:1`; one device puts both on `cuda:0`.
 
-The graph uses mutual kNN edges:
-
-$$
-j\in\mathcal N_k(i)
-\quad\text{and}\quad
-i\in\mathcal N_k(j)
-$$
-
-If a node has no mutual neighbor, HeatGeo falls back to its ordinary top-k neighbors and logs the fallback.
-
-Each graph row becomes a transition distribution:
-
-$$
-P_{ij}
-=
-\frac{\exp(\cos(t_i,t_j)/\tau_g)}
-{\sum_{u\in\mathcal N(i)}\exp(\cos(t_i,t_u)/\tau_g)}
-$$
-
-Multi-scale diffusion targets are:
-
-$$
-q_{i,r}=e_i^\top P^r,
-\qquad
-r\in\{1,2,4\}
-$$
-
-During training, the student predicts a distribution over candidate neighbors:
-
-$$
-p_i^S(j)
-=
-\frac{\exp(\cos(s_i,s_j)/\tau_s)}
-{\sum_{u\in C_i}\exp(\cos(s_i,s_u)/\tau_s)}
-$$
-
-The main HeatGeo objective is:
-
-$$
-\mathcal L
-=
-\mathcal L_{\mathrm{diff}}
-+
-\lambda_{\mathrm{SGC}}\mathcal L_{\mathrm{SGC}}
-$$
-
-Here, $\mathcal L_{\mathrm{diff}}$ matches the teacher's direct and multi-scale
-heat-flow distributions. Similarity Gauge Calibration (SGC) fixes the single
-anchor-wise cosine offset that softmax matching cannot identify, using a
-teacher-weighted Huber loss over columns already scored by HeatGeo.
-
-The default config is in `config/heatgeo_config.py`.
-
-## Run HeatGeo
+## Run
 
 From the repo root:
 
 ```bash
-source venv/bin/activate
-bash scripts/train_heatgeo.sh
+source .venv/bin/activate
+bash scripts/train_talas.sh
 ```
 
-The script is Mac Apple Silicon friendly by default:
-
-```text
-PYTORCH_ENABLE_MPS_FALLBACK=1
-BATCH_SIZE=4
-```
-
-You can override settings without editing the file:
-
-```bash
-BATCH_SIZE=2 EPOCHS=5 WANDB_MODE=online bash scripts/train_heatgeo.sh
-```
-
-SGC can be swept or disabled without editing the config:
-
-```bash
-SGC_WEIGHT=0 bash scripts/train_heatgeo.sh
-SGC_WEIGHT=0.05 bash scripts/train_heatgeo.sh
-```
-
-To disable W&B:
-
-```bash
-bash scripts/train_heatgeo.sh --no_wandb
-```
-
-To persist student weights after every epoch, provide a durable directory:
-
-```bash
-WEIGHTS_DIR="/content/drive/MyDrive/[ICLR] Embedding KD/weights/qwen3_4b_to_bert_base" \
-  bash scripts/train_heatgeo.sh --no_wandb
-```
+One script per method lives in `scripts/` (`train_talas.sh`, `train_cdm.sh`,
+`train_dskd.sh`, `train_emo.sh`, `train_stella.sh`, plus `.ps1` equivalents).
 
 Or run the Python entry point directly:
 
 ```bash
 python3 main.py \
-  --method heatgeo \
+  --method talas \
   --train_data data/train_set/merged_3_data_5k_each.csv \
   --student_model google-bert/bert-base-uncased \
   --teacher_model Qwen/Qwen3-Embedding-4B \
-  --batch_size 4 \
+  --batch_size 32 \
   --epochs 5 \
   --lr 2e-5 \
   --max_length 256 \
-  --save_dir models/heatgeo/qwen3_4b_to_bert_base
+  --save_dir models/talas/qwen3_4b_to_bert_base
 ```
+
+To disable W&B:
+
+```bash
+python3 main.py --method talas --no_wandb
+```
+
+To persist student weights after every epoch, provide a durable directory:
+
+```bash
+python3 main.py --method talas \
+  --weights_dir "/content/drive/MyDrive/[ICLR] Embedding KD/weights/qwen3_4b_to_bert_base"
+```
+
+`test_mdd.ipynb` is the Colab runner: it trains several teacher/student pairs
+sequentially and writes per-pair logs, tables and figures to Google Drive.
 
 ## Outputs
 
-Model checkpoints and weights are saved under:
+Model checkpoints and weights are saved under `--save_dir`, e.g.:
 
 ```text
-models/heatgeo/qwen3_4b_to_bert_base/
+models/talas/qwen3_4b_to_bert_base/
 ```
 
 Training and benchmark metrics are written to:
 
 ```text
-models/heatgeo/qwen3_4b_to_bert_base/metrics.jsonl
+models/talas/qwen3_4b_to_bert_base/metrics.jsonl     # one record per epoch
+models/talas/qwen3_4b_to_bert_base/step_metrics.jsonl # one record per optimizer step
 ```
 
 Validation is evaluated and printed after every epoch. Test is evaluated and
@@ -182,51 +126,27 @@ printed once after training. The Colab notebook exports the two splits
 separately:
 
 ```text
-models/heatgeo/qwen3_4b_to_bert_base/validation_by_epoch.csv
-models/heatgeo/qwen3_4b_to_bert_base/final_test_results.csv
+models/talas/qwen3_4b_to_bert_base/validation_by_epoch.csv
+models/talas/qwen3_4b_to_bert_base/final_test_results.csv
 ```
 
-Teacher and graph caches are written to:
+The teacher embedding cache is written to `--cache_path`, e.g.:
 
 ```text
-cache/heatgeo/qwen3_4b_bert_base_teacher_train.pt
-cache/heatgeo/qwen3_4b_bert_base_graph.pt
+cache/talas/qwen3_4b_bert_base_teacher_train.pt
 ```
-
-kNN graph logs are written to:
-
-```text
-logs/heatgeo/knn_graph_neighbors.jsonl
-```
-
-Each graph-log node row contains:
-
-```json
-{
-  "idx": 0,
-  "fallback_used": false,
-  "neighbors": [12, 91, 7],
-  "transition_probs": [0.41, 0.33, 0.26],
-  "cosine_scores": [0.82, 0.80, 0.78]
-}
-```
-
-The first row is a summary with fallback counts, fallback rate, and degree statistics.
 
 ## Rebuilding Caches
 
-If you change the training corpus, teacher model, or HeatGeo graph parameters, remove the old caches first:
+The cache is keyed only by its path, so a change of training corpus, teacher
+model or pooling needs the old file removed first:
 
 ```bash
-rm cache/heatgeo/qwen3_0_6b_minilmv2_h384_teacher_train.pt
-rm cache/heatgeo/qwen3_0_6b_minilmv2_h384_graph.pt
+rm cache/talas/qwen3_4b_bert_base_teacher_train.pt
 ```
 
-Then rerun:
-
-```bash
-bash scripts/train_heatgeo.sh
-```
+Then rerun training. A cache whose row count does not match the corpus is
+rejected at startup rather than silently misaligned.
 
 ## Benchmarks
 
@@ -250,4 +170,25 @@ Semantic textual similarity:
 SICK, STS12, STS-B
 ```
 
-Validation runs after each epoch. Final test evaluation runs after training, reusing pair-classification thresholds selected on validation.
+Validation runs after each epoch. Final test evaluation runs after training,
+reusing pair-classification thresholds selected on validation.
+
+Only the three classification benchmarks read a train split: their score comes
+from a logistic-regression probe fitted on train embeddings. The pair and STS
+benchmarks are scored without fitting anything, so their train splits are on
+disk for completeness only. To (re)fetch them:
+
+```bash
+python3 scripts/download_eval_train_splits.py            # skips what exists
+python3 scripts/download_eval_train_splits.py --force    # refetch everything
+```
+
+The script rebuilds each benchmark's existing validation and test files from the
+upstream source first and refuses to write the train split unless they match, so
+a source that has drifted fails loudly instead of landing a mismatched split.
+
+## Tests
+
+```bash
+.venv/bin/python -m pytest tests/ -q
+```

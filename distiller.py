@@ -14,7 +14,7 @@ import torch
 import torch.nn.functional as F
 from torch import nn, optim
 from torch.amp import GradScaler, autocast
-from torch.utils.data import DataLoader, DistributedSampler
+from torch.utils.data import DataLoader
 from tqdm import tqdm
 from transformers import AutoModel, AutoTokenizer, get_scheduler
 from transformers import __version__ as transformers_version
@@ -39,7 +39,6 @@ from src.cache_teacher import cache_teacher_embeddings, load_cached_embeddings
 from src.criterions.contextual_dynamic_mapping import ContextualDynamicMapping
 from src.criterions.dual_space_kd import DualSpaceKD
 from src.criterions.emo_embedding_distillation import EMODistillation
-from src.criterions.heatgeo_distillation import HeatGeoDistillation
 from src.criterions.stella_distillation import (
     StellaModel,
     stella_stage1_loss,
@@ -49,11 +48,8 @@ from src.criterions.teacher_anchor_kd import TeacherAnchorKD
 from src.data_utils import DualTokenizerCollate, TextPairRaw
 from src.data_utils.dataset_cache import (
     DualTokenizerCollateWithTeacher,
-    HeatGeoCollate,
     TextPairWithTeacher,
-    TextPairWithTeacherAndHeatGeo,
 )
-from src.distributed_utils import DistributedContext, unwrap_model
 
 # Use evaluation_automodel for AutoModel (not evaluation_model_define which is for Stella)
 from src.evaluation.evaluation_automodel import (
@@ -66,12 +62,6 @@ from src.evaluation.evaluation_automodel import (
     test_cls_tasks,
     test_pair_tasks,
     test_sts_tasks,
-)
-from src.heatgeo import (
-    HeatGeoCandidateSampler,
-    RandomHardDirectCandidateSampler,
-    build_or_load_hard_negative_artifact,
-    build_or_load_heatgeo_artifact,
 )
 from src.loss import info_nce
 from src.pooling import last_token_pool
@@ -143,13 +133,13 @@ def grads_are_finite(optim) -> bool:
 class KnowledgeDistiller:
     def __init__(self, config):
         self.config = config
-        self.distributed = DistributedContext.initialize()
-        self.is_main_process = self.distributed.is_main_process
         self.wandb_run = None
         self.global_step = 0
         self.current_epoch = 0
         self.current_step = 0
         self._saved_checkpoint_epochs = set()
+        # Set before setup_training, which fills it in for the methods that need it.
+        self.proj_s2t = None
         self.setup_seed(config.seed)
         self.setup_devices()
         self.setup_models()
@@ -199,83 +189,8 @@ class KnowledgeDistiller:
             )
             self.scheduler = self._build_scheduler()
             print("EMO criterion initialized and added to optimizer")
-        elif config.distill_method == "heatgeo":
-            sampling_mode = getattr(config, "candidate_sampling_mode", "diffusion")
-            if sampling_mode not in {"diffusion", "random_hard_direct"}:
-                raise ValueError(f"unknown HeatGeo sampling mode: {sampling_mode}")
-            self.criterion = HeatGeoDistillation(
-                student_dim=self.model_student.config.hidden_size,
-                teacher_dim=self.teacher_cls_all.shape[-1],
-                scale_weights=config.scale_weights,
-                scale_temps=getattr(config, "scale_temps", None),
-                student_temp=config.student_temp,
-                eps_norm=getattr(config, "eps_norm", 1e-8),
-                diag_topk=getattr(config, "diag_topk", 8),
-                share_in_batch=getattr(config, "share_in_batch", True),
-                teacher_embeddings=self.teacher_cls_all,
-                direct_weight=getattr(config, "direct_weight", 1.0),
-                direct_temp=getattr(config, "direct_temp", 0.10),
-                direct_student_temp=getattr(config, "direct_student_temp", 0.10),
-                sgc_weight=getattr(config, "sgc_weight", 0.0),
-                sgc_huber_delta=getattr(config, "sgc_huber_delta", 0.10),
-                use_diffusion_loss=sampling_mode == "diffusion",
-            ).to(self.device_s)
-            # The criterion is parameter-free: everything it owns is a buffer, and
-            # add_param_group rejects an empty parameter list.
-            self.scheduler = self._build_scheduler()
-            print(
-                "HeatGeo criterion initialized "
-                f"(sampling_mode={sampling_mode}, "
-                f"diffusion_loss={'enabled' if self.criterion.use_diffusion_loss else 'disabled'}, "
-                f"scale_temps={self.criterion.scale_temps.tolist()}, "
-                f"share_in_batch={self.criterion.share_in_batch})"
-            )
-            if self.criterion.use_direct:
-                print(
-                    f"HeatGeo direct scale r=0 active: weight="
-                    f"{self.criterion.direct_weight.item():.3g}, "
-                    f"teacher_temp={self.criterion.direct_temp:.3g}, "
-                    f"student_temp={self.criterion.direct_student_temp.item():.3g}, "
-                    f"bank={tuple(self.criterion.teacher_bank.shape)} "
-                    f"({self.criterion.teacher_bank.numel() * 2 / 1024**2:.0f} MB)"
-                )
-                if self.criterion.use_sgc:
-                    print(
-                        "HeatGeo SGC active: "
-                        f"weight={self.criterion.sgc_weight:.3g}, "
-                        f"huber_delta={self.criterion.sgc_huber_delta:.3g}"
-                    )
-            else:
-                print(
-                    "WARNING: HeatGeo direct scale disabled. Every column outside an "
-                    "anchor's diffusion pool then carries target 0, which is a "
-                    "gradient driving that cosine down regardless of the teacher."
-                )
-            if self.criterion.use_diffusion_loss and self.criterion.temps_tied:
-                print(
-                    "WARNING: all scale_temps are equal. sum_r w_r KL(p_r||p^S) then "
-                    "equals CE(sum_r w_r p_r, p^S) + const, so the diffusion scales "
-                    "collapse to a single smoothed target and contribute no "
-                    "independent gradient."
-                )
         else:
             self.criterion = None
-
-        if self.distributed.world_size > 1:
-            if config.distill_method != "heatgeo":
-                raise NotImplementedError(
-                    "Multi-process DDP is currently supported for HeatGeo only"
-                )
-            self.model_student = self.distributed.wrap_model(
-                self.model_student, self.device_s
-            )
-            print(
-                f"Student wrapped with DDP: rank={self.distributed.rank}, "
-                f"world_size={self.distributed.world_size}"
-            )
-
-        # Projection layer (will be initialized in first forward)
-        self.proj_s2t = None
 
         # Metrics tracking
         self.step_times = []
@@ -283,29 +198,15 @@ class KnowledgeDistiller:
         self.warmup_steps = 10
 
     def setup_seed(self, seed: int):
-        process_seed = seed + self.distributed.rank
-        random.seed(process_seed)
-        np.random.seed(process_seed)
-        torch.manual_seed(process_seed)
+        random.seed(seed)
+        np.random.seed(seed)
+        torch.manual_seed(seed)
         if torch.cuda.is_available():
-            torch.cuda.manual_seed_all(process_seed)
-        print(
-            f"Done setup_seed with seed={process_seed} "
-            f"(base={seed}, rank={self.distributed.rank})"
-        )
+            torch.cuda.manual_seed_all(seed)
+        print(f"Done setup_seed with seed={seed}")
 
     def setup_devices(self):
-        if self.distributed.enabled:
-            if torch.cuda.is_available():
-                device = torch.device("cuda", self.distributed.local_rank)
-            else:
-                device = torch.device("cpu")
-            self.device_s = self.device_t = device
-            print(
-                f"torchrun rank {self.distributed.rank}/{self.distributed.world_size} "
-                f"using {device}"
-            )
-        elif torch.cuda.device_count() >= 2:
+        if torch.cuda.device_count() >= 2:
             self.device_s = torch.device("cuda:0")  # student
             self.device_t = torch.device("cuda:1")  # teacher
             print(
@@ -324,9 +225,7 @@ class KnowledgeDistiller:
 
     def setup_wandb(self):
         cfg = self.config
-        self.use_wandb = bool(
-            getattr(cfg, "use_wandb", False) and self.is_main_process
-        )
+        self.use_wandb = bool(getattr(cfg, "use_wandb", False))
         if not self.use_wandb:
             return
         if not WANDB_AVAILABLE:
@@ -349,21 +248,6 @@ class KnowledgeDistiller:
             config=cfg.to_dict() if hasattr(cfg, "to_dict") else vars(cfg),
         )
         print(f"W&B logging enabled: project={project}, run={run_name}, mode={mode}")
-        if cfg.distill_method == "heatgeo" and hasattr(self, "heatgeo_artifact"):
-            graph_stats = self.heatgeo_artifact.get("graph_stats", {})
-            if graph_stats:
-                wandb.log(
-                    {
-                        f"heatgeo_graph/{k}": v
-                        for k, v in graph_stats.items()
-                        if isinstance(v, (int, float))
-                    }
-                )
-            graph_log_path = self.heatgeo_artifact.get("graph_log_path")
-            if graph_log_path and os.path.exists(graph_log_path):
-                artifact = wandb.Artifact("heatgeo-knn-graph-log", type="dataset")
-                artifact.add_file(graph_log_path)
-                self.wandb_run.log_artifact(artifact)
 
     @staticmethod
     def _flatten_metrics(prefix: str, values: dict[str, Any]) -> dict[str, float]:
@@ -424,6 +308,16 @@ class KnowledgeDistiller:
                     transformers_major = 4
                 dtype_argument = "dtype" if transformers_major >= 5 else "torch_dtype"
                 student_kwargs[dtype_argument] = student_dtypes[student_dtype_name]
+
+            # EMO reads the student's attention maps too, and SDPA returns none of
+            # them: output_attentions=True then yields an empty list and the loss
+            # indexes off the end of it.
+            if cfg.distill_method == "emo":
+                student_kwargs["attn_implementation"] = "eager"
+                print(
+                    "Using eager attention implementation for the EMO student "
+                    "(required for output_attentions)"
+                )
             self.model_student = AutoModel.from_pretrained(
                 cfg.student_model_name,
                 **student_kwargs,
@@ -440,7 +334,8 @@ class KnowledgeDistiller:
         if cfg.distill_method == "emo":
             teacher_kwargs["attn_implementation"] = "eager"
             print(
-                "Using eager attention implementation for EMO (required for output_attentions)"
+                "Using eager attention implementation for the EMO teacher "
+                "(required for output_attentions)"
             )
 
         self.model_teacher = AutoModel.from_pretrained(
@@ -461,82 +356,6 @@ class KnowledgeDistiller:
         print("Models loaded successfully!")
         print("Done setup_models")
 
-    def _resolve_heatgeo_anchor_column(self, df: pd.DataFrame) -> str:
-        cfg = self.config
-        column = getattr(cfg, "heatgeo_anchor_column", None)
-        if column is not None:
-            if column not in df.columns:
-                raise ValueError(
-                    f"heatgeo_anchor_column={column!r} is not a column of "
-                    f"{cfg.train_data_path} (have {list(df.columns)})"
-                )
-            return column
-
-        if cfg.task_type == "single_cls":
-            column = "text"
-        elif cfg.task_type == "pair_cls":
-            column = "premise"
-        else:
-            column = "sentence1"
-        if column not in df.columns:
-            raise ValueError(
-                f"HeatGeo needs column {column!r} for task_type={cfg.task_type!r}"
-            )
-
-        # The teacher graph is built over this column only. If a genuine second view
-        # exists it is dropped, and doing that silently would leave the graph
-        # describing a different object than the loss thinks it does.
-        partner = {"pair_cls": "hypothesis", "pair_reg": "sentence2"}.get(cfg.task_type)
-        if partner in df.columns and not df[column].equals(df[partner]):
-            print(
-                f"WARNING: HeatGeo uses only {column!r}; {partner!r} differs from it "
-                f"and is not distilled. Set heatgeo_anchor_column explicitly if that "
-                f"is not what you want."
-            )
-        return column
-
-    def _prepare_heatgeo_frame(
-        self, df: pd.DataFrame, anchor_column: str
-    ) -> tuple[pd.DataFrame, np.ndarray]:
-        """Drop exact duplicate anchors and report the surviving row positions.
-
-        Two identical texts have cos(s_i, s_j) = 1 for every parameter setting, so
-        their logit sits at the ceiling with no gradient while still consuming
-        teacher mass and a candidate slot.
-        """
-        keep_positions = np.arange(len(df), dtype=np.int64)
-        if not getattr(self.config, "dedup_corpus", True):
-            return df.reset_index(drop=True), keep_positions
-
-        texts = df[anchor_column].astype(str)
-        duplicated = texts.duplicated(keep="first").to_numpy()
-        if not duplicated.any():
-            print(f"HeatGeo corpus: {len(df)} rows, no duplicate anchors")
-            return df.reset_index(drop=True), keep_positions
-
-        keep_positions = np.flatnonzero(~duplicated).astype(np.int64)
-        deduped = df.iloc[keep_positions].reset_index(drop=True)
-        print(
-            f"HeatGeo corpus dedup on {anchor_column!r}: "
-            f"{len(df)} -> {len(deduped)} rows ({int(duplicated.sum())} exact duplicates removed)"
-        )
-        return deduped, keep_positions
-
-    def _heatgeo_source_ids(self, df: pd.DataFrame) -> np.ndarray:
-        column = getattr(self.config, "heatgeo_source_column", "source")
-        if column not in df.columns:
-            print(
-                f"HeatGeo: no {column!r} column, hard negatives will not be "
-                f"restricted to the same source corpus"
-            )
-            return np.zeros(len(df), dtype=np.int64)
-        codes = pd.factorize(df[column].astype(str))[0].astype(np.int64)
-        counts = pd.Series(codes).value_counts().to_dict()
-        print(
-            f"HeatGeo sources: {len(counts)} distinct, sizes={sorted(counts.values(), reverse=True)}"
-        )
-        return codes
-
     def setup_data(self):
         cfg = self.config
 
@@ -550,17 +369,6 @@ class KnowledgeDistiller:
                 df["premise"] = df["text"] if "text" in df.columns else df.iloc[:, 0]
                 df["hypothesis"] = df["text"] if "text" in df.columns else df.iloc[:, 0]
 
-        # HeatGeo is anchor-only: the teacher graph, the candidate pool and the
-        # student forward all consume one string per row. Resolve that column once
-        # and keep it, instead of each component re-deriving it from the frame.
-        self.heatgeo_anchor_column = None
-        if cfg.distill_method == "heatgeo":
-            self.heatgeo_anchor_column = self._resolve_heatgeo_anchor_column(df)
-            df, keep_positions = self._prepare_heatgeo_frame(
-                df, self.heatgeo_anchor_column
-            )
-            self.heatgeo_keep_positions = keep_positions
-
         self.task_head = None
         if cfg.distill_method == "emo":
             hidden_size = self.model_student.config.hidden_size
@@ -573,17 +381,16 @@ class KnowledgeDistiller:
                     self.device_s
                 )
 
-        # TALAS and HeatGeo use cached teacher embeddings
-        if cfg.distill_method in ("talas", "heatgeo"):
+        # TALAS uses cached teacher embeddings
+        if cfg.distill_method == "talas":
             cache_path = Path(cfg.cache_path)
-            teacher_cls_list = None
 
             # Check if cache exists
             if cache_path.exists():
                 print(f"Loading cached teacher embeddings from: {cache_path}")
                 teacher_cls_list = load_cached_embeddings(str(cache_path))
                 print(f"Loaded {len(teacher_cls_list)} cached embeddings")
-            elif self.is_main_process:
+            else:
                 print("Cache not found. Pre-computing teacher embeddings...")
                 os.makedirs(cache_path.parent, exist_ok=True)
 
@@ -617,29 +424,6 @@ class KnowledgeDistiller:
                 print(
                     f"Cached {len(teacher_cls_list)} teacher embeddings to {cache_path}"
                 )
-            else:
-                print(f"Rank {self.distributed.rank} waiting for teacher cache")
-
-            self.distributed.barrier()
-            if teacher_cls_list is None:
-                teacher_cls_list = load_cached_embeddings(str(cache_path))
-
-            # A stale cache computed before dedup still lines up row-for-row with the
-            # original frame, so slice it instead of forcing a teacher re-run.
-            keep_positions = getattr(self, "heatgeo_keep_positions", None)
-            if (
-                cfg.distill_method == "heatgeo"
-                and keep_positions is not None
-                and len(teacher_cls_list) > len(df)
-                and len(keep_positions) == len(df)
-                and int(keep_positions.max(initial=-1)) < len(teacher_cls_list)
-            ):
-                print(
-                    f"Slicing pre-dedup teacher cache: {len(teacher_cls_list)} -> {len(df)} rows"
-                )
-                teacher_cls_list = teacher_cls_list[
-                    torch.from_numpy(keep_positions).long()
-                ]
 
             if len(teacher_cls_list) != len(df):
                 raise ValueError(
@@ -649,48 +433,6 @@ class KnowledgeDistiller:
 
             self.teacher_cls_all = teacher_cls_list
 
-            if cfg.distill_method == "heatgeo":
-                sampling_mode = getattr(
-                    cfg, "candidate_sampling_mode", "diffusion"
-                )
-                source_ids = self._heatgeo_source_ids(df)
-                if sampling_mode == "diffusion":
-                    artifact_builder = build_or_load_heatgeo_artifact
-                    artifact_kwargs = {
-                        "teacher_embeddings": teacher_cls_list,
-                        "cache_path": cfg.heatgeo_cache_path,
-                        "log_dir": getattr(cfg, "heatgeo_log_dir", "logs/heatgeo"),
-                        "graph_k": getattr(cfg, "graph_k", 50),
-                        "graph_temp": getattr(cfg, "graph_temp", 0.1),
-                        "diffusion_scales": getattr(
-                            cfg, "diffusion_scales", (1, 2, 4)
-                        ),
-                        "scale_weights": getattr(
-                            cfg, "scale_weights", (1.0, 0.5, 0.25)
-                        ),
-                        "pool_size": getattr(cfg, "pool_size", 128),
-                        "hard_neg_pool": getattr(cfg, "hard_neg_pool", 200),
-                        "source_ids": source_ids,
-                        "walk_keep_topk": getattr(cfg, "walk_keep_topk", None),
-                    }
-                elif sampling_mode == "random_hard_direct":
-                    artifact_builder = build_or_load_hard_negative_artifact
-                    artifact_kwargs = {
-                        "teacher_embeddings": teacher_cls_list,
-                        "cache_path": cfg.heatgeo_cache_path,
-                        "hard_neg_pool": getattr(cfg, "hard_neg_pool", 200),
-                        "source_ids": source_ids,
-                    }
-                else:
-                    raise ValueError(
-                        f"unknown HeatGeo sampling mode: {sampling_mode}"
-                    )
-                if self.is_main_process:
-                    self.heatgeo_artifact = artifact_builder(**artifact_kwargs)
-                self.distributed.barrier()
-                if not self.is_main_process:
-                    self.heatgeo_artifact = artifact_builder(**artifact_kwargs)
-
             # Free teacher model to save GPU memory (teacher not needed after caching)
             del self.model_teacher
             self.model_teacher = None
@@ -698,77 +440,10 @@ class KnowledgeDistiller:
                 torch.cuda.empty_cache()
             print("Teacher model freed from GPU memory")
 
-            if cfg.distill_method == "heatgeo":
-                sampling_mode = getattr(
-                    cfg, "candidate_sampling_mode", "diffusion"
-                )
-                if sampling_mode == "diffusion":
-                    self.heatgeo_sampler = HeatGeoCandidateSampler(
-                        artifact=self.heatgeo_artifact,
-                        candidate_size=getattr(cfg, "candidate_size", 32),
-                        diffusion_quota=getattr(cfg, "diffusion_quota", 20),
-                        hard_neg_k=getattr(cfg, "hard_neg_k", 8),
-                        random_neg_k=getattr(cfg, "random_neg_k", 4),
-                        scale_weights=getattr(
-                            cfg, "scale_weights", (1.0, 0.5, 0.25)
-                        ),
-                        seed=cfg.seed,
-                        deterministic_topm=getattr(cfg, "deterministic_topm", 4),
-                        stochastic=getattr(cfg, "stochastic_candidates", True),
-                    )
-                else:
-                    self.heatgeo_sampler = RandomHardDirectCandidateSampler(
-                        artifact=self.heatgeo_artifact,
-                        candidate_size=getattr(cfg, "candidate_size", 64),
-                        random_candidate_k=getattr(cfg, "random_candidate_k", 32),
-                        hard_neg_k=getattr(cfg, "hard_neg_k", 24),
-                        random_neg_k=getattr(cfg, "random_neg_k", 8),
-                        seed=cfg.seed,
-                    )
-                anchor_texts = df[self.heatgeo_anchor_column].astype(str).tolist()
-                self.train_ds = TextPairWithTeacherAndHeatGeo(
-                    anchor_texts=anchor_texts,
-                    teacher_cls=teacher_cls_list,
-                    sampler=self.heatgeo_sampler,
-                    labels=df["label"].astype(int).tolist()
-                    if "label" in df.columns
-                    else None,
-                )
-                # The collate owns the tokenized corpus: anchors and candidates are
-                # drawn from the same rows, so every text is tokenized once here
-                # instead of ~candidate_size times per epoch in the workers.
-                self.collate_fn = HeatGeoCollate(
-                    self.tok_student,
-                    cfg.task_type,
-                    cfg.max_length,
-                    corpus_texts=anchor_texts,
-                    encode_chunk_size=getattr(cfg, "encode_chunk_size", 256),
-                )
-                if sampling_mode == "diffusion":
-                    composition = (
-                        f"diffusion={self.heatgeo_sampler.diffusion_quota}, "
-                        f"hard={self.heatgeo_sampler.hard_neg_k}, "
-                        f"random={self.heatgeo_sampler.random_neg_k}, "
-                        f"stochastic={self.heatgeo_sampler.stochastic}"
-                    )
-                else:
-                    composition = (
-                        f"random_candidate={self.heatgeo_sampler.random_candidate_k}, "
-                        f"hard={self.heatgeo_sampler.hard_neg_k}, "
-                        f"random_negative={self.heatgeo_sampler.random_neg_k}"
-                    )
-                print(
-                    "HeatGeo candidate sampling: "
-                    f"mode={sampling_mode}, "
-                    f"candidate_size={self.heatgeo_sampler.candidate_size} "
-                    f"({composition}), resample_per_epoch="
-                    f"{getattr(cfg, 'resample_candidates_per_epoch', True)}"
-                )
-            else:
-                self.train_ds = TextPairWithTeacher(df, cfg.task_type, teacher_cls_list)
-                self.collate_fn = DualTokenizerCollateWithTeacher(
-                    self.tok_student, cfg.task_type, cfg.max_length
-                )
+            self.train_ds = TextPairWithTeacher(df, cfg.task_type, teacher_cls_list)
+            self.collate_fn = DualTokenizerCollateWithTeacher(
+                self.tok_student, cfg.task_type, cfg.max_length
+            )
         else:
             # Standard distillation methods
             self.train_ds = TextPairRaw(df, cfg.task_type)
@@ -780,35 +455,14 @@ class KnowledgeDistiller:
                 cfg.max_length,
             )
 
-        # Workers fork a copy of the dataset when the iterator is created. Persistent
-        # workers would keep serving the epoch-0 sampler state forever, so a dataset
-        # whose candidates depend on the epoch must re-fork each epoch.
-        resamples_per_epoch = hasattr(self.train_ds, "set_epoch")
-        self.train_sampler = None
-        if self.distributed.world_size > 1:
-            self.train_sampler = DistributedSampler(
-                self.train_ds,
-                num_replicas=self.distributed.world_size,
-                rank=self.distributed.rank,
-                shuffle=True,
-                seed=cfg.seed,
-                drop_last=cfg.distill_method == "heatgeo",
-            )
         self.train_loader = DataLoader(
             self.train_ds,
             batch_size=cfg.batch_size,
-            shuffle=self.train_sampler is None,
-            sampler=self.train_sampler,
+            shuffle=True,
             collate_fn=self.collate_fn,
             pin_memory=True,
             num_workers=cfg.num_workers,
-            persistent_workers=cfg.num_workers > 0 and not resamples_per_epoch,
-            # 13553 rows at batch 16 leaves a remainder of one. Under in-batch sharing
-            # that step scores its single anchor against candidate_size columns instead
-            # of ~batch_size * candidate_size, which is a structurally different
-            # objective taking a real gradient step -- and it is also the step whose
-            # diagnostics land in the progress bar.
-            drop_last=cfg.distill_method == "heatgeo",
+            persistent_workers=cfg.num_workers > 0,
         )
 
         print(f"Training samples: {len(self.train_ds)}")
@@ -842,7 +496,27 @@ class KnowledgeDistiller:
             optimizer_parameters = list(self.model_student.parameters())
             if self.task_head is not None:
                 optimizer_parameters.extend(self.task_head.parameters())
-            self.optimizer = optim.AdamW(optimizer_parameters, lr=cfg.learning_rate)
+            param_groups = [
+                {"params": optimizer_parameters, "lr": cfg.learning_rate}
+            ]
+
+            # CDM maps the student CLS into the teacher space. The projection is
+            # built here rather than on the first step because a param group added
+            # after the scheduler was constructed has no matching base_lr, and
+            # scheduler.step() then fails on the length mismatch.
+            if cfg.distill_method == "cdm":
+                d_s = self.model_student.config.hidden_size
+                d_t = self.model_teacher.config.hidden_size
+                self.proj_s2t = nn.Linear(d_s, d_t, bias=False).to(self.device_s)
+                param_groups.append(
+                    {
+                        "params": self.proj_s2t.parameters(),
+                        "lr": cfg.learning_rate * 2,
+                    }
+                )
+                print(f"Initialized projection layer: {d_s} -> {d_t}")
+
+            self.optimizer = optim.AdamW(param_groups, lr=cfg.learning_rate)
 
             self.scaler = GradScaler("cuda", enabled=torch.cuda.is_available())
 
@@ -914,89 +588,6 @@ class KnowledgeDistiller:
     def train_step(self, batch: dict) -> tuple[torch.Tensor, dict]:
         cfg = self.config
         method = cfg.distill_method
-
-        if method == "heatgeo":
-            batch_s = {}
-            for k, v in batch.items():
-                if not torch.is_tensor(v):
-                    continue
-                if k.endswith("_stu") or k in {
-                    "labels",
-                    "idx",
-                    "candidate_idx",
-                    "candidate_inverse",
-                    "teacher_probs",
-                }:
-                    batch_s[k] = v.to(self.device_s, non_blocking=True)
-
-            self.optimizer.zero_grad(set_to_none=True)
-
-            with autocast("cuda", enabled=torch.cuda.is_available()):
-                s_out1 = self.model_student(
-                    input_ids=batch_s["input_ids1_stu"],
-                    attention_mask=batch_s["attention_mask1_stu"],
-                    return_dict=True,
-                )
-
-                # Candidates arrive deduplicated and grouped by length, so each chunk
-                # pads to its own longest member. `candidate_inverse` expands the
-                # encoded rows back to the flat [batch_size * candidate_size] layout
-                # the criterion expects; the gather is differentiable, so a candidate
-                # shared by several anchors accumulates all of their gradient.
-                chunk_embeddings = []
-                student_module = unwrap_model(self.model_student)
-                for chunk in batch["candidate_chunks"]:
-                    chunk_out = student_module(
-                        input_ids=chunk["input_ids"].to(
-                            self.device_s, non_blocking=True
-                        ),
-                        attention_mask=chunk["attention_mask"].to(
-                            self.device_s, non_blocking=True
-                        ),
-                        return_dict=True,
-                    )
-                    chunk_embeddings.append(chunk_out.last_hidden_state[:, 0, :])
-
-                S_cls1 = s_out1.last_hidden_state[:, 0, :]
-                S_candidates = torch.cat(chunk_embeddings, dim=0).index_select(
-                    0, batch_s["candidate_inverse"]
-                )
-
-                loss, metrics = self.criterion(
-                    anchor_embeddings=S_cls1,
-                    candidate_embeddings=S_candidates,
-                    teacher_probs=batch_s.get("teacher_probs"),
-                    candidate_idx=batch_s.get("candidate_idx"),
-                    anchor_idx=batch_s.get("idx"),
-                )
-                loss = loss.float()
-
-            if not is_finite(loss):
-                raise RuntimeError(
-                    f"HeatGeo loss NaN/Inf at epoch={self.current_epoch} step={self.current_step}"
-                )
-
-            self.scaler.scale(loss).backward()
-            self.scaler.unscale_(self.optimizer)
-            if not grads_are_finite(self.optimizer):
-                self.optimizer.zero_grad(set_to_none=True)
-                self.scaler.update()
-                # Advance the schedule even on a skipped update: it was built for
-                # len(train_loader) * epochs steps, so returning early here leaves
-                # the LR permanently behind the cosine curve it was sized for.
-                self.scheduler.step()
-                return loss, {**metrics, "skip": "grad_inf"}
-
-            self.scaler.step(self.optimizer)
-            self.scaler.update()
-            assert_module_parameters_finite(
-                self.model_student,
-                f"HeatGeo student after optimizer step "
-                f"(epoch={self.current_epoch}, step={self.current_step})",
-            )
-            self.scheduler.step()
-
-            return loss, metrics
 
         if method == "talas":
             batch_s = {}
@@ -1204,7 +795,9 @@ class KnowledgeDistiller:
 
         with autocast("cuda", enabled=torch.cuda.is_available()):
             need_atts = method == "emo"
-            with torch.inference_mode():
+            # no_grad, not inference_mode: these teacher tensors are consumed by
+            # losses that save them for backward, and inference tensors cannot be.
+            with torch.no_grad():
                 t_out1 = self.model_teacher(
                     input_ids=batch_t["input_ids1_tea"],
                     attention_mask=batch_t["attention_mask1_tea"],
@@ -1297,17 +890,6 @@ class KnowledgeDistiller:
 
             # ========== Method-specific KD loss ==========
             if method == "cdm":
-                if self.proj_s2t is None:
-                    d_s, d_t = S_cls1.size(-1), T_cls1.size(-1)
-                    self.proj_s2t = nn.Linear(d_s, d_t, bias=False).to(self.device_s)
-                    self.optimizer.add_param_group(
-                        {
-                            "params": self.proj_s2t.parameters(),
-                            "lr": cfg.learning_rate * 2,
-                        }
-                    )
-                    print(f"Initialized projection layer: {d_s} -> {d_t}")
-
                 keep_s1 = batch_s["attention_mask1_stu"].bool() & (
                     ~batch_s["special_tokens_mask1_stu"].bool()
                 )
@@ -1475,19 +1057,6 @@ class KnowledgeDistiller:
     def train_epoch(self, epoch: int):
         self.model_student.train()
         self.current_epoch = epoch
-        if self.train_sampler is not None:
-            self.train_sampler.set_epoch(epoch)
-
-        # Redraw the candidate sets. Without this the student sees the identical
-        # anchor/candidate comparisons every epoch, fits them in the first one, and
-        # spends the rest of the run overfitting a frozen 32-way problem.
-        if hasattr(self.train_ds, "set_epoch"):
-            sampling_epoch = (
-                epoch
-                if getattr(self.config, "resample_candidates_per_epoch", True)
-                else 0
-            )
-            self.train_ds.set_epoch(sampling_epoch)
 
         total_loss = 0.0
         n_items = 0
@@ -1495,16 +1064,14 @@ class KnowledgeDistiller:
         epoch_step_times = []
         peak_memory_mb = 0.0
         # Per-step diagnostics, buffered here and written once at the end of the epoch.
-        # Epoch means alone cannot show *when* inside an epoch a curve flattened, and
-        # the HeatGeo objective saturated inside epoch 1 on the previous run -- five
-        # points per curve is a summary, not a diagnosis. Buffering keeps this to one
-        # file write per epoch rather than one per step.
+        # Epoch means alone cannot show *when* inside an epoch a curve flattened, so
+        # five points per curve is a summary, not a diagnosis. Buffering keeps this to
+        # one file write per epoch rather than one per step.
         step_records: list[dict] = []
 
         pbar = tqdm(
             self.train_loader,
             desc=f"Epoch {epoch + 1}/{self.config.epochs}",
-            disable=not self.is_main_process,
         )
 
         for step, batch in enumerate(pbar):
@@ -1555,8 +1122,7 @@ class KnowledgeDistiller:
                     if isinstance(value, (int, float))
                 }
             )
-            if self.is_main_process:
-                step_records.append(step_record)
+            step_records.append(step_record)
 
             mem_info = {}
             for dev_id in range(torch.cuda.device_count()):
@@ -1590,54 +1156,27 @@ class KnowledgeDistiller:
             else:
                 pbar.set_postfix({"avg_loss": f"{avg_loss:.4f}", **mem_info})
 
-        metric_names = sorted(metric_totals)
-        reduced = self.distributed.reduce_sums(
-            [float(n_items), total_loss]
-            + [metric_totals[name] for name in metric_names],
-            self.device_s,
-        )
-        n_items = int(reduced[0])
-        total_loss = reduced[1]
-        metric_totals = dict(zip(metric_names, reduced[2:]))
         avg_loss = total_loss / max(1, n_items)
 
-        if len(self.step_times) > 0 and self.is_main_process:
+        if len(self.step_times) > 0:
             epoch_avg = sum(self.step_times) / len(self.step_times)
             print(
                 f"[Epoch {epoch + 1}] Avg step time = {epoch_avg * 1000:.2f} ms "
                 f"({1.0 / epoch_avg:.2f} it/s)"
             )
 
-        if self.is_main_process:
-            print(f"Done train_epoch {epoch + 1}")
+        print(f"Done train_epoch {epoch + 1}")
         self.log_step_records(step_records)
         epoch_means = {
             key: value / max(1, n_items) for key, value in metric_totals.items()
         }
 
         # The progress bar shows the *last* step's diagnostics, and the last batch is
-        # usually a short remainder -- with 13553 items and batch 16 it holds a single
-        # anchor, which makes target_entropy/js_floor swing wildly for reasons that
-        # have nothing to do with training. Print the example-weighted epoch means.
-        if epoch_means and self.is_main_process:
-            headline = [
-                "loss_total",
-                "loss_direct",
-                "loss_diff",
-                "loss_sgc",
-                "loss_sgc_weighted",
-                "sgc_abs_origin_gap",
-                "js_floor",
-                "loss_excess",
-                "target_entropy",
-                "student_entropy",
-                "student_entropy_ratio",
-                "student_top1",
-                "target_top1",
-                "candidates_per_anchor",
-            ]
-            shown = [k for k in headline if k in epoch_means]
-            shown += sorted(k for k in epoch_means if k.startswith("kl_scale"))
+        # usually a short remainder, so its numbers swing for reasons that have nothing
+        # to do with training. Print the example-weighted epoch means instead.
+        if epoch_means:
+            shown = ["loss_total"] if "loss_total" in epoch_means else []
+            shown += sorted(k for k in epoch_means if k not in shown)
             body = "  ".join(f"{k}={epoch_means[k]:.4f}" for k in shown)
             print(f"[Epoch {epoch + 1}] mean over {n_items} examples: {body}")
 
@@ -1656,7 +1195,7 @@ class KnowledgeDistiller:
 
     def save_checkpoint(self, epoch: int, metrics: dict | None = None):
         cfg = self.config
-        if not self.is_main_process or not cfg.save_dir:
+        if not cfg.save_dir:
             return
         if epoch in self._saved_checkpoint_epochs:
             print(
@@ -1667,7 +1206,7 @@ class KnowledgeDistiller:
 
         checkpoint = {
             "epoch": epoch,
-            "model_state_dict": unwrap_model(self.model_student).state_dict(),
+            "model_state_dict": self.model_student.state_dict(),
             "optimizer_state_dict": self.optimizer.state_dict(),
             "scheduler_state_dict": self.scheduler.state_dict(),
             "config": cfg.to_dict() if hasattr(cfg, "to_dict") else cfg,
@@ -1700,8 +1239,6 @@ class KnowledgeDistiller:
         self._saved_checkpoint_epochs.add(epoch)
 
     def save_student_weights(self, epoch: int):
-        if not self.is_main_process:
-            return
         weights_dir = getattr(self.config, "weights_dir", None)
         if not weights_dir:
             return
@@ -1714,7 +1251,7 @@ class KnowledgeDistiller:
             "epoch": epoch + 1,
             "student_model_name": self.config.student_model_name,
             "teacher_model_name": self.config.teacher_model_name,
-            "model_state_dict": unwrap_model(self.model_student).state_dict(),
+            "model_state_dict": self.model_student.state_dict(),
         }
 
         local_dir = Path(self.config.save_dir)
@@ -1874,8 +1411,6 @@ class KnowledgeDistiller:
         return {key: group["score"] for key, group in averages.items()}
 
     def evaluate(self, split: str = "validation"):
-        if not self.is_main_process:
-            return None
         if split not in {"validation", "test"}:
             raise ValueError("split must be 'validation' or 'test'")
         if split == "validation":
@@ -1893,7 +1428,7 @@ class KnowledgeDistiller:
                     "Pair test evaluation requires thresholds selected on validation data"
                 )
 
-        student_model = unwrap_model(self.model_student)
+        student_model = self.model_student
         classification = eval_classification_task(
             student_model, classification_tasks, self.tok_student
         )
@@ -1921,7 +1456,7 @@ class KnowledgeDistiller:
         two have different row counts and different consumers, and mixing them would
         force every reader of the epoch table to filter.
         """
-        if not self.is_main_process or not records or not self.config.save_dir:
+        if not records or not self.config.save_dir:
             return
         os.makedirs(self.config.save_dir, exist_ok=True)
         path = os.path.join(self.config.save_dir, "step_metrics.jsonl")
@@ -1932,7 +1467,7 @@ class KnowledgeDistiller:
             )
 
     def log_experiment_record(self, record: dict[str, Any]):
-        if not self.is_main_process or not self.config.save_dir:
+        if not self.config.save_dir:
             return
         os.makedirs(self.config.save_dir, exist_ok=True)
         path = os.path.join(self.config.save_dir, "metrics.jsonl")
@@ -2126,7 +1661,6 @@ class KnowledgeDistiller:
                             ) from e
                         print(f"Warning: Saving checkpoint failed with error: {e}")
                         print("Continuing training...")
-                self.distributed.barrier()
 
             print("\n" + "=" * 60)
             print("Training completed!")
@@ -2148,7 +1682,8 @@ class KnowledgeDistiller:
                 self.log_experiment_record({"test": test_results})
             except Exception as e:
                 print(f"Warning: Final test evaluation failed with error: {e}")
-            self.distributed.barrier()
 
     def close(self) -> None:
-        self.distributed.close()
+        if self.wandb_run is not None:
+            self.wandb_run.finish()
+            self.wandb_run = None
