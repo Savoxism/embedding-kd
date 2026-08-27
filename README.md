@@ -54,11 +54,32 @@ under `config/`, which supplies the defaults that the CLI flags then override:
 | `cdm` | `config/cdm_config.py` | Contextual dynamic mapping across the two tokenizers |
 | `dskd` | `config/dskd_config.py` | Dual-space KD with a learned projection |
 | `emo` | `config/emo_config.py` | Optimal-transport embedding distillation |
+| `rkd` | `config/rkd_config.py` | Relational KD (Park et al., 2019): distance-wise + angle-wise relations |
+| `pkt` | `config/pkt_config.py` | Probabilistic KT (Passalis & Tefas, 2018): conditional affinity distributions |
 | `stella` | `config/stella_config.py` | Stella multi-dimension student heads |
 
 `talas` caches the teacher's sentence embeddings once (`cache_path`) and frees
 the teacher model afterwards; the other methods run the teacher alongside the
 student every step.
+
+`rkd` reproduces Park et al., *Relational Knowledge Distillation* (CVPR 2019),
+unchanged: it matches the pairwise-distance and triplet-angle structure of the
+teacher's embeddings rather than the embeddings themselves, so it learns no
+projection head and the two embedding dimensionalities need not match. Its
+weights follow the paper's metric-learning setting, `--dist_ratio 1
+--angle_ratio 2` (RKD-DA); setting either ratio to `0` gives the paper's
+single-potential RKD-D or RKD-A variants.
+
+`pkt` reproduces Passalis & Tefas, *Learning Deep Representations with
+Probabilistic Knowledge Transfer* (ECCV 2018; extended in IEEE TNNLS 32(5), the
+version cited here). It matches the conditional affinity distribution each
+sentence induces over the rest of the batch, under the paper's cosine kernel,
+and like `rkd` it learns no projection. Two places where the paper and the
+authors' released code disagree are exposed as config settings rather than
+silently resolved: `exclude_self` (the paper's Eq. 3/4/8 drop the self term, the
+released code keeps it) and `reduction` (`sum` is Eq. 8 verbatim, `mean` is the
+released code, `batchmean` is the default per-anchor KL). The paper transfers
+with no supervised term, so `w_task` defaults to `0.0`.
 
 Training is single-process. Two visible CUDA devices place the student on
 `cuda:0` and the teacher on `cuda:1`; one device puts both on `cuda:0`.
@@ -73,7 +94,8 @@ bash scripts/train_talas.sh
 ```
 
 One script per method lives in `scripts/` (`train_talas.sh`, `train_cdm.sh`,
-`train_dskd.sh`, `train_emo.sh`, `train_stella.sh`, plus `.ps1` equivalents).
+`train_dskd.sh`, `train_emo.sh`, `train_pkt.sh`, `train_rkd.sh`, `train_stella.sh`,
+plus `.ps1` equivalents).
 
 Or run the Python entry point directly:
 

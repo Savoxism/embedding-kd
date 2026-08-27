@@ -6,6 +6,8 @@ from config import (
     CDMConfig,
     DSKDConfig,
     EMOConfig,
+    PKTConfig,
+    RKDConfig,
     StellaConfig,
     TALASConfig,
 )
@@ -21,7 +23,7 @@ def parse_args():
         '--method',
         type=str,
         default='cdm',
-        choices=['cdm', 'dskd', 'emo', 'stella', 'talas'],
+        choices=['cdm', 'dskd', 'emo', 'pkt', 'rkd', 'stella', 'talas'],
         help='Distillation method to use'
     )
     
@@ -101,6 +103,30 @@ def parse_args():
         help='DTW KD loss weight'
     )
     parser.add_argument(
+        '--w_pkt',
+        type=float,
+        default=None,
+        help='PKT divergence loss weight'
+    )
+    parser.add_argument(
+        '--pkt_kernel',
+        choices=['cosine', 'gaussian'],
+        default=None,
+        help='PKT affinity kernel (paper Eq. 6 / Eq. 5)'
+    )
+    parser.add_argument(
+        '--dist_ratio',
+        type=float,
+        default=None,
+        help='RKD distance-wise loss weight (lambda_RKD-D)'
+    )
+    parser.add_argument(
+        '--angle_ratio',
+        type=float,
+        default=None,
+        help='RKD angle-wise loss weight (lambda_RKD-A)'
+    )
+    parser.add_argument(
         '--task_type',
         choices=['single_cls', 'pair_cls', 'pair_reg'],
         default=None,
@@ -178,6 +204,10 @@ def get_config(method: str, args):
         config = DSKDConfig()
     elif method == 'emo':
         config = EMOConfig()
+    elif method == 'pkt':
+        config = PKTConfig()
+    elif method == 'rkd':
+        config = RKDConfig()
     elif method == 'stella':
         config = StellaConfig()
     elif method == 'talas':
@@ -214,6 +244,14 @@ def get_config(method: str, args):
         config.w_task = args.w_task
     if args.alpha_dtw is not None:
         config.alpha_dtw = args.alpha_dtw
+    if args.w_pkt is not None:
+        config.w_pkt = args.w_pkt
+    if args.pkt_kernel is not None:
+        config.kernel = args.pkt_kernel
+    if args.dist_ratio is not None:
+        config.dist_ratio = args.dist_ratio
+    if args.angle_ratio is not None:
+        config.angle_ratio = args.angle_ratio
     if args.task_type is not None:
         config.task_type = args.task_type
     

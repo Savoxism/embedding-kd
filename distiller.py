@@ -39,6 +39,8 @@ from src.cache_teacher import cache_teacher_embeddings, load_cached_embeddings
 from src.criterions.contextual_dynamic_mapping import ContextualDynamicMapping
 from src.criterions.dual_space_kd import DualSpaceKD
 from src.criterions.emo_embedding_distillation import EMODistillation
+from src.criterions.probabilistic_kt import ProbabilisticKT
+from src.criterions.relational_kd import RelationalKD
 from src.criterions.stella_distillation import (
     StellaModel,
     stella_stage1_loss,
@@ -189,6 +191,39 @@ class KnowledgeDistiller:
             )
             self.scheduler = self._build_scheduler()
             print("EMO criterion initialized and added to optimizer")
+        elif config.distill_method == "pkt":
+            # PKT matches conditional affinity distributions between examples,
+            # so like RKD it needs no projection head and holds no parameters.
+            self.criterion = ProbabilisticKT(
+                w_task=config.w_task,
+                w_pkt=config.w_pkt,
+                kernel=config.kernel,
+                gaussian_sigma=getattr(config, "gaussian_sigma", 1.0),
+                exclude_self=getattr(config, "exclude_self", True),
+                reduction=getattr(config, "reduction", "batchmean"),
+                eps=getattr(config, "eps_kernel", 1e-7),
+            )
+            print(
+                "PKT criterion initialized: "
+                f"w_task={config.w_task}, w_pkt={config.w_pkt}, "
+                f"kernel={config.kernel}, exclude_self={self.criterion.exclude_self}, "
+                f"reduction={self.criterion.reduction}"
+            )
+        elif config.distill_method == "rkd":
+            # RKD compares relations between examples, so it needs no projection
+            # head and holds no parameters -- nothing to add to the optimizer.
+            self.criterion = RelationalKD(
+                w_task=config.w_task,
+                dist_ratio=config.dist_ratio,
+                angle_ratio=config.angle_ratio,
+                huber_delta=getattr(config, "huber_delta", 1.0),
+                eps=getattr(config, "eps_norm", 1e-12),
+            )
+            print(
+                "RKD criterion initialized: "
+                f"w_task={config.w_task}, dist_ratio={config.dist_ratio}, "
+                f"angle_ratio={config.angle_ratio}"
+            )
         else:
             self.criterion = None
 
@@ -950,6 +985,26 @@ class KnowledgeDistiller:
                     special_tokens_mask_student=spec_s1,
                     special_tokens_mask_teacher=spec_t1,
                     device=self.device_s,
+                )
+
+            elif method == "pkt":
+                # Sec. 3 transfers the conditional distribution induced by the
+                # network's output representation: the student's pooled [CLS]
+                # against the teacher's pooled sentence embedding.
+                loss, metrics = self.criterion(
+                    student_embeddings=S_cls1,
+                    teacher_embeddings=T_cls1,
+                    task_loss=loss_task,
+                )
+
+            elif method == "rkd":
+                # Park et al. (2019) distil the network's output embedding. Here
+                # that is the student's pooled [CLS] against the teacher's pooled
+                # sentence embedding; the two dimensionalities need not match.
+                loss, metrics = self.criterion(
+                    student_embeddings=S_cls1,
+                    teacher_embeddings=T_cls1,
+                    task_loss=loss_task,
                 )
 
             elif method == "emo":
