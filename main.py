@@ -113,6 +113,8 @@ def parse_args():
         '--walk_non_backtracking', type=_bool_override, default=None,
         help='Use non-backtracking walks (1/0 or true/false)',
     )
+    parser.add_argument('--direct_weight', type=float, default=None)
+    parser.add_argument('--direct_temp', type=float, default=None)
     parser.add_argument('--candidate_size', type=int, default=None)
     parser.add_argument('--diffusion_quota', type=int, default=None)
     parser.add_argument('--hard_neg_k', type=int, default=None)
@@ -266,6 +268,8 @@ def get_config(method: str, args):
         'walk_weight',
         'walk_start_epoch',
         'walk_non_backtracking',
+        'direct_weight',
+        'direct_temp',
         'candidate_size',
         'diffusion_quota',
         'hard_neg_k',
