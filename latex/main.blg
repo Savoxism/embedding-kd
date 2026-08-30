@@ -5,42 +5,42 @@ The style file: iclr2027_conference.bst
 Database file #1: ripple.bib
 You've used 28 entries,
             2773 wiz_defined-function locations,
-            774 strings with 11989 characters,
-and the built_in function-call counts, 17253 in all, are:
-= -- 1469
-> -- 1426
-< -- 15
-+ -- 474
-- -- 446
-* -- 1563
-:= -- 2731
-add.period$ -- 112
+            777 strings with 12378 characters,
+and the built_in function-call counts, 18487 in all, are:
+= -- 1587
+> -- 1534
+< -- 14
++ -- 510
+- -- 482
+* -- 1676
+:= -- 2896
+add.period$ -- 117
 call.type$ -- 28
-change.case$ -- 230
+change.case$ -- 242
 chr.to.int$ -- 28
 cite$ -- 56
-duplicate$ -- 644
-empty$ -- 1103
-format.name$ -- 488
-if$ -- 3548
+duplicate$ -- 683
+empty$ -- 1161
+format.name$ -- 518
+if$ -- 3827
 int.to.chr$ -- 1
 int.to.str$ -- 1
 missing$ -- 27
-newline$ -- 173
+newline$ -- 177
 num.names$ -- 116
-pop$ -- 425
+pop$ -- 455
 preamble$ -- 1
-purify$ -- 202
+purify$ -- 214
 quote$ -- 0
-skip$ -- 577
+skip$ -- 627
 stack$ -- 0
-substring$ -- 426
-swap$ -- 92
-text.length$ -- 8
+substring$ -- 519
+swap$ -- 123
+text.length$ -- 10
 text.prefix$ -- 0
 top$ -- 0
 type$ -- 308
 warning$ -- 0
-while$ -- 114
+while$ -- 118
 width$ -- 0
-write$ -- 421
+write$ -- 431

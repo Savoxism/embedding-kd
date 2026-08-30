@@ -1,231 +1,132 @@
 \section{Proofs}
 \label{app:proofs}
 
-Throughout, $\lVert v\rVert_1=\sum_j|v_j|$ and $\mathrm{TV}(p,q)=\tfrac12\lVert p-q\rVert_1$. For a nonnegative vector $v$ with $\lVert v\rVert_1>0$ and a subset $C$ of its support, $v|_C$ denotes restriction to $C$ followed by renormalization.
+Throughout, $\lVert v\rVert_1=\sum_j|v_j|$ and
+$\mathrm{TV}(p,q)=\tfrac12\lVert p-q\rVert_1$. For a distribution $p$
+and a set $C$ with $p(C)>0$, $p|_C$ denotes the conditional distribution
+on $C$, extended by zero outside $C$ when two distributions are compared
+on a common domain.
 
-\subsection{Proof of Proposition~\ref{prop:coverage} (neighborhood coverage)}
+\subsection{Proof of Proposition~\ref{prop:coverage}}
 \label{app:proof-coverage}
 
-Within an epoch the corpus is partitioned uniformly at random into batches of size $B$. By exchangeability, the batch containing $i$ contains $B-1$ of the remaining $N-1$ examples, uniformly without replacement, so for any fixed $j\neq i$,
+The batch containing anchor $i$ includes $B-1$ of the remaining $N-1$
+examples uniformly without replacement. Thus, for any fixed $j\neq i$,
 \begin{equation}
-    \Pr[j\in\mathcal{B}] = \frac{B-1}{N-1}.
+\Pr[j\in\mathcal L_{\mathcal B_e}(i)]=\frac{B-1}{N-1}.
 \end{equation}
-The expected count follows by linearity over the $k$ neighbors. The event of seeing no neighbor means that all $B-1$ batch partners are drawn from the $N-1-k$ non-neighbors, giving
+Under independent reshuffling, the probability that $j$ has appeared with
+$i$ after $T$ epochs is
 \begin{equation}
-    \Pr[\mathcal B\cap\mathcal N_k(i)=\emptyset]
-    =\frac{\binom{N-1-k}{B-1}}{\binom{N-1}{B-1}}.
+q_T=1-\left(1-\frac{B-1}{N-1}\right)^T.
 \end{equation}
-The stated lower bound follows from the union bound
-$\Pr[\mathcal B\cap\mathcal N_k(i)\neq\emptyset]\leq(B-1)k/(N-1)$.
-Across epochs, let $p_e=(B-1)/(N-1)$. A fixed neighbor pair is observed at least once with probability $1-(1-p_e)^T$. By linearity this is also the expected observed fraction of the $k$ neighbor pairs, and Bernoulli's inequality gives $1-(1-p_e)^T\leq Tp_e$. \qed
+Linearity of expectation over the $k$ members of $\mathcal N_k^T(i)$ gives
+Eq.~\eqref{eq:coverage-exact}; the upper bound follows from
+$1-(1-x)^T\leq Tx$ for $x\in[0,1]$.
 
-\subsection{Proof of Proposition~\ref{prop:underdet} (under-determination)}
-\label{app:proof-underdet}
+Every realized row-$i$ term in Eq.~\eqref{eq:batchrel} evaluates student
+scores only at columns in $\mathcal L_{\mathcal B_e}(i)$. Across epochs, the
+objective therefore depends on row $i$ only through
+$\{c^S_{ij}:j\in\mathcal O_i^{(T)}\}$. Any two score arrays that agree on
+this set have the same realized batch-relational objective, irrespective of
+their values outside it. This proves the support-level under-identification.
+\qed
 
-(i) Fix a realized batch $\mathcal{B}$ and $i\in\mathcal{B}$. The divergence in $\mathcal{L}_{\mathcal{B}}$ vanishes exactly when the two distributions of Eq.~\eqref{eq:batchrel} coincide on $\mathcal{B}\setminus\{i\}$. Taking log-ratios of any two columns $j,j'$ of that set,
+\subsection{Proof of Theorem~\ref{thm:profile-geometry}}
+\label{app:proof-profile}
+
+Fix $r$ and let $a_i=\mathrm{TV}(g^T_{i,r},g^S_{i,r})$. The reverse triangle
+inequality gives
 \begin{equation}
-    \frac{c^S_{ij}-c^S_{ij'}}{\tau_0}
-    =\log\frac{p^{T,\mathcal{B}}_i(j)}{p^{T,\mathcal{B}}_i(j')}
-    =\frac{c^T_{ij}-c^T_{ij'}}{\tau_0},
+\label{eq:reverse-tv}
+\left|
+\mathrm{TV}(g^T_{i,r},g^T_{j,r})
+-\mathrm{TV}(g^S_{i,r},g^S_{j,r})
+\right|
+\leq a_i+a_j.
 \end{equation}
-so $c^S_{ij}-c^T_{ij}$ is constant in $j$ on $\mathcal{B}\setminus\{i\}$; call it $a_i^{\mathcal{B}}$. Conversely, if $c^S_{ij}=c^T_{ij}+a_i^{\mathcal{B}}$ on that set then the factor $e^{a_i^{\mathcal{B}}/\tau_0}$ cancels in the normalization and the two distributions coincide, so the divergence is zero.
+By Pinsker's inequality,
+$a_i\leq\sqrt{D_{\mathrm{KL}}(g^T_{i,r}\|g^S_{i,r})/2}$.
+Under the uniform assumption, Eq.~\eqref{eq:reverse-tv} is therefore at most
+$2\sqrt{\varepsilon_r/2}=\sqrt{2\varepsilon_r}$.
 
-(ii) Summing the realized batch terms introduces no additional score arguments: row $i$ occurs only at columns in $\mathcal O_i^T$. Therefore two score arrays that agree on every realized argument give the same value to every batch term and hence to the empirical objective, irrespective of entries outside $\mathcal O_i^T$.
-
-(iii) If two batches $\mathcal B,\mathcal B'$ containing $i$ share a column $j$, then both offsets equal $c^S_{ij}-c^T_{ij}$ and must coincide. Repeating the argument along a chain of overlapping column sets identifies all offsets in that overlap component. With no such chain, the score-level loss contains no equality relating the two constants. This proves the proposition. \qed
-
-\begin{remark}[The defect is identifiability, not bias]
-The in-batch teacher target $p^{T,\mathcal{B}}_i$ is a poor estimator of the teacher's ambient distribution over the corpus, but this does not by itself impugn the objective: the student is restricted to the same columns, so by part (i) the exact solution $c^S=c^T+a_i$ drives the loss to zero on every batch and the two restrictions cancel. The failure is that almost nothing is constrained, which Eq.~\eqref{eq:coverage-exact} quantifies.
-\end{remark}
-
-\subsection{Two lemmas behind Theorem~\ref{thm:global}}
-\label{app:proof-perturb}
-
-The theorem combines a perturbation bound, which propagates a one-step error to $r$ steps, with a restriction bound, which converts control on a column set into control of the full row.
-
-\begin{lemma}[One step to $r$ steps]
-\label{lem:perturb}
-Let $P,Q$ be row-stochastic matrices with lazy walks $\tilde{P},\tilde{Q}$, and suppose $\max_i\mathrm{TV}(P_i,Q_i)\leq\varepsilon$. Then for every $r\geq1$,
-$\max_i \mathrm{TV}\big(\delta_i^{\top}\tilde{P}^{r},\,\delta_i^{\top}\tilde{Q}^{r}\big)\leq r\varepsilon/2$.
-\end{lemma}
-
-\paragraph{Proof.}
-Write $\tilde{P}-\tilde{Q}=\tfrac12(P-Q)$ and telescope:
+For the average statement, Jensen's inequality yields
 \begin{equation}
-    \tilde{P}^{r}-\tilde{Q}^{r}
-    =\sum_{s=0}^{r-1}\tilde{P}^{s}\,(\tilde{P}-\tilde{Q})\,\tilde{Q}^{\,r-1-s}.
+\frac1N\sum_i a_i
+\leq
+\sqrt{\frac{1}{2N}\sum_i
+D_{\mathrm{KL}}(g^T_{i,r}\|g^S_{i,r})}
+=\sqrt{\frac{\bar\varepsilon_r}{2}}.
 \end{equation}
-Fix a row $i$ and a summand $s$. The vector $\mu=\delta_i^{\top}\tilde{P}^{s}$ is a probability vector, so $\mu(\tilde{P}-\tilde{Q})$ is a convex combination of the rows of $\tilde{P}-\tilde{Q}$ and
-\begin{equation}
-    \big\lVert \mu(\tilde{P}-\tilde{Q}) \big\rVert_1
-    \leq \max_j \big\lVert \tfrac12(P_j-Q_j) \big\rVert_1
-    = \max_j \mathrm{TV}(P_j,Q_j)
-    \leq \varepsilon .
-\end{equation}
-Right-multiplication by a row-stochastic matrix does not increase the $\ell_1$ norm: $\lVert\nu \tilde{Q}^{\,r-1-s}\rVert_1\leq\lVert\nu\rVert_1$. Summing the $r$ terms gives $\lVert\delta_i^{\top}(\tilde{P}^{r}-\tilde{Q}^{r})\rVert_1\leq r\varepsilon$, i.e.\ $\mathrm{TV}\leq r\varepsilon/2$. \qed
+Averaging Eq.~\eqref{eq:reverse-tv} over ordered pairs $(i,j)$ gives
+$2N^{-1}\sum_i a_i\leq\sqrt{2\bar\varepsilon_r}$, completing the proof.
+\qed
 
-\begin{lemma}[Restriction]
-\label{lem:restrict}
-Let $p,q$ be distributions on a common finite set and $C$ a subset with $p(C)\geq1-\delta_T$ and $q(C)\geq1-\delta_S$. Then
-$\mathrm{TV}(p,q)\leq\mathrm{TV}\big(p|_C,q|_C\big)+\delta_T+\delta_S$.
-\end{lemma}
-
-\paragraph{Proof.}
-Split the $\ell_1$ distance over $C$ and $\bar{C}$. Outside $C$, $\sum_{\bar{C}}|p_j-q_j|\leq p(\bar{C})+q(\bar{C})\leq\delta_T+\delta_S$. Inside $C$, write $p_j=p(C)\,p|_C(j)$ and $q_j=q(C)\,q|_C(j)$:
-\begin{equation}
-    \sum_{C}\big|p_j-q_j\big|
-    \leq p(C)\sum_{C}\big|p|_C(j)-q|_C(j)\big| + \big|p(C)-q(C)\big|
-    \leq 2\,\mathrm{TV}\big(p|_C,q|_C\big)+\delta_T+\delta_S .
-\end{equation}
-Adding the two parts and halving yields the claim. \qed
-
-\subsection{Leakage control from negative candidates}
-\label{app:proof-leakage}
-
-The teacher-side defect $\delta_T$ in Theorem~\ref{thm:global} is a property of the candidate construction; the student-side defect $\delta_S$ is what the negatives of Section~\ref{sec:candidates} target. Let $\tilde{p}=p|_C$ and $\tilde{q}=q|_C$ be the restricted teacher and student distributions on $C=C^{+}\cup C^{-}$, and suppose $D_{\mathrm{KL}}(\tilde{p}\,\|\,\tilde{q})\leq\varepsilon$ with $\tilde{p}(C^{-})\leq\varepsilon_{\mathrm{neg}}$. The partition induces binary distributions $(\tilde{p}(C^{+}),\tilde{p}(C^{-}))$ and $(\tilde{q}(C^{+}),\tilde{q}(C^{-}))$, and by the data-processing inequality
-\begin{equation}
-    D_{\mathrm{KL}}\big(\tilde{p}\,\|\,\tilde{q}\big)
-    \geq
-    d_{\mathrm{KL}}\big(\tilde{p}(C^{+})\,\|\,\tilde{q}(C^{+})\big),
-\end{equation}
-where $d_{\mathrm{KL}}$ is the binary divergence. Pinsker's inequality for the binary pair gives $|\tilde{p}(C^{+})-\tilde{q}(C^{+})|\leq\sqrt{\varepsilon/2}$, hence
-$\tilde{q}(C^{-})\leq\tilde{p}(C^{-})+\sqrt{\varepsilon/2}\leq\varepsilon_{\mathrm{neg}}+\sqrt{\varepsilon/2}$. \qed
-
-\begin{remark}[From sampled negatives to the full complement]
-\label{rem:leakage-extension}
-The bound above controls the student's mass on the negative columns actually drawn. The random negatives are uniform draws from the complement of the diffusion support, redrawn every epoch, so over training the student's scores are constrained on a fresh uniform sample of the complement at every epoch: by exchangeability, a student that hides a constant fraction of softmax mass on some subset of the complement would place mass on the drawn negatives in expectation proportional to that fraction, contradicting a uniformly small restricted loss. A quantitative uniform-convergence version of this argument (a bound on $\delta_S$ in expectation over the negative-sampling process) is deferred to the final version. Theorem~\ref{thm:global} accordingly takes $\delta_S$ as a hypothesis.
-\end{remark}
-
-\subsection{Proof of Theorem~\ref{thm:global} (local-to-global transfer)}
-\label{app:proof-global}
-
-Fix an anchor $i$. Pinsker's inequality applied to the restricted divergence gives $\mathrm{TV}(P_i^T|_{C_i},P_i^S|_{C_i})\leq\sqrt{\varepsilon/2}$. Lemma~\ref{lem:restrict} with $p=P_i^T$, $q=P_i^S$, and $C=C_i$ then bounds the full one-step rows:
-\begin{equation}
-    \mathrm{TV}\big(P^{T}_i,\,P^{S}_i\big)
-    \leq \sqrt{\varepsilon/2}+\delta_T+\delta_S
-    \eqqcolon \varepsilon_{\mathrm{row}} .
-\end{equation}
-Applying Lemma~\ref{lem:perturb} with row-wise bound $\varepsilon_{\mathrm{row}}$ yields, for every $r\geq1$,
-$\max_i\mathrm{TV}\big(\delta_i^{\top}(\tilde{P}^{T})^{r},\delta_i^{\top}(\tilde{P}^{S})^{r}\big)\leq r\,\varepsilon_{\mathrm{row}}/2$. \qed
-
-For Corollary~\ref{cor:multiscale}, apply Pinsker directly to
-$p^T_{i,r}|_{C_i}$ and $q^S_{i,r}|_{C_i}$, then use Lemma~\ref{lem:restrict} to extend the comparison to their full score-row domains. Lemma~\ref{lem:perturb} is not invoked, so no factor of $r$ appears. This proves a direct target--readout bound and does not identify $q^S_{i,r}$ with $(\widetilde P^S)^r$.
-
-\begin{remark}[Average-case variant]
-Training controls the divergence averaged over anchors rather than its maximum. By Jensen's inequality, $\frac1N\sum_i\mathrm{TV}(P^T_i|_{C_i},P^S_i|_{C_i})\leq\sqrt{\bar{\varepsilon}/2}$ with $\bar{\varepsilon}$ the average restricted divergence, and the telescoping argument of Lemma~\ref{lem:perturb} can be carried out under any fixed initial distribution over anchors, giving the same bounds for anchor-averaged errors.
-\end{remark}
-
-\subsection{Proof of Proposition~\ref{prop:collapse} (collapse)}
-\label{app:proof-collapse}
-
-With one shared student distribution $p^S_i$,
-\begin{equation}
-    \sum_{r}\omega_r D_{\mathrm{KL}}\!\left(p^T_{i,r}\,\|\,p^S_i\right)
-    =\sum_{r}\omega_r\Big[H\big(p^T_{i,r},p^S_i\big)-H\big(p^T_{i,r}\big)\Big]
-    =H\Big(\textstyle\sum_r\omega_r p^T_{i,r},\,p^S_i\Big)-\sum_{r}\omega_r H\big(p^T_{i,r}\big),
-\end{equation}
-using that cross-entropy $H(p,q)=-\sum_j p_j\log q_j$ is linear in its first argument and $\sum_r\omega_r=1$. The subtracted entropy term does not depend on the student. \qed
-
-\subsection{Truncated walks and proof of Proposition~\ref{prop:sampling}}
+\subsection{Proofs for Sampled Supervision}
 \label{app:proof-sampling}
 
-The diffusion targets are computed by a truncated walk; its error is additive across steps.
+\paragraph{Proof of Lemma~\ref{lem:sampling}.}
+An atom $j$ is absent from $m$ independent draws from $p$ with probability
+$(1-p_j)^m$. Hence
+\begin{equation}
+\mathbb E[p(C_m^c)]=\sum_jp_j(1-p_j)^m.
+\end{equation}
+For any $t>0$, atoms with $p_j\geq t$ contribute at most
+$e^{-mt}\sum_{j:p_j\geq t}p_j\leq e^{-mt}$; the remaining atoms contribute
+at most $\operatorname{Tail}_p(t)$. This proves Eq.~\eqref{eq:sampling-mass}.
+\qed
 
-\begin{lemma}[Truncation error]
-\label{lem:truncation}
-If the walk is computed with per-step truncation to the highest-mass columns followed by renormalization, dropping mass fraction $\delta_s$ at step $s$, then after $r$ steps the computed distribution $\hat{p}$ satisfies $\mathrm{TV}(\hat{p},p)\leq\sum_{s\leq r}\delta_s$.
+The same upper bound applies to target-proportional sampling without
+replacement: conditional on not having selected $j$, its next-draw
+probability is at least $p_j$. RIPPLE additionally includes deterministic
+high-mass candidates and negatives, so we measure the realized missed target
+mass $\delta^T_{i,r}$ rather than treating the bound as an equality for the
+full sampler.
+
+\begin{lemma}[Restriction to a candidate set]
+\label{lem:restrict}
+Let $p$ and $q$ be distributions on a common finite set. If
+$p(C^c)=\delta_p$ and $q(C^c)=\delta_q$, then
+\begin{equation}
+\mathrm{TV}(p,q)
+\leq \mathrm{TV}(p|_C,q|_C)+\delta_p+\delta_q.
+\end{equation}
 \end{lemma}
 
 \paragraph{Proof.}
-First, for any nonnegative vector $v$ with total mass $1$ and truncation $R(v)$ that zeroes a set of mass $\delta$ and renormalizes,
+Extending the conditional distributions by zero outside $C$ gives
+$\mathrm{TV}(p,p|_C)=\delta_p$ and
+$\mathrm{TV}(q,q|_C)=\delta_q$. The claim follows from the triangle
+inequality. \qed
+
+\paragraph{Proof of Corollary~\ref{cor:sampled-topology}.}
+Pinsker's inequality and Lemma~\ref{lem:restrict} imply
 \begin{equation}
-    \mathrm{TV}\big(R(v),v\big)
-    =\tfrac12\Big[\sum_{\mathrm{kept}}\Big(\tfrac{v_j}{1-\delta}-v_j\Big)+\sum_{\mathrm{dropped}}v_j\Big]
-    =\tfrac12\big[\delta+\delta\big]=\delta .
+\mathrm{TV}(g^T_{i,r},g^S_{i,r})
+\leq
+\sqrt{\kappa_{i,r}/2}+\delta^T_{i,r}+\delta^S_{i,r}
+=\eta_{i,r}.
 \end{equation}
-Let $v_s$ denote the exact walk after $s$ steps and $\hat{v}_s$ the truncated walk, with $M=\tilde{P}$ the (row-stochastic) step operator and $\delta_s$ the mass fraction dropped at step $s$. Then
-\begin{equation}
-    \mathrm{TV}(\hat{v}_s,v_s)
-    \leq \mathrm{TV}\big(R(\hat{v}_{s-1}M),\hat{v}_{s-1}M\big)
-    +\mathrm{TV}\big(\hat{v}_{s-1}M,v_{s-1}M\big)
-    \leq \delta_s+\mathrm{TV}(\hat{v}_{s-1},v_{s-1}),
-\end{equation}
-using the triangle inequality and that a stochastic matrix does not increase total variation. Induction over $s\leq r$ gives $\mathrm{TV}(\hat{v}_r,v_r)\leq\sum_{s\leq r}\delta_s$. \qed
+Applying Eq.~\eqref{eq:reverse-tv} to anchors $i$ and $j$ gives
+Eq.~\eqref{eq:sampled-topology-bound}. \qed
 
-\paragraph{Proof of Proposition~\ref{prop:sampling}.}
-The identity $\mathrm{TV}(p|_C,p)=p(\bar{C})$ follows from the first display above with $\delta=p(\bar{C})$. For $m$ independent draws from $p$,
-\begin{equation}
-    \mathbb{E}\big[p(\bar{C})\big]
-    =\sum_j p_j\,(1-p_j)^m .
-\end{equation}
-Fix $t>0$ and split the sum: atoms with $p_j\geq t$ contribute at most $(1-t)^m\sum_j p_j\leq e^{-tm}$, and atoms with $p_j<t$ contribute at most $\mathrm{Tail}_p(t)$. Minimizing over $t$ gives the bound. If every atom in the support of $p$ carries mass at least $c/\rho$, take $t=c/\rho$: no atom falls below $t$, the tail term vanishes, and the bound is $e^{-cm/\rho}$. \qed
-
-\begin{proposition}[Coverage of walk-selected constraints]
-\label{prop:walkcover}
-Let $q$ be the distribution over mutual-neighbor edges traversed by the walks. After $n$ independent traversals, the expected $q$-mass of edges never traversed is
-\begin{equation}
-    \sum_e q_e(1-q_e)^n
-    \leq
-    \min_{t>0}\left(e^{-tn}+\mathrm{Tail}_q(t)\right),
-    \qquad
-    \mathrm{Tail}_q(t)=\sum_{e:q_e<t}q_e.
-\end{equation}
-Adding traversed edges can only merge components of the realized constraint graph, so its component count is non-increasing with additional traversals.
-\end{proposition}
-
-\paragraph{Proof of Proposition~\ref{prop:walkcover}.}
-Index the edges of $\mathcal{M}_k^T$ and let $q_e$ be the probability that edge $e$ is traversed in a given optimization step, independently across steps. The probability that $e$ is never traversed in $n$ steps is $(1-q_e)^n$, so the expected $q$-mass of untraversed edges is $\sum_e q_e(1-q_e)^n$, which is the quantity bounded in Proposition~\ref{prop:sampling} with $p$ replaced by $q$ and $m$ by $n$; the same split at a threshold $t$ gives the same bound. Adding an edge to the traversed set can only merge two components of $\mathcal{G}$ or leave them unchanged, so $\kappa$ is non-increasing in $n$. \qed
-
-\begin{remark}[Sampling without replacement]
-The implementation draws candidates by Gumbel top-$k$, which realizes weighted sampling without replacement~\citep{efraimidis2006weighted,kool2019stochastic}. Draws are distinct, so after $m$ draws the covered mass is at least that of $m$ independent draws in the natural coupling that re-draws duplicates; the bound of Proposition~\ref{prop:sampling} therefore remains valid.
-\end{remark}
-
-\subsection{Proofs of Propositions~\ref{prop:gauge} and~\ref{prop:walkgauge} (gauge and its reduction)}
+\subsection{Proof of Proposition~\ref{prop:row-consistency}}
 \label{app:proof-gauge}
 
-\paragraph{Invariance.}
-For any temperature $\tau$ and column set $\Omega$, $\mathrm{softmax}\big((c_i+a_i)/\tau\big)_{j\in\Omega}=\mathrm{softmax}\big(c_i/\tau\big)_{j\in\Omega}$, since the constant $e^{a_i/\tau}$ cancels between numerator and normalizer. Every term of $\mathcal{L}_{\mathrm{diff}}$ is a divergence between a fixed teacher target and such a softmax, so the loss is unchanged.
-
-\paragraph{Zero set.}
-Suppose the ambient-scale term vanishes for anchor $i$ on the column set $\Omega$, $|\Omega|\geq2$: then $\mathrm{softmax}(c^S_i/\tau_0)=\mathrm{softmax}(c^T_i/\tau_0)$ on $\Omega$. Taking log-ratios of any two columns $j,j'\in\Omega$,
+Let the coincident teacher and student softmax rows on $\Omega_i$ be $p_i$.
+For any $j,j'\in\Omega_i$, equality of log-ratios gives
 \begin{equation}
-    \frac{c^S_{ij}-c^S_{ij'}}{\tau_0}
-    =\log\frac{p^T_{i,0}(j)}{p^T_{i,0}(j')}
-    =\frac{c^T_{ij}-c^T_{ij'}}{\tau_0},
+\frac{c^S_{ij}-c^S_{ij'}}{\tau_i}
+=\log\frac{p_i(j)}{p_i(j')}
+=\frac{c^T_{ij}-c^T_{ij'}}{\tau_i}.
 \end{equation}
-so $c^S_{ij}-c^T_{ij}$ is constant in $j$ on $\Omega$; call it $a_i$. This proves Proposition~\ref{prop:gauge}.
+Thus $c^S_{ij}-c^T_{ij}$ is constant in $j$ on $\Omega_i$; denote it by
+$a_i$. Conversely, adding a constant to every logit in a row leaves its
+softmax unchanged.
 
-\paragraph{Walk rows carry the same form of constraint.}
-The teacher's transition row is itself a softmax of teacher cosines at that row's bandwidth, $P^T_j(j')\propto\exp(c^T_{jj'}/\tau_j)$ on $\mathcal{M}_k^T(j)$, and restricting a softmax to a subset and renormalizing is the softmax over that subset. Hence $P^T_j|_{\Omega^w_j}=\mathrm{softmax}_{\Omega^w_j}(c^T_{j\cdot}/\tau_j)$, and the row term of Eq.~\eqref{eq:lrow} vanishes at $j$ exactly when $\mathrm{softmax}_{\Omega^w_j}(c^S_{j\cdot}/\tau_w(j))=\mathrm{softmax}_{\Omega^w_j}(c^T_{j\cdot}/\tau_j)$. With $\tau_w(j)=\tau_j$ the log-ratio argument above applies verbatim on $\Omega^w_j$ --- the common temperature cancels from both sides of the ratio, so its value is immaterial and only the tie matters --- giving $c^S_{jv}=c^T_{jv}+a_j$ for all $v\in\Omega^w_j$. The argument is thus unchanged whether the bandwidths are shared or solved per row.
-
-\paragraph{Symmetry closes the gauge along edges.}
-Every supervised row $u\in\mathcal{S}$ therefore satisfies $c^S_{uv}=c^T_{uv}+a_u$ on $\Omega_u$, whether it was supervised by the ambient term or by the row term. Let $\{u,v\}$ be an edge of $\mathcal{G}$, so $v\in\Omega_u$ and $u\in\Omega_v$. Applying the identity in both directions,
-\begin{equation}
-    c^S_{uv}=c^T_{uv}+a_u,
-    \qquad
-    c^S_{vu}=c^T_{vu}+a_v .
-\end{equation}
-Cosine similarity is symmetric, $c^S_{uv}=c^S_{vu}$ and $c^T_{uv}=c^T_{vu}$, so subtracting gives $a_u=a_v$. A function constant across every edge is constant on every connected component, so the score-row observation model leaves at most one independent offset per component of $\mathcal{G}$. This is an upper bound on score-level ambiguity; it does not assert that arbitrary shifted score arrays are realizable cosine Gram matrices. This proves Proposition~\ref{prop:walkgauge}. \qed
-
-\begin{remark}[Approximate consistency]
-\label{rem:approxgauge}
-Suppose a supervised term at row $u$ has divergence at most $\varepsilon$ rather than zero, with teacher target $p$ and student distribution $q$ on $\Omega_u$, both softmaxes at the same temperature $\tau$. Pinsker gives $\lVert p-q\rVert_\infty\leq\mathrm{TV}(p,q)\leq\sqrt{\varepsilon/2}=:\eta$. For any column $j$ with $p_j\geq p_{\min}>\eta$,
-\begin{equation}
-    \big|\log q_j-\log p_j\big|
-    =\Big|\log\Big(1+\tfrac{q_j-p_j}{p_j}\Big)\Big|
-    \leq\frac{\eta}{p_{\min}-\eta},
-\end{equation}
-so for two columns $j,j'$ the log-ratio identity used above holds up to $2\eta/(p_{\min}-\eta)$, giving
-$\big|(c^S_{uj}-c^S_{uj'})-(c^T_{uj}-c^T_{uj'})\big|\leq 2\tau\eta/(p_{\min}-\eta)$.
-Writing $a_u$ for the offset fitted at row $u$, the same estimate bounds $|a_u-a_v|$ across an edge $\{u,v\}$ of $\mathcal{G}$ by $O(\tau\sqrt{\varepsilon}/p_{\min})$. Along a path of $\ell$ edges the bounds add, so offsets identified through a long chain are looser than those identified through a short one: coverage of $\mathcal{G}$ improves with walk length while the accuracy of each identification degrades with it.
-\end{remark}
-
-\begin{remark}[The walk lays down the edges]
-\label{rem:walkedges}
-Consecutive nodes $j_t,j_{t+1}$ of a walk with $t\geq1$ are adjacent in $\mathcal{M}_k^T$, which is symmetric by construction, and both are supervised rows whenever both lie in $\mathcal{P}_B$. Then $j_{t+1}\in\Omega^w_{j_t}$ and $j_t\in\Omega^w_{j_{t+1}}$, so the step is an edge of $\mathcal{G}$: a walk of length $L$ contributes a path of up to $L-1$ edges. Anchor-only supervision can also create an edge if two realized anchor rows contain one another, but this depends on reciprocal inclusion. The walk deliberately selects adjacent rows and therefore densifies such constraints.
-\end{remark}
-
-\begin{remark}[Downstream tasks are not gauge-invariant]
-\label{rem:threshold}
-Consider two anchors $i,i'$ and a downstream decision that thresholds cosine similarity at a shared value $\theta$, as in pair classification or a global retrieval cutoff. Offsets $a_i=+\Delta$, $a_{i'}=-\Delta$ leave $\mathcal{L}_{\mathrm{diff}}$ unchanged by Proposition~\ref{prop:gauge}, yet move pairs of $i$ above the threshold and pairs of $i'$ below it, changing the decisions. Rank correlations computed across anchors, as in semantic textual similarity, are affected in the same way. The gauge is therefore task-relevant. A single offset shared across a component is the benign case: it shifts every cosine in the component equally, so it preserves all orderings and moves only the absolute location of $\theta$.
-\end{remark}
+For an edge $\{u,v\}$ of the reciprocal-overlap graph,
+Eq.~\eqref{eq:row-gauge} gives
+$c^S_{uv}=c^T_{uv}+a_u$ and $c^S_{vu}=c^T_{vu}+a_v$.
+Teacher and student cosine scores are symmetric, so $a_u=a_v$. Equality
+propagates along paths, making the offset constant on each connected
+component. \qed

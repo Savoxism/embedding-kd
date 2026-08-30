@@ -1,246 +1,177 @@
 \section{RIPPLE: Corpus-Anchored Geometry Distillation}
 \label{sec:method}
 
-RIPPLE replaces relations selected by mini-batch co-occurrence with rows selected from a teacher-induced corpus operator. It then transfers those rows at several geometric scales, approximates them on small candidate sets, and supervises overlapping rows to improve cross-anchor consistency. For distributions $p,q$ on a common finite set, let $\mathrm{TV}(p,q)=\tfrac12\lVert p-q\rVert_1$; for a column set $C$, let $p|_C$ denote restriction to $C$ followed by renormalization. Proofs are in Appendix~\ref{app:proofs}.
+RIPPLE implements the requirement derived in Section~\ref{sec:theory} in four stages: corpus anchoring, multi-scale diffusion, candidate sampling, and cross-anchor row supervision. For a distribution $p$ and a set $C$ with $p(C)>0$, $p|_C$ denotes restriction to $C$ followed by renormalization.
 
-\subsection{Teacher Neighborhood Operator}
+\subsection{Corpus-Level Teacher Graph}
 \label{sec:graph}
 
-Let $t_i=T(x_i)$ be the cached, unit-normalized embedding of corpus example $x_i$. Writing $\mathcal{N}_k^T(i)$ for its top-$k$ neighbors under teacher cosine similarity, RIPPLE retains mutual edges,
+We cache the teacher embeddings and construct a mutual $k$-nearest-neighbor graph over the corpus. Its support is
 \begin{equation}
-    j\in\mathcal{M}_k^T(i)
-    \quad\Longleftrightarrow\quad
-    j\in\mathcal{N}_k^T(i)
-    \ \text{and}\
-    i\in\mathcal{N}_k^T(j),
+\label{eq:mutual-support}
+j\in\mathcal M_k^T(i)
+\quad\Longleftrightarrow\quad
+j\in\mathcal N_k^T(i)\ \text{and}\ i\in\mathcal N_k^T(j),
 \end{equation}
-which suppresses one-directional hub edges. The weighted adjacency and transition operator are
+which retains reciprocal teacher neighborhoods and removes one-directional hub edges. The weighted transition operator is
 \begin{equation}
 \label{eq:teacher-operator}
-    W^T_{ij}
-    =
-    \mathbf{1}\!\left[j\in\mathcal{M}_k^T(i)\right]
-    \exp\!\left(c^T_{ij}/\tau_i\right),
-    \qquad
-    P^T=(D^T)^{-1}W^T,
+W^T_{ij}=\mathbf 1[j\in\mathcal M_k^T(i)]
+\exp(c^T_{ij}/\tau_i),
+\qquad
+P^T=(D^T)^{-1}W^T,
 \end{equation}
-where $D^T$ is the diagonal degree matrix. RIPPLE fixes a target perplexity $\rho$ rather than a global graph bandwidth. For a row of degree $d_i>\rho$, its bandwidth $\tau_i$ is chosen so that
-\begin{equation}
-\label{eq:entropic-bandwidth}
-    H(P_i^T)
-    =
-    -\sum_{j\in\mathcal M_k^T(i)}P_{ij}^T\log P_{ij}^T
-    =
-    \log\rho.
-\end{equation}
-Thus every sufficiently high-degree transition row has the same effective neighborhood size despite differences in the scale and density of teacher similarities~\citep{hinton2002sne,maaten2008tsne,vladymyrov2013entropic}. For non-degenerate rows the entropy is monotone in $\tau_i$, so the solution is obtained by bisection; when $d_i\leq\rho$, the target is clipped just below the maximum attainable entropy and the row is nearly uniform. The solved $\tau_i$ values are stored with the graph and reused by the corresponding student and walk readouts. They are derived preprocessing quantities, not tunable model parameters. Moreover, under an affine rescaling $c^T_{ij}\mapsto a c^T_{ij}+b$ with $a>0$, the solution changes as $\tau_i\mapsto a\tau_i$ and $P_i^T$ is unchanged. Isolated nodes fall back to their directed teacher neighbors. After this preprocessing step, the teacher model is no longer needed.
+where $D^T$ is the row-degree matrix. Unlike a batch-local support, each row of $P^T$ is anchored in the teacher's corpus geometry. We use an entropy-calibrated bandwidth $\tau_i$ to accommodate variation in neighborhood density; its construction is given in Appendix~\ref{app:entropic-bandwidth}. Once $P^T$ is stored, the teacher is not used during training.
 
-Each row $P_i^T$ is a teacher-selected conditional neighborhood distribution. Unlike an in-batch target, its support is tied to corpus geometry and is available whenever $x_i$ is sampled as an anchor. We use the lazy operator $\widetilde P^T=\tfrac12(I+P^T)$ to define longer walks without periodicity.
-
-\subsection{Multi-Scale Diffusion Distillation}
+\subsection{From Neighborhoods to Multi-Scale Topology}
 \label{sec:kernels}
 
-The sharpest graph target is the one-step row $p^T_{i,1}=P_i^T$. Broader targets are obtained from the lazy teacher walk,
+The corpus graph corrects the supervision support, but its individual rows describe only immediate neighbors. Global geometry also depends on how these neighborhoods connect. We expose this structure with the lazy transition operator $\widetilde P^T=\tfrac12(I+P^T)$. For a selected set of scales $\mathcal R$ containing $1$, the teacher diffusion profiles are
 \begin{equation}
 \label{eq:diffusion-targets}
-    p^T_{i,r}
-    =
-    \left.
-    \delta_i^\top(\widetilde P^T)^r
-    \right|_{\mathcal D\setminus\{i\}},
-    \qquad r\in\{2,4\},
+g^T_{i,1}=P_i^T,
+\qquad
+g^T_{i,r}
+=\left.\delta_i^\top(\widetilde P^T)^r\right|_{\mathcal D\setminus\{i\}},
+\quad r\in\mathcal R\setminus\{1\}.
 \end{equation}
-where the trivial self column is removed and the remaining mass is renormalized. This construction has the interpretation of diffusion on a sampled manifold~\citep{coifman2006diffusionmaps}, but the method and results concern the finite teacher operator directly.
+Every profile is viewed as a distribution on the common corpus index set, with zero mass at excluded entries. The one-step profile preserves direct teacher neighbors, whereas broader profiles summarize the corpus regions connected to an anchor~\citep{coifman2006diffusionmaps}. We use the collection $\{g^T_{i,r}\}_{i,r}$ as a multi-scale representation of teacher geometry.
 
-The student does not construct a second graph during training. Its one-step row is read from its cosine scores on the \emph{teacher} support and bandwidth,
+At each scale, the ideal full-corpus student profile is the direct readout
 \begin{equation}
-\label{eq:student-operator}
-    P_i^S
-    =
-    \operatorname{softmax}_{j\in\mathcal M_k^T(i)}
-    \!\left(c^S_{ij}/\tau_i\right).
+\label{eq:student-global-profile}
+g^S_{i,r}(j)
+=\frac{\exp(c^S_{ij}/\tau_{i,r})}
+{\sum_{\ell\neq i}\exp(c^S_{i\ell}/\tau_{i,r})},
+\qquad j\neq i.
 \end{equation}
-Matching this local object controls the diffusion generated by the student rows on the same support.
-
-\begin{theorem}[Local-to-global operator transfer]
-\label{thm:global}
-Let $P^T$ and $P^S$ be teacher and student transition matrices on the same support. Suppose that, for every row $i$, one-step matching on a candidate set $C_i$ satisfies
-$D_{\mathrm{KL}}(P_i^T|_{C_i}\,\|\,P_i^S|_{C_i})\leq\varepsilon$,
-while $P_i^T(C_i)\geq1-\delta_T$ and $P_i^S(C_i)\geq1-\delta_S$. Then, for every $r\geq1$,
+This is the ideal full-corpus object approximated by the RIPPLE loss; it does not posit a student Markov walk. We measure the geometry induced by these profiles through
 \begin{equation}
-\label{eq:local-global-bound}
-    \max_i
-    \mathrm{TV}\!\left(
-        \delta_i^\top(\widetilde P^T)^r,
-        \delta_i^\top(\widetilde P^S)^r
-    \right)
-    \leq
-    \frac r2
-    \left(\sqrt{\varepsilon/2}+\delta_T+\delta_S\right).
+\label{eq:diffusion-distance}
+d_r^M(i,j)=\mathrm{TV}(g^M_{i,r},g^M_{j,r}),
+\qquad M\in\{T,S\}.
+\end{equation}
+
+\begin{theorem}[Diffusion-geometry preservation]
+\label{thm:profile-geometry}
+Fix a scale $r$. If
+$\max_i D_{\mathrm{KL}}(g^T_{i,r}\|g^S_{i,r})\leq\varepsilon_r$, then
+\begin{equation}
+\label{eq:profile-uniform-bound}
+\sup_{i,j}|d_r^T(i,j)-d_r^S(i,j)|
+\leq\sqrt{2\varepsilon_r}.
+\end{equation}
+Moreover, for
+$\bar\varepsilon_r=N^{-1}\sum_iD_{\mathrm{KL}}(g^T_{i,r}\|g^S_{i,r})$,
+\begin{equation}
+\label{eq:profile-average-bound}
+\frac1{N^2}\sum_{i,j}|d_r^T(i,j)-d_r^S(i,j)|
+\leq\sqrt{2\bar\varepsilon_r}.
 \end{equation}
 \end{theorem}
 
-Thus one-step supervision is sufficient for conditional local-to-global control, but its worst-case bound grows linearly with diffusion time. RIPPLE additionally asks the same student cosine field to predict the teacher's broader rows. At scale $r$, define the full student score readout
-\begin{equation}
-\label{eq:scale-readout}
-    q^S_{i,r}(j)
-    \propto
-    \exp\!\left(c^S_{ij}/\tau_r(i)\right),
-    \qquad j\neq i.
-\end{equation}
-Unlike $(\widetilde P^S)^r$, this is a scale-specific readout of student scores rather than a separately materialized student diffusion. It provides direct supervision at the teacher's broader neighborhood scale.
+Theorem~\ref{thm:profile-geometry} connects the training target to the central goal: aligning anchor profiles controls distortion of the pairwise diffusion geometry. RIPPLE therefore matches teacher diffusion profiles directly at multiple resolutions. The proof is in Appendix~\ref{app:proof-profile}; the scale construction and temperatures are deferred to Appendix~\ref{app:hyper-ladder}.
 
-\begin{corollary}[Direct multi-scale tightening]
-\label{cor:multiscale}
-If at a scale $r$ the restricted divergence satisfies
-$D_{\mathrm{KL}}(p^T_{i,r}|_{C_i}\,\|\,q^S_{i,r}|_{C_i})\leq\varepsilon_r$
-and the teacher and student score rows place at most $\delta_T$ and $\delta_S$ mass outside $C_i$, then
-\begin{equation}
-    \mathrm{TV}(p^T_{i,r},q^S_{i,r})
-    \leq
-    \sqrt{\varepsilon_r/2}+\delta_T+\delta_S,
-\end{equation}
-with no propagation factor $r$.
-\end{corollary}
-
-The corollary does not claim that a softmax readout equals the student's $r$-step Markov row. It states the narrower fact used by the objective: direct scale-$r$ supervision avoids relying only on the propagated one-step bound. Section~\ref{sec:analysis} tests whether this surrogate also reduces the measured student-operator diffusion error at held-out scales.
-
-Different teacher diffusion times cannot be matched meaningfully by one shared student distribution. For the graph scales we use a common candidate domain $C_i$ and scale-specific resolutions $\tau_r(i)=\sqrt r\,\tau_i$, with $\tau_1(i)=\tau_i$.
-
-\begin{proposition}[Collapse under a shared resolution]
-\label{prop:collapse}
-Let all graph scales for anchor $i$ share the same student distribution $q_i^S$ on the same support, and let $\sum_r\omega_r=1$. Then
-\begin{equation}
-    \sum_r\omega_rD_{\mathrm{KL}}(p^T_{i,r}\,\|\,q_i^S)
-    =
-    H\!\left(\sum_r\omega_rp^T_{i,r},q_i^S\right)
-    -
-    \sum_r\omega_rH(p^T_{i,r}),
-\end{equation}
-so optimization is equivalent to matching the single mixture $\sum_r\omega_rp^T_{i,r}$.
-\end{proposition}
-
-Scale-specific temperatures make the student distributions distinct functions of the same cosine scores, preventing this algebraic collapse. By construction, the $r=1$ and walk readouts reuse the bandwidth of their teacher transition row, and the ambient target uses the same $\tau_0$ on both sides; Appendix~\ref{app:hyper} records the remaining temperature ladder.
-
-\subsection{Efficient Candidate Sampling}
+\subsection{Mass-Aware Candidate Sampling}
 \label{sec:candidates}
 
-The support of an $r$-step teacher row can be much larger than $k$, so scoring every anchor against every reachable corpus example is unnecessary and expensive. RIPPLE samples a small set from the target mass.
+Diffusion supplies corpus-level supervision, but it also expands the support of each target. Scoring all $N$ corpus columns per anchor would eliminate the efficiency of mini-batch training. RIPPLE instead samples candidates from the teacher target mass.
 
-\begin{proposition}[Mass missed by sampled candidates]
-\label{prop:sampling}
-Let $p$ be a target distribution and let $C$ contain $m$ independent draws from $p$. Then
+\begin{lemma}[Mass coverage of target-proportional sampling]
+\label{lem:sampling}
+Let $p$ be a distribution and let $C_m$ contain the distinct atoms observed in $m$ independent draws from $p$. Then
 \begin{equation}
-\label{eq:sampling-bound}
-    \mathbb E\!\left[\mathrm{TV}(p|_C,p)\right]
-    =
-    \mathbb E[p(\bar C)]
-    \leq
-    \min_{t>0}
-    \left(e^{-tm}+\mathrm{Tail}_p(t)\right),
-    \qquad
-    \mathrm{Tail}_p(t)=\sum_{j:p_j<t}p_j.
+\label{eq:sampling-mass}
+\mathbb E[p(C_m^c)]
+=\sum_jp_j(1-p_j)^m
+\leq e^{-mt}+\operatorname{Tail}_p(t),
+\qquad
+\operatorname{Tail}_p(t)=\sum_{j:p_j<t}p_j,
 \end{equation}
-If every supported atom has mass at least $c/\rho_p$, where $\rho_p=e^{H(p)}$ is the effective support of the particular target $p$, the expected missed mass is at most $e^{-cm/\rho_p}$.
-\end{proposition}
+for every $t>0$.
+\end{lemma}
 
-The relevant budget is therefore the target's effective support, not the corpus size and not the raw number of nodes reachable by diffusion. In the regime studied here, this permits $m\ll k$. The implementation draws high-mass diffusion candidates without replacement using Gumbel top-$k$ sampling~\citep{efraimidis2006weighted,kool2019stochastic}, then adds teacher hard negatives and random negatives. These negatives expose the student to columns outside the retained diffusion mass and empirically control the student leakage term $\delta_S$ in Theorem~\ref{thm:global}; the theorem keeps this quantity as an explicit hypothesis.
+Lemma~\ref{lem:sampling} shows why this approximation can remain compact: candidate coverage is governed by the concentration of the target, rather than directly by corpus size. RIPPLE applies the result at each scale, retains the highest-mass entries, and samples the remaining mass-aware quota without replacement. Appendix~\ref{app:proof-sampling} gives the proof and implementation connection.
 
-For a mini-batch $B$, candidate sets are pooled into
-$\mathcal P_B=\bigcup_{i\in B}C_i$ and deduplicated. Every pooled text is encoded once, while each anchor can be compared with the shared pool. Graph-scale targets are normalized on the anchor's own $C_i$. A dense ambient target supplies teacher similarities for the wider shared pool,
+For anchor $i$, the scale-wise draws are merged with hard and random negatives into one shared candidate set $C_i$. For each scale, define
 \begin{equation}
-\label{eq:ambient}
-    p^T_{i,0}(j)
-    =
-    \frac{\exp(c^T_{ij}/\tau_0)}
-    {\sum_{j'\in\mathcal P_B\setminus\{i\}}\exp(c^T_{ij'}/\tau_0)},
-    \qquad j\in\mathcal P_B\setminus\{i\}.
+\kappa_{i,r}
+=D_{\mathrm{KL}}(g^T_{i,r}|_{C_i}\|g^S_{i,r}|_{C_i}),
+\quad
+\delta^T_{i,r}=g^T_{i,r}(C_i^c),
+\quad
+\delta^S_{i,r}=g^S_{i,r}(C_i^c).
 \end{equation}
-This ambient member prevents graph-external columns from being treated as false zero-mass relations; it is included in the complete geometry loss below but is not itself a diffusion time.
+
+\begin{corollary}[Sampled control of diffusion geometry]
+\label{cor:sampled-topology}
+Let
+$\eta_{i,r}=\sqrt{\kappa_{i,r}/2}+\delta^T_{i,r}+\delta^S_{i,r}$.
+For any pair of anchors $i,j$,
+\begin{equation}
+\label{eq:sampled-topology-bound}
+|d_r^T(i,j)-d_r^S(i,j)|
+\leq\eta_{i,r}+\eta_{j,r}.
+\end{equation}
+\end{corollary}
+
+Corollary~\ref{cor:sampled-topology} connects the sampled objective back to global geometry. Its bound separates restricted matching error, missed teacher mass, and student leakage. Target-proportional sampling reduces $\delta^T$; hard and random negatives, together with an ambient comparison term, are used to discourage $\delta^S$. We measure the latter rather than claiming that finite negative samples guarantee full-corpus leakage control.
+
+For an anchor batch $B$, we pool and deduplicate its candidates,
+\begin{equation}
+\label{eq:pooled-candidates}
+\mathcal P_B=\bigcup_{i\in B}C_i.
+\end{equation}
+Each text in $\mathcal P_B$ is encoded once, while every anchor retains its own target on its sampled support. To expose mass outside the graph-selected candidates, we also use an ambient profile
+$g^M_{i,0}=\operatorname{softmax}_{j\neq i}(c^M_{ij}/\tau_0)$ for $M\in\{T,S\}$.
+Let $\mathcal R_0=\{0\}\cup\mathcal R$, with $\Omega_{i,0}=\mathcal P_B\setminus\{i\}$ and $\Omega_{i,r}=C_i$ for $r\geq1$. The resulting multi-scale geometry loss is
+\begin{equation}
+\label{eq:ldiff}
+\mathcal L_{\mathrm{diff}}
+=\frac1{|B|}\sum_{i\in B}\sum_{r\in\mathcal R_0}
+\omega_rD_{\mathrm{KL}}
+\left(g^T_{i,r}|_{\Omega_{i,r}}\|g^S_{i,r}|_{\Omega_{i,r}}\right).
+\end{equation}
 
 \subsection{Row Supervision for Cross-Anchor Consistency}
 \label{sec:walk}
 
-Matching a normalized row determines relative scores within that row but not its additive origin. This is an ambiguity of the score-level observation map, not a claim that arbitrary shifted rows form a realizable cosine Gram matrix.
+Mass-aware sampling makes global-profile matching computationally feasible, but a second gap remains. A student embedding induces one symmetric cosine geometry, whereas the softmax loss normalizes every anchor row independently. Perfect row matching can therefore preserve within-row probabilities without fully coupling the underlying similarities across anchors.
 
-\begin{proposition}[Row-wise additive ambiguity]
-\label{prop:gauge}
-On a fixed column set $\Omega_i$, any row-wise softmax term is invariant under
-$c^S_{ij}\mapsto c^S_{ij}+a_i$. If teacher and student softmaxes use the same temperature, $|\Omega_i|\geq2$, and the term is zero, then
+\begin{proposition}[Softmax gauge and reciprocal-overlap consistency]
+\label{prop:row-consistency}
+Suppose teacher and student one-step rows use the same temperature on a column set $\Omega_i$ with $|\Omega_i|\geq2$. If their row softmaxes coincide, then there is a row-dependent constant $a_i$ such that
 \begin{equation}
-    c^S_{ij}=c^T_{ij}+a_i,
-    \qquad j\in\Omega_i,
+\label{eq:row-gauge}
+c^S_{ij}=c^T_{ij}+a_i,
+\qquad j\in\Omega_i.
 \end{equation}
-for some row-dependent constant $a_i$.
+Construct the reciprocal-overlap graph on supervised rows, with an edge $\{u,v\}$ whenever $v\in\Omega_u$ and $u\in\Omega_v$. The offsets are constant on every connected component of this graph.
 \end{proposition}
 
-RIPPLE uses teacher random walks to choose additional rows whose supports overlap along teacher edges. From each anchor $i\in B$, it samples $M$ non-backtracking walks of length $L$,
+Proposition~\ref{prop:row-consistency} identifies the missing constraint: reciprocal overlap collapses independent row gauges to one component-wise constant. RIPPLE creates these constraints by following the teacher transition graph and supervising the rows encountered along its paths. Starting at an anchor, a walk visits
 \begin{equation}
 \label{eq:walk}
-    j^{(m)}_0=i,
-    \qquad
-    j^{(m)}_{t+1}\sim P^T_{j^{(m)}_t},
-    \qquad t=0,\ldots,L-1.
+j_0=i,
+\qquad
+j_{t+1}\sim P^T_{j_t}.
 \end{equation}
-The anchor row at $t=0$ is already supervised by the one-step target. For every visited row $u$ at $t\geq1$, let
-$\Omega_u^w=\mathcal P_B\cap\mathcal M_k^T(u)$ and let $\nu_B(u)$ be its normalized visit count. RIPPLE matches the stored teacher row on this overlap:
+For every visited row $u$ with $|\Omega_u^w|\geq2$, let $\Omega_u^w=\mathcal P_B\cap\mathcal M_k^T(u)$ and let $\nu_B(u)$ be its normalized visit count. We add
 \begin{equation}
 \label{eq:lrow}
-    \mathcal L_{\mathrm{row}}
-    =
-    \sum_u\nu_B(u)
-    D_{\mathrm{KL}}\!\left(
-        P_u^T|_{\Omega_u^w}
-        \,\middle\|\,
-        \operatorname{softmax}_{v\in\Omega_u^w}
-        (c^S_{uv}/\tau_u)
-    \right).
+\mathcal L_{\mathrm{row}}
+=\sum_u\nu_B(u)
+D_{\mathrm{KL}}\!\left(
+P_u^T|_{\Omega_u^w}\ \middle\|\
+\operatorname{softmax}_{v\in\Omega_u^w}(c^S_{uv}/\tau_u)
+\right).
 \end{equation}
-Visited nodes replace random candidates when possible, so the term largely reuses texts already encoded for the batch.
+A realized walk edge supplies a reciprocal constraint whenever both endpoints and cross-columns are present in the supervised pool. Thus the teacher graph not only selects informative columns, but also selects the additional rows needed to connect their normalization gauges. These rows largely reuse existing encodings. Sampling details are given in Appendix~\ref{app:hyper-nonbacktracking}, and Proposition~\ref{prop:row-consistency} is proved in Appendix~\ref{app:proof-gauge}.
 
-\begin{proposition}[Consistency induced by overlapping rows]
-\label{prop:walkgauge}
-Let $\mathcal S$ be the supervised rows and construct a constraint graph $\mathcal G$ on $\mathcal S$, with an edge $\{u,v\}$ whenever $v\in\Omega_u$, $u\in\Omega_v$, and both corresponding same-temperature row terms vanish. Then the score-level offsets of Proposition~\ref{prop:gauge} satisfy $a_u=a_v$ on every edge. Hence admissible row offsets are constant on each connected component of $\mathcal G$, leaving at most one offset per component rather than one per isolated row.
-\end{proposition}
-
-The mechanism is cosine symmetry: $c^S_{uv}=c^S_{vu}$ and $c^T_{uv}=c^T_{vu}$ force the two row offsets to agree. Consecutive nodes of a walk are mutual graph neighbors and their supervised rows therefore add precisely these reciprocal constraints. At nonzero loss the statement is approximate; Appendix~\ref{app:proof-gauge} bounds edge-wise offset disagreement and records the coverage argument for walk-selected rows.
-
-\subsection{Full Objective and Complexity}
-\label{sec:objective}
-
-Let $\mathcal R=\{0,1,2,4\}$, with $\Omega_{i,0}=\mathcal P_B\setminus\{i\}$ and $\Omega_{i,r}=C_i$ for $r\geq1$. The student distribution at each scale is
+The two components give the RIPPLE objective
 \begin{equation}
-\label{eq:student}
-    p^S_{i,r}(j)
-    =
-    \frac{\exp(c^S_{ij}/\tau_r(i))}
-    {\sum_{j'\in\Omega_{i,r}}\exp(c^S_{ij'}/\tau_r(i))},
-    \qquad j\in\Omega_{i,r},
+\label{eq:full-objective}
+\mathcal L_{\mathrm{RIPPLE}}
+=\mathcal L_{\mathrm{diff}}+\lambda\mathcal L_{\mathrm{row}}.
 \end{equation}
-where $\tau_0$ is shared by the teacher and student ambient targets, $\tau_1(i)=\tau_i$, and $\tau_r(i)=\sqrt r\,\tau_i$ for $r>1$. With graph targets restricted to $C_i$, the anchored geometry loss is
-\begin{equation}
-\label{eq:ldiff}
-    \mathcal L_{\mathrm{diff}}
-    =
-    \frac1{|B|}
-    \sum_{i\in B}
-    \sum_{r\in\mathcal R}
-    \omega_r
-    D_{\mathrm{KL}}\!\left(
-        p^T_{i,r}|_{\Omega_{i,r}}
-        \,\|\,
-        p^S_{i,r}
-    \right).
-\end{equation}
-The ambient term $r=0$ is thus explicit inside $\mathcal L_{\mathrm{diff}}$. The complete objective is
-\begin{equation}
-\boxed{
-    \mathcal L_{\mathrm{RIPPLE}}
-    =
-    \mathcal L_{\mathrm{diff}}
-    +
-    \lambda\mathcal L_{\mathrm{row}}.
-}
-\end{equation}
-
-Teacher encoding is a one-time cost. The current exact nearest-neighbor implementation computes all corpus cosine similarities in $O(N^2d_T)$ time using chunked memory, retains $O(Nk)$ graph edges, and stores sparse diffusion rows truncated by a fixed mass tolerance. Approximate nearest-neighbor search could replace the quadratic graph-build step, but is not used in the reported experiments. During student training, a batch encodes at most $|B|+|\mathcal P_B|\leq |B|(m+1)$ texts and forms $O(|B||\mathcal P_B|d_S)$ anchor--candidate similarity work. The row term reuses the pooled encodings and adds only similarities on visited-row overlaps. No teacher forward pass, teacher hidden state, task label, or additional inference-time component is required; after preprocessing, the teacher is discarded.
+The graph, scales, sampling budgets, temperatures, and loss weights are specified in Appendix~\ref{app:hyper}. Exact graph construction costs $O(N^2d_T)$ before sparsification and stores $O(Nk)$ edges; approximate nearest-neighbor search can replace it at larger scale. Each update encodes at most $|B|+|\mathcal P_B|$ texts. The teacher graph and all distillation machinery disappear at inference.

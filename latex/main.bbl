@@ -14,12 +14,13 @@ Mohammad~Kalim Akram, Saba Sturua, Nastia Havriushenko, Quentin Herreros,
 \newblock \doi{10.48550/arXiv.2602.15547}.
 \newblock URL \url{https://arxiv.org/abs/2602.15547}.
 
-\bibitem[Alon et~al.(2007)Alon, Benjamini, Lubetzky, and
-  Sodin]{alon2007nonbacktracking}
-Noga Alon, Itai Benjamini, Eyal Lubetzky, and Sasha Sodin.
-\newblock Non-backtracking random walks mix faster.
-\newblock \emph{Communications in Contemporary Mathematics}, 9\penalty0
-  (4):\penalty0 585--603, 2007.
+\bibitem[Belkin \& Niyogi(2003)Belkin and Niyogi]{belkin2003laplacian}
+Mikhail Belkin and Partha Niyogi.
+\newblock Laplacian eigenmaps for dimensionality reduction and data
+  representation.
+\newblock \emph{Neural Computation}, 15\penalty0 (6):\penalty0 1373--1396,
+  2003.
+\newblock \doi{10.1162/089976603321780317}.
 
 \bibitem[Coifman \& Lafon(2006)Coifman and Lafon]{coifman2006diffusionmaps}
 Ronald~R. Coifman and St{\'e}phane Lafon.
@@ -35,13 +36,6 @@ Quoc~Phong Dao, Hoang~Son Nguyen, Khanh~Chi Pham, Linh Ngo~Van, Diep Thi-Ngoc
 \newblock {TALAS}: Teacher-anchored layer alignment with adaptive
   sharpness-aware minimization for embedding distillation, 2026.
 \newblock Manuscript.
-
-\bibitem[Efraimidis \& Spirakis(2006)Efraimidis and
-  Spirakis]{efraimidis2006weighted}
-Pavlos~S. Efraimidis and Paul~G. Spirakis.
-\newblock Weighted random sampling with a reservoir.
-\newblock \emph{Information Processing Letters}, 97\penalty0 (5):\penalty0
-  181--185, 2006.
 
 \bibitem[Gao et~al.(2021)Gao, Wu, Wang, Wang, Zang, Wang, and
   Hu]{gao2021distilcse}
@@ -59,12 +53,6 @@ Jianping Gou, Xiaomeng Xin, Baosheng Yu, Heping Song, Weiyong Zhang, and
 \newblock Neighborhood relation-based knowledge distillation for image
   classification.
 \newblock \emph{Neural Networks}, 188:\penalty0 107429, 2025.
-
-\bibitem[Hinton \& Roweis(2002)Hinton and Roweis]{hinton2002sne}
-Geoffrey~E. Hinton and Sam~T. Roweis.
-\newblock Stochastic neighbor embedding.
-\newblock In \emph{Advances in Neural Information Processing Systems},
-  volume~15, pp.\  857--864, 2002.
 
 \bibitem[Hinton et~al.(2015)Hinton, Vinyals, and Dean]{hinton2015distilling}
 Geoffrey~E. Hinton, Oriol Vinyals, and Jeffrey Dean.
@@ -92,6 +80,13 @@ Xiaoqi Jiao, Yichun Yin, Lifeng Shang, Xin Jiang, Xiao Chen, Linlin Li, Fang
 \newblock \doi{10.18653/v1/2020.findings-emnlp.372}.
 \newblock URL \url{https://aclanthology.org/2020.findings-emnlp.372/}.
 
+\bibitem[Kim et~al.(2024)Kim, You, Lee, Kim, and Jung]{kim2024topkd}
+Jungeun Kim, Junwon You, Dongjin Lee, Ha~Young Kim, and Jae-Hun Jung.
+\newblock Do topological characteristics help in knowledge distillation?
+\newblock In \emph{Proceedings of the 41st International Conference on Machine
+  Learning}, volume 235, pp.\  24674--24693. PMLR, 2024.
+\newblock URL \url{https://proceedings.mlr.press/v235/kim24aj.html}.
+
 \bibitem[Kim et~al.(2023)Kim, Rawat, Zaheer, Jayasumana, Sadhanala, Jitkrittum,
   Menon, Fergus, and Kumar]{kim2023embeddistill}
 Seungyeon Kim, Ankit~Singh Rawat, Manzil Zaheer, Sadeep Jayasumana,
@@ -100,14 +95,6 @@ Seungyeon Kim, Ankit~Singh Rawat, Manzil Zaheer, Sadeep Jayasumana,
 \newblock Embeddistill: A geometric knowledge distillation for information
   retrieval.
 \newblock \emph{arXiv preprint arXiv:2301.12005}, 2023.
-
-\bibitem[Kool et~al.(2019)Kool, van Hoof, and Welling]{kool2019stochastic}
-Wouter Kool, Herke van Hoof, and Max Welling.
-\newblock Stochastic beams and where to find them: The gumbel-top-k trick for
-  sampling sequences without replacement.
-\newblock In \emph{Proceedings of the 36th International Conference on Machine
-  Learning, {ICML} 2019, Long Beach, California, {USA}}, pp.\  3499--3508.
-  {PMLR}, 2019.
 
 \bibitem[Lee et~al.(2024)Lee, Dai, Ren, Chen, Cer, Cole, Hui, Boratko, Kapadia,
   Ding, Luan, Duddu, Abrego, Shi, Gupta, Kusupati, Jain, Jonnalagadda, Chang,
@@ -122,6 +109,13 @@ Jinhyuk Lee, Zhuyun Dai, Xiaoqi Ren, Blair Chen, Daniel Cer, Jeremy~R. Cole,
 \newblock \emph{CoRR}, abs/2403.20327, 2024.
 \newblock \doi{10.48550/arXiv.2403.20327}.
 \newblock URL \url{https://arxiv.org/abs/2403.20327}.
+
+\bibitem[Liu et~al.(2019)Liu, Cao, Li, Yuan, Hu, Li, and Duan]{liu2019irg}
+Yufan Liu, Jiajiong Cao, Bing Li, Chunfeng Yuan, Weiming Hu, Yangxi Li, and
+  Yunqiang Duan.
+\newblock Knowledge distillation via instance relationship graph.
+\newblock In \emph{Proceedings of the IEEE/CVF Conference on Computer Vision
+  and Pattern Recognition}, pp.\  7096--7104, 2019.
 
 \bibitem[Park et~al.(2019)Park, Kim, Lu, and Cho]{park2019rkd}
 Wonpyo Park, Dongju Kim, Yan Lu, and Minsu Cho.
@@ -145,10 +139,12 @@ Victor Sanh, Lysandre Debut, Julien Chaumond, and Thomas Wolf.
 \newblock \emph{CoRR}, abs/1910.01108, 2019.
 \newblock URL \url{http://arxiv.org/abs/1910.01108}.
 
-\bibitem[Singh \& Wang(2024)Singh and Wang]{singh2024coss}
-Aditya Singh and Haohan Wang.
-\newblock Simple unsupervised knowledge distillation with space similarity.
-\newblock \emph{arXiv preprint arXiv:2409.13939}, 2024.
+\bibitem[Sun et~al.(2009)Sun, Ovsjanikov, and Guibas]{sun2009hks}
+Jian Sun, Maks Ovsjanikov, and Leonidas~J. Guibas.
+\newblock A concise and provably informative multi-scale signature based on
+  heat diffusion.
+\newblock \emph{Computer Graphics Forum (Proc. SGP)}, 28\penalty0 (5):\penalty0
+  1383--1392, 2009.
 
 \bibitem[Tian et~al.(2025)Tian, Pei, Zhang, Zhang, and
   Chawla]{yang2023graphkd_survey}
@@ -159,19 +155,23 @@ Yijun Tian, Shichao Pei, Xiangliang Zhang, Chuxu Zhang, and Nitesh~V. Chawla.
 \newblock \doi{10.1145/3711121}.
 \newblock URL \url{https://doi.org/10.1145/3711121}.
 
-\bibitem[van~der Maaten \& Hinton(2008)van~der Maaten and
-  Hinton]{maaten2008tsne}
-Laurens van~der Maaten and Geoffrey Hinton.
-\newblock Visualizing data using t-{SNE}.
-\newblock \emph{Journal of Machine Learning Research}, 9\penalty0
-  (86):\penalty0 2579--2605, 2008.
+\bibitem[Truong et~al.(2025)Truong, Vu, Vu, Diep, Van, Nguyen, and
+  Le]{truong2025emo}
+Minh-Phuc Truong, Hai~An Vu, Tu~Vu, Nguyen Thi~Ngoc Diep, Linh~Ngo Van,
+  Thien~Huu Nguyen, and Trung Le.
+\newblock {EMO}: Embedding model distillation via intra-model relation and
+  optimal transport alignments.
+\newblock In \emph{Proceedings of the 2025 Conference on Empirical Methods in
+  Natural Language Processing}, pp.\  7594--7606. Association for Computational
+  Linguistics, 2025.
+\newblock \doi{10.18653/v1/2025.emnlp-main.385}.
+\newblock URL \url{https://aclanthology.org/2025.emnlp-main.385/}.
 
-\bibitem[Vladymyrov \& Carreira-Perpi{\~n}{\'a}n(2013)Vladymyrov and
-  Carreira-Perpi{\~n}{\'a}n]{vladymyrov2013entropic}
-Max Vladymyrov and Miguel~{\'A}. Carreira-Perpi{\~n}{\'a}n.
-\newblock Entropic affinities: Properties and efficient numerical computation.
-\newblock In \emph{Proceedings of the 30th International Conference on Machine
-  Learning}, volume~28 of \emph{PMLR}, pp.\  477--485, 2013.
+\bibitem[Tung \& Mori(2019)Tung and Mori]{tung2019similarity}
+Frederick Tung and Greg Mori.
+\newblock Similarity-preserving knowledge distillation.
+\newblock In \emph{Proceedings of the IEEE/CVF International Conference on
+  Computer Vision}, pp.\  1365--1374, 2019.
 
 \bibitem[Vujanic \& Rueckstiess(2025)Vujanic and Rueckstiess]{vujanic2025leaf}
 Robin Vujanic and Thomas Rueckstiess.
@@ -214,6 +214,13 @@ Xiaohan Xu, Ming Li, Chongyang Tao, Tao Shen, Reynold Cheng, Jinyang Li, Can
 \newblock \emph{CoRR}, abs/2402.13116, 2024.
 \newblock \doi{10.48550/arXiv.2402.13116}.
 \newblock URL \url{https://arxiv.org/abs/2402.13116}.
+
+\bibitem[Yang et~al.(2022)Yang, Wu, and Yan]{yang2022geometrickd}
+Chenxiao Yang, Qitian Wu, and Junchi Yan.
+\newblock Geometric knowledge distillation: Topology compression for graph
+  neural networks.
+\newblock In \emph{Advances in Neural Information Processing Systems},
+  volume~35, pp.\  29761--29775, 2022.
 
 \bibitem[Zhang et~al.(2024)Zhang, Li, Zeng, and Wang]{zhang2024jasperstella}
 Dun Zhang, Jiacheng Li, Ziyang Zeng, and Fulong Wang.

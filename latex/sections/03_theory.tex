@@ -1,56 +1,42 @@
-\section{Why Mini-Batch Relations Are Insufficient}
+\section{Global Geometry and the Mini-Batch Relation Gap}
 \label{sec:theory}
 
-Relational distillation compares teacher and student similarities over examples that happen to co-occur in a stochastic mini-batch~\citep{park2019rkd,passalis2020pkt}. We separate two limitations of this sampling scheme. First, a batch covers almost none of an anchor's teacher neighborhood. Second, relations that are never sampled are absent from the empirical score-level objective. The first is a coverage statement; the second is an identification statement. Neither depends on the optimizer. Proofs are in Appendix~\ref{app:proofs}.
-
-\paragraph{Setup and notation.}
-Let $\mathcal{D}=\{x_i\}_{i=1}^{N}$ be an unlabeled distillation corpus with cached unit-normalized teacher embeddings $t_i$, write $c^T_{ij}=\cos(t_i,t_j)$, and let $\mathcal{N}_k(i)$ be the $k$ nearest neighbors of $x_i$ under $c^T$. A student encoder $S_\theta$ produces embeddings $s_i$ and scores $c^S_{ij}=\cos(s_i,s_j)$. We model each epoch as a uniformly random partition of $\mathcal{D}$ into batches of size $B$, independently resampled between epochs. At temperature $\tau_0$, a representative batch-relational objective compares
+\paragraph{Global geometry alignment.}
+Let $\mathcal D=\{x_i\}_{i=1}^{N}$ be an unlabeled corpus. The teacher produces unit-normalized embeddings $t_i$ and cosine scores $c^T_{ij}=\cos(t_i,t_j)$; the student analogously produces $s_i$ and $c^S_{ij}$. We use \emph{global geometry} to refer to teacher-defined relations over $\mathcal D$, including the immediate teacher neighborhood
 \begin{equation}
-    \label{eq:batchrel}
-    p^{T,\mathcal{B}}_i(j)\propto\exp\!\big(c^T_{ij}/\tau_0\big),
-    \qquad
-    p^{S,\mathcal{B}}_i(j)\propto\exp\!\big(c^S_{ij}/\tau_0\big),
-    \qquad j\in\mathcal{B}\setminus\{i\},
+\label{eq:global-neighborhood}
+\mathcal N_k^T(i)
+=\operatorname{TopK}_{j\in\mathcal D\setminus\{i\}} c^T_{ij}
 \end{equation}
-through $\mathcal{L}_{\mathcal{B}}=\frac{1}{|\mathcal{B}|}\sum_{i\in\mathcal{B}}D_{\mathrm{KL}}\big(p^{T,\mathcal{B}}_i\,\|\,p^{S,\mathcal{B}}_i\big)$.
+and the multi-hop organization of these neighborhoods. The goal is to align this corpus-level structure between teacher and student.
 
-\begin{proposition}[Neighborhood coverage]
+\paragraph{Batch-local relational KD.}
+For a mini-batch $\mathcal B\ni i$, let $\mathcal L_{\mathcal B}(i)=\mathcal B\setminus\{i\}$ denote the available comparison support. A representative relational objective compares
+\begin{equation}
+\label{eq:batchrel}
+p_i^{T,\mathcal B}(j)\propto e^{c^T_{ij}/\tau_0},\qquad
+p_i^{S,\mathcal B}(j)\propto e^{c^S_{ij}/\tau_0},
+\qquad j\in\mathcal L_{\mathcal B}(i),
+\end{equation}
+through $D_{\mathrm{KL}}(p_i^{T,\mathcal B}\|p_i^{S,\mathcal B})$. Although the target is global geometry, the support of this loss is determined by the data loader and is independent of $\mathcal N_k^T(i)$.
+
+\begin{proposition}[Batch-local support blindness]
 \label{prop:coverage}
-Fix an anchor $i$ and let $\mathcal{B}\ni i$ be its batch. Then
-\begin{align}
-\mathbb{E}\left|\mathcal{B}\cap\mathcal{N}_k(i)\right|
-&=\frac{(B-1)k}{N-1}, \\
-\Pr\!\left[\mathcal{B}\cap\mathcal{N}_k(i)=\emptyset\right]
-&=\frac{\binom{N-1-k}{B-1}}{\binom{N-1}{B-1}}
-\geq 1-\frac{(B-1)k}{N-1}.
-\end{align}
-Across $T$ independently resampled epochs, the expected fraction of the $k$ neighbor pairs that ever co-occur with $i$ is exactly
+Assume that each epoch partitions the corpus uniformly into batches of size $B$. For an anchor $i$, let
+\begin{equation}
+\mathcal O_i^{(T)}=\bigcup_{e=1}^{T}\mathcal L_{\mathcal B_e}(i)
+\end{equation}
+be the examples compared with $i$ during $T$ independently reshuffled epochs. Then
 \begin{equation}
 \label{eq:coverage-exact}
-q_T
-=
-1-\left(1-\frac{B-1}{N-1}\right)^T
-\leq
-\frac{T(B-1)}{N-1}
-=O\!\left(\frac{TB}{N}\right).
+\mathbb E\!\left[
+\frac{|\mathcal O_i^{(T)}\cap\mathcal N_k^T(i)|}{k}
+\right]
+=q_T
+=1-\left(1-\frac{B-1}{N-1}\right)^T
+\leq\frac{T(B-1)}{N-1}.
 \end{equation}
+Moreover, the realized batch-relational objective depends on the $i$-th student score row only through $\{c^S_{ij}:j\in\mathcal O_i^{(T)}\}$. Scores $c^S_{ij}$ with $j\notin\mathcal O_i^{(T)}$ are therefore unidentified by that empirical objective.
 \end{proposition}
 
-Thus $q_T=o(1)$ whenever $TB=o(N)$. The exposed \emph{fraction} is independent of $k$: enlarging the nominal neighborhood increases the absolute number of relevant relations, but uniform batches still reveal the same vanishing fraction of them. Coverage alone could still be viewed as a sample-efficiency problem. The next result states what the realized objective can identify from the comparisons it actually contains.
-
-\begin{proposition}[Score-level under-identification]
-\label{prop:underdet}
-Fix all batches realized over $T$ epochs and let
-$\mathcal{O}_i^T=\bigcup_{\mathcal{B}\ni i}(\mathcal{B}\setminus\{i\})$
-be the columns ever compared with anchor $i$.
-(i) A realized batch term is zero if and only if, for every $i\in\mathcal{B}$, there is a constant $a_i^{\mathcal{B}}$ such that
-$c^S_{ij}=c^T_{ij}+a_i^{\mathcal{B}}$ for all $j\in\mathcal{B}\setminus\{i\}$.
-(ii) Viewed as a function of its score arguments, the empirical objective depends on row $i$ only through $\{c^S_{ij}:j\in\mathcal{O}_i^T\}$. Any two score arrays that agree on these observed entries have exactly the same empirical loss, regardless of their entries outside $\mathcal{O}_i^T$.
-(iii) Two realized batch offsets for the same anchor are forced to agree only if the corresponding column sets overlap (or are connected by a chain of such overlaps).
-\end{proposition}
-
-The proposition concerns the information present in the objective, not the realizability of arbitrary score arrays by cosine embeddings. A parametric encoder shares parameters across examples and therefore assigns definite scores even to unseen pairs. Those scores can generalize well, but their values are supplied indirectly by the student's inductive bias rather than identified by a teacher comparison. Likewise, cosine symmetry and Gram-matrix constraints may reduce the formal score-space freedom without adding the missing teacher observations.
-
-The perfect score row $c^S_{ij}=c^T_{ij}+a_i$ attains zero loss on every restriction, so the problem is not bias from renormalizing teacher and student on the same batch. It is that the empirical objective observes only the accidental comparison set $\mathcal{O}_i^T$, which Proposition~\ref{prop:coverage} shows excludes nearly all teacher neighbors under practical schedules.
-
-The remedy is to choose comparisons from teacher geometry, rather than letting the batch choose them. Section~\ref{sec:method} constructs a corpus-level teacher neighborhood operator, explicitly supervises its rows, and then addresses the approximation and row-consistency questions created by that choice.
+Proposition~\ref{prop:coverage} does not imply that every unseen relation must be wrong. It shows that the batch-relational objective cannot determine most teacher-neighbor relations from its realized score arguments; Figure~\ref{fig:motivation} shows that this missing support leads to measurable distortion in practice. The result gives a direct design principle: \emph{teacher geometry should select relational supervision, while the mini-batch should serve only as a computational unit}. A full-corpus objective satisfies this requirement but is impractical to evaluate directly; Section~\ref{sec:method} develops a sparse approximation.

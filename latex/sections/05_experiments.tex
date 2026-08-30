@@ -1,112 +1,59 @@
 \section{Experiments}
 \label{sec:experiments}
 
+We evaluate RIPPLE from two perspectives: whether global geometry alignment improves downstream performance, and whether the gains arise from replacing batch-selected relations with teacher-selected corpus supervision.
+
 \paragraph{Models and data.}
-We evaluate three teacher$\rightarrow$student pairs: Qwen3-Embedding-4B $\rightarrow$ BERT-base (109M), BGE-M3 $\rightarrow$ MiniLMv2-H768 (66M), and Qwen3-Embedding-0.6B $\rightarrow$ MiniLMv2-H384 (22M). Following TALAS~\citep{dao2026talas}, the unlabeled distillation corpus contains approximately 15K sentences sampled evenly from Emotion, WiC, and STS-B. Teacher embeddings are cached once and the teacher is removed from GPU memory before student training.
+We evaluate three teacher$\rightarrow$student pairs: Qwen3-Embedding-4B $\rightarrow$ BERT-base (109M), BGE-M3 $\rightarrow$ MiniLMv2-H768 (66M), and Qwen3-Embedding-0.6B $\rightarrow$ MiniLMv2-H384 (22M). Following TALAS~\citep{dao2026talas}, the unlabeled distillation corpus contains approximately 15K sentences sampled evenly from Emotion, WiC, and STS-B. Teacher embeddings are cached once and the teacher is removed before student training.
 
 \paragraph{Evaluation.}
-The nine downstream datasets form three task families: classification with macro-F1 on Banking77, Tweet, and Emotion; pair classification with average precision on MRPC, SciTail, and WiC; and semantic textual similarity with Spearman correlation on SICK, STS12, and STS-B. Emotion, WiC, and STS-B are in-domain; the other six datasets are out-of-domain. We select checkpoints and pair-classification thresholds using validation data and evaluate the test sets once. ``Avg.'' is the unweighted mean of the nine primary metrics.
+The nine downstream datasets cover classification (Banking77, Tweet, Emotion), pair classification (MRPC, SciTail, WiC), and semantic textual similarity (SICK, STS12, STS-B). We report macro-F1, average precision, and Spearman correlation, respectively. Emotion, WiC, and STS-B are in-domain; the other six datasets are out-of-domain. ``Avg.'' is the unweighted mean of the nine primary metrics. Checkpoints and pair-classification thresholds are selected on validation data, and test data are evaluated once.
 
 \paragraph{Baselines and implementation.}
-We compare with the teacher, the undistilled student, SimCSE-unsup, CDM, DSKD, Jasper--Stella, DistillCSE, EMO, and TALAS, using the corresponding TALAS protocol~\citep{dao2026talas}. Unless varied by an analysis below, RIPPLE uses $k=200$, target graph perplexity $\rho=30$, diffusion scales $\{1,2,4\}$ plus the ambient target, $m=64$ candidates, batches of 32 anchors, and five training epochs. Each transition row solves its own bandwidth through Eq.~\eqref{eq:entropic-bandwidth}; no fixed graph temperature is tuned. Scale weights are proportional to $1/r$, with the ambient and one-step terms equally weighted before normalization. Row supervision uses four non-backtracking walks of length four, begins in the second epoch, and has $\lambda=0.5$. Additional implementation details are in Appendix~\ref{app:hyper}.
+We compare with the teacher, the undistilled student, SimCSE-unsup, CDM, DSKD, Jasper--Stella, DistillCSE, EMO, and TALAS under the corresponding TALAS protocol~\citep{dao2026talas}. We use one RIPPLE configuration across downstream tasks and vary only the component named in each ablation. Appendix~\ref{app:hyper} gives the complete graph, sampling, optimization, and evaluation settings.
 
 \subsection{Main Results}
 
-Table~\ref{tab:main_results} reports all three teacher--student settings. RIPPLE obtains the best mean overall score among the evaluated compact students in each setting: $78.09$ versus $78.04$ for Qwen3-Embedding-4B $\rightarrow$ BERT-base, $77.99$ versus $76.64$ for BGE-M3 $\rightarrow$ MiniLMv2-H768, and $74.91$ versus $73.46$ for Qwen3-Embedding-0.6B $\rightarrow$ MiniLMv2-H384. The first margin is small relative to the reported run variation, whereas the two MiniLMv2 settings improve by $1.35$ and $1.45$ points.
-
-The most consistent gains occur on semantic textual similarity. RIPPLE gives the best compact-student result on STS-B in all three settings, improving over the strongest baseline by $1.99$, $3.95$, and $3.90$ Spearman points. It leads all three STS datasets in both MiniLMv2 settings. Pair classification is less consistent, and WiC decreases in every setting; the mechanism-specific studies below are therefore necessary to separate improvements in neighborhood geometry from task-family trade-offs.
+Table~\ref{tab:main_results} reports every dataset for all three teacher--student settings. RIPPLE obtains the best mean compact-student score in each setting: $78.09$, $77.99$, and $74.91$. The corresponding margins over the strongest baseline are $0.05$, $1.35$, and $1.45$ points; the first is small relative to run variation. The most consistent gains occur on semantic textual similarity. RIPPLE gives the best compact-student result on STS-B in all three settings and leads all three STS datasets for both MiniLMv2 students. Pair classification is less uniform, including lower WiC scores, so aggregate gains alone do not establish the proposed mechanism.
 
 \input{tables/main_results}
 
-\subsection{Breadth as an Intervention: Where Does Alignment Travel?}
+\subsection{What Makes RIPPLE Work?}
 \label{sec:analysis}
 
-The graph degree $k$ is an intervention on how much teacher geometry is exposed to each anchor. Every run remains corpus-anchored and \emph{only $k$ changes}; candidate budget, scales, row weight, optimizer, and schedule are fixed. We first measure the ambient teacher mass retained by the mutual neighborhood,
-\begin{equation}
-\label{eq:teacher-mass-k}
-    \operatorname{Mass@}k
-    =
-    \frac1{|\mathcal A|}
-    \sum_{i\in\mathcal A}
-    p^T_{i,0}\!\left(\mathcal M_k^T(i)\right),
-\end{equation}
-on a fixed evaluation-anchor set $\mathcal A$. Mass alone grows almost by construction, so it is not the result of interest. The diagnostic is \emph{where} student alignment improves. We rank the corpus by teacher similarity and report teacher--student Jensen--Shannon divergence on the fixed bands $1{:}50$, $51{:}200$, and $201{:}800$, as well as over the full corpus. A gain confined to ranks already included by $k$ indicates support fitting; a gain in a band before it enters the supervised neighborhood is evidence of local-to-global transfer. The downstream average tests whether either effect matters beyond operator imitation.
+Figure~\ref{fig:core-ablation} reports downstream Avg., full-corpus teacher--student JS divergence, and held-out eight-step diffusion error along a causal progression. Comparing batch-local KD, random corpus neighbors, and RIPPLE one-step isolates teacher-selected support from the number of comparisons. Adding diffusion and then row supervision tests multi-hop and cross-anchor transfer, while a degree-preserving random graph controls for generic graph regularization. All variants share the student, optimizer, schedule, and candidate budget; Appendix~\ref{app:ablation-protocol} specifies the remaining fairness controls.
 
-\begin{table}[H]
-\centering
-\caption{Neighborhood-breadth intervention. Only $k$ changes. Rank-band and full-corpus columns report teacher--student JS divergence. Off-support improvements are the local-to-global signature. Results are pending.}
-\label{tab:k_sweep}
-\setlength{\tabcolsep}{4pt}
-\begin{tabular}{rcccccc}
-\toprule
-$k$ & Mass@$k\uparrow$ & JS$_{1:50}\downarrow$ & JS$_{51:200}\downarrow$ & JS$_{201:800}\downarrow$ & Full JS$\downarrow$ & Avg.$\uparrow$ \\
-\midrule
-50  & \tbd & \tbd & \tbd & \tbd & \tbd & \tbd \\
-100 & \tbd & \tbd & \tbd & \tbd & \tbd & \tbd \\
-200 & \tbd & \tbd & \tbd & \tbd & \tbd & \tbd \\
-400 & \tbd & \tbd & \tbd & \tbd & \tbd & \tbd \\
-\bottomrule
-\end{tabular}
-\end{table}
+\begin{figure}[t]
+    \centering
+    \IfFileExists{figures/figure2_core_ablation.pdf}{%
+        \includegraphics[width=\linewidth]{figures/figure2_core_ablation.pdf}%
+    }{%
+        \fbox{\parbox[c][0.18\textheight][c]{0.95\linewidth}{\centering
+        \textbf{Core ablation design.}\\[2mm]
+        Six variants: batch-local, random corpus, random graph, RIPPLE one-step,\\
+        RIPPLE diffusion, and full RIPPLE.\\[1mm]
+        Panels: downstream Avg.$\uparrow$ \quad Full-corpus JS$\downarrow$ \quad Held-out $E_8\downarrow$.}}
+    }
+    \caption{\textbf{Causal ablation of RIPPLE.} Bars show mean $\pm$ standard deviation over seeds. Random corpus support controls for the number of comparisons; a degree-preserving random graph controls for generic graph regularization; the final three variants isolate teacher anchoring, diffusion, and row supervision.}
+    \label{fig:core-ablation}
+\end{figure}
 
-This design admits three distinct outcomes. Monotone in-band gains but flat outer bands mean that anchoring helps only by exposing more pairs. Outer-band gains at small $k$ support transfer through the operator. A late reversal at large $k$ would expose semantic shortcuts from overly broad neighborhoods rather than support the claim that more neighbors are always better.
+\subsection{Topology Coverage and Training Efficiency}
 
-\subsection{Local Control or Memorized Scales?}
+Figure~\ref{fig:mechanisms} tests the two mechanism--cost trade-offs without adding separate main-text tables. First, varying only $k$ measures how broader teacher anchoring changes retained teacher mass and alignment in fixed teacher-rank bands. Improvement outside the directly supervised band is the relevant multi-hop signal; increasing Mass@$k$ alone is not. Second, varying only $m$ measures retained target mass, sampled-to-full gradient fidelity, downstream Avg., step time, and memory. Saturation at $m\ll k$ supports the claim that target concentration, rather than corpus size, governs the useful candidate budget. Definitions and complete sweeps are in Appendix~\ref{app:diagnostic-protocols}.
 
-Theorem~\ref{thm:global} predicts propagation of one-step error, while direct scale targets should tighten longer-range alignment; Proposition~\ref{prop:collapse} predicts that a shared resolution cannot identify distinct scales. We compare one-step, shared-temperature, and scale-specific supervision with ambient and row terms fixed.
+\begin{figure}[t]
+    \centering
+    \IfFileExists{figures/figure3_mechanisms.pdf}{%
+        \includegraphics[width=\linewidth]{figures/figure3_mechanisms.pdf}%
+    }{%
+        \fbox{\parbox[c][0.16\textheight][c]{0.95\linewidth}{\centering
+        \textbf{Mechanism diagnostics.}\\[2mm]
+        (a) $k$ vs. retained teacher mass and fixed rank-band JS.\\
+        (b) $m$ vs. target mass, gradient fidelity, accuracy, time, and memory.}}
+    }
+    \caption{\textbf{Coverage and efficiency.} Left: expanding teacher-anchored support should improve alignment beyond the nearest supervised rank band. Right: candidate sampling should retain the full-target signal before its computational cost approaches full-neighborhood scoring.}
+    \label{fig:mechanisms}
+\end{figure}
 
-For a fixed set of evaluation anchors, we construct $P^S$ from the trained student on the teacher support using Eq.~\eqref{eq:student-operator}, and report
-\begin{equation}
-\label{eq:diffusion-error-eval}
-    E_r
-    =
-    \frac1{|\mathcal A|}
-    \sum_{i\in\mathcal A}
-    \mathrm{TV}\!\left(
-        \delta_i^\top(\widetilde P^T)^r,
-        \delta_i^\top(\widetilde P^S)^r
-    \right),
-    \qquad r\in\{1,4,8,16\}.
-\end{equation}
-
-Scales $8$ and $16$ are never supervised, distinguishing transfer from memorization. On a common evaluation pool, $E_{\mathrm{sep}}$ measures error in the pairwise separations among the $r\in\{1,2,4\}$ readouts; it is small only when the student preserves how distinguishable the teacher scales are. Appendix~\ref{app:scale-separation} gives the definition.
-
-\begin{table}[H]
-\centering
-\caption{Multi-scale mechanism test. $E_8,E_{16}$ are held out; $E_{\mathrm{sep}}$ tests scale distinguishability. Results are pending.}
-\label{tab:multiscale_ablation}
-\setlength{\tabcolsep}{4pt}
-\begin{tabular}{lccccc}
-\toprule
-Graph-scale supervision & $E_1\downarrow$ & $E_8\downarrow$ & $E_{16}\downarrow$ & $E_{\mathrm{sep}}\downarrow$ & Avg.$\uparrow$ \\
-\midrule
-$r=1$ only                         & \tbd & \tbd & \tbd & \tbd & \tbd \\
-$r\in\{1,2,4\}$, shared $\tau$   & \tbd & \tbd & \tbd & \tbd & \tbd \\
-$r\in\{1,2,4\}$, scale-specific & \tbd & \tbd & \tbd & \tbd & \tbd \\
-\bottomrule
-\end{tabular}
-\end{table}
-
-Support requires scale-specific supervision to lower held-out $E_8/E_{16}$ and $E_{\mathrm{sep}}$ without trading away $E_1$; improvement only at trained readouts is not operator transfer.
-
-\subsection{Is Row Supervision Practically Necessary?}
-
-Only $\lambda$ varies in $\mathcal L_{\mathrm{RIPPLE}}=\mathcal L_{\mathrm{diff}}+\lambda\mathcal L_{\mathrm{row}}$, and the sole outcome is downstream Avg. over seeds and settings. A positive-$\lambda$ lift supports utility; a flat curve falsifies it, while a monotone curve points to extra coverage rather than balanced constraints. Accuracy alone cannot identify calibration. Per-setting curves are reserved in Appendix~\ref{app:lambda-grid}.
-
-\begin{table}[H]
-\centering
-\caption{Row-loss test. Only $\lambda$ changes; entries are downstream Avg. (mean $\pm$ standard deviation). Results are pending.}
-\label{tab:lambda_sweep}
-\setlength{\tabcolsep}{7pt}
-\begin{tabular}{lccccc}
-\toprule
-Setting $\backslash\ \lambda$ & $0$ & $0.1$ & $0.3$ & $0.5$ & $1.0$ \\
-\midrule
-Mean over three settings & \tbd & \tbd & \tbd & \tbd & \tbd \\
-\bottomrule
-\end{tabular}
-\end{table}
-
-\subsection{Does Target Mass Predict Sampling Fidelity?}
-
-A mass curve alone restates Proposition~\ref{prop:sampling}, so Appendix~\ref{app:sampling-efficiency-protocol} also compares sampled and full-neighborhood gradients. Only $m$ changes. Support requires mass and gradient fidelity to saturate while $m\ll k$, without downstream loss.
+The appendix provides the controlled settings and exact diagnostic definitions used in both panels.

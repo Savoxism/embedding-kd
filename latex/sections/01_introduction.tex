@@ -1,16 +1,33 @@
 \section{Introduction}
 
-Text embedding models support semantic search, clustering, reranking, and retrieval-augmented generation. Their utility depends not only on individual vectors but on the geometry those vectors induce: which examples are neighbors, how sharply they are separated, and how local neighborhoods connect. Strong embedding teachers often learn this structure at substantial inference cost. A compact student is useful only if it inherits that structure rather than merely reproducing isolated outputs.
+Text embedding models map examples into a shared space in which semantic similarity can be recovered by simple geometric operations. Their usefulness therefore depends not only on individual embeddings, but also on how examples are arranged across a corpus: semantic neighbors should remain close, unrelated regions should remain separated, and local neighborhoods should connect in a meaningful way. Prior work has shown that pairwise similarities, relative geometry, and global topological summaries can all provide effective distillation targets~\citep{tung2019similarity,park2019rkd,passalis2020pkt,kim2023embeddistill,kim2024topkd}. This makes \emph{global geometry alignment} a natural objective for embedding distillation: a compact student should preserve the teacher's corpus-level organization while reducing deployment cost.
 
-Relational knowledge distillation appears to target this requirement directly: it matches teacher and student similarities among examples in a mini-batch~\citep{park2019rkd,passalis2020pkt}. The comparisons, however, are selected by the data loader rather than by the teacher. For a corpus of $N$ examples, an anchor sees only $B-1$ other examples per epoch, almost none of which are among its teacher-defined semantic neighbors. After $T$ epochs, only an $O(TB/N)$ fraction of those neighbors has ever co-occurred with the anchor. The problem is not merely that the resulting estimate is noisy. Similarities to examples that never co-occur do not appear in the empirical objective at all, so the objective does not directly identify the local teacher relations it is meant to transfer.
+For embedding models, relational KD is particularly appealing because it matches teacher and student similarities~\citep{park2019rkd,passalis2020pkt}. In practice, however, these similarities are usually normalized over examples that happen to share a mini-batch. This creates a support mismatch. A \emph{global teacher neighbor} is selected from the full corpus by teacher similarity, whereas a \emph{batch-local comparison} is selected by the data loader. The objective aims to transfer corpus geometry, but observes relations through stochastic batch co-occurrence.
 
-We propose \textbf{RIPPLE}, a \emph{corpus-anchored geometry-distillation} method. RIPPLE first caches the teacher embeddings and constructs a mutual $k$-nearest-neighbor transition operator over the entire distillation corpus. Training comparisons are then selected from this teacher operator, not inherited accidentally from a mini-batch. The student matches the teacher's one-step neighborhood distribution and a small family of longer diffusion distributions on sampled candidate sets. This turns diffusion into a transfer mechanism: accurate one-step matching controls the error of every longer walk, while direct supervision at broader times tightens the resulting bound.
+This mismatch is severe even under repeated reshuffling. Proposition~\ref{prop:coverage} shows that an anchor observes only an $O(TB/N)$ fraction of its teacher neighbors after $T$ epochs with batch size $B$. Under our training schedule, the expected coverage is $1.03\%$: approximately $99\%$ of the teacher neighborhood never enters the realized relational objective. Figure~\ref{fig:motivation} illustrates this mini-batch relation gap and measures the accompanying topology distortion.
 
-Two additional pieces make operator matching practical and coherent. First, diffusion-weighted sampling covers most of a target row with a candidate budget governed by the target's concentration rather than by the corpus size; candidates from all anchors are pooled and encoded once per batch. Second, row-wise softmax matching identifies similarity differences within a row but is invariant to an additive row offset in score space. RIPPLE therefore uses teacher random walks to select additional rows for supervision. Reciprocal overlaps between neighboring supervised rows, together with the symmetry of cosine similarity, encourage their offsets to agree and make the learned rows more consistent across anchors. The teacher is discarded after preprocessing, and student training uses no teacher hidden states, online teacher passes, or task labels.
+\begin{figure}[t]
+    \centering
+    \IfFileExists{figures/figure1_motivation.pdf}{%
+        \includegraphics[width=\linewidth]{figures/figure1_motivation.pdf}%
+    }{%
+        \fbox{\parbox[c][0.13\textheight][c]{0.95\linewidth}{\centering
+        \textbf{Global geometry alignment}
+        $\;\longrightarrow\;$
+        \textbf{mini-batch relation gap}
+        $\;\longrightarrow\;$
+        \textbf{teacher-anchored supervision}\\[2mm]
+        Expected teacher-neighbor coverage: $1.03\%$ observed; $98.97\%$ unseen.}}
+    }
+    \caption{\textbf{Relational KD uses a local view of a global target.} Teacher neighborhoods are defined over the corpus, whereas conventional relational losses obtain their support from mini-batch co-occurrence. Proposition~\ref{prop:coverage} quantifies the missing support; the motivating experiment measures its effect on teacher--student topology alignment.}
+    \label{fig:motivation}
+\end{figure}
 
-Our contributions are:
+We introduce \textbf{RIPPLE} to decouple \emph{which relations provide supervision} from \emph{how they are computed}. A cached teacher graph fixes corpus-level support; diffusion turns immediate neighborhoods into multi-scale profiles; and mass-aware sampling evaluates those profiles on compact candidate sets. Overlapping-row supervision then couples relations across anchors. Each update encodes only a small pool of texts, but its contents are selected by teacher geometry rather than batch co-occurrence.
+
+Across nine datasets and three teacher--student pairs, RIPPLE achieves the best mean compact-student score in all three settings. Controlled comparisons separate the effects of corpus anchoring, diffusion, candidate sampling, and row supervision. Our contributions are:
 \begin{itemize}
-    \item We formalize the coverage and objective-level identification limits of mini-batch relational distillation: after $T$ epochs, an anchor has been compared with at most an $O(TB/N)$ fraction of its teacher neighbors, and unseen relations are absent from the empirical score-level objective (Section~\ref{sec:theory}).
-    \item We introduce RIPPLE, which distills a corpus-level teacher neighborhood operator through one-step and multi-scale diffusion targets, efficient mass-preserving candidate sampling, and overlapping-row supervision for cross-anchor consistency (Section~\ref{sec:method}).
-    \item Across nine datasets and three teacher--student pairs, RIPPLE obtains the best mean overall score among the evaluated compact students in all three settings, with the clearest gains on semantic textual similarity. Controlled studies are designed to test graph breadth, multi-scale supervision, row supervision, and sampling efficiency separately (Section~\ref{sec:analysis}).
+    \item We identify and quantify a mini-batch relation gap that leaves most teacher-neighbor scores outside the realized relational objective.
+    \item We introduce a corpus-anchored distillation method that combines teacher-graph diffusion, mass-aware candidate sampling, and cross-anchor row supervision.
+    \item We connect the resulting objective to diffusion-geometry preservation and evaluate it across nine datasets and three teacher--student pairs.
 \end{itemize}
