@@ -19,11 +19,11 @@ def _gumbel_topk(probs: np.ndarray, k: int, rng: np.random.Generator) -> np.ndar
 
 
 class HeatGeoCandidateSampler:
-    """Draw relational candidates and teacher-walk rows for ``L_row``.
+    """Draw the relational candidate set for one anchor.
 
-    Candidate and walk streams are independently seeded by ``(seed, epoch, idx)``.
-    Walk-visited nodes replace uniform negatives when possible, so their embeddings
-    can supervise transition rows without an additional student forward pass.
+    The candidate stream is seeded by ``(seed, epoch, idx)``. The rows ``L_row``
+    supervises are derived from this draw inside the criterion -- the sampler has
+    no row-selection role and reads no transition arrays.
     """
 
     def __init__(
@@ -34,8 +34,6 @@ class HeatGeoCandidateSampler:
         random_neg_k: int,
         seed: int,
         deterministic_topm: int = 4,
-        num_walks: int = 0,
-        walk_length: int = 1,
     ):
         self.pool_indices = artifact["pool_indices"].numpy()
         self.pool_probs = artifact["pool_probs"].numpy()
@@ -51,28 +49,6 @@ class HeatGeoCandidateSampler:
         self.random_neg_k = int(random_neg_k)
         self.deterministic_topm = int(deterministic_topm)
         self.seed = int(seed)
-        self.num_walks = int(num_walks)
-        self.walk_length = int(walk_length)
-        if self.num_walks < 0:
-            raise ValueError("num_walks must be non-negative")
-        if self.walk_length < 1:
-            raise ValueError("walk_length must be positive")
-        if self.num_walks > 0:
-            missing = {
-                key
-                for key in ("transition_neighbors", "transition_probs")
-                if key not in artifact
-            }
-            if missing:
-                raise ValueError(
-                    "L_row sampling requires graph transition arrays; rebuild the "
-                    f"HeatGeo artifact (missing: {', '.join(sorted(missing))})"
-                )
-            self.transition_neighbors = artifact["transition_neighbors"].numpy()
-            self.transition_probs = artifact["transition_probs"].numpy()
-        else:
-            self.transition_neighbors = None
-            self.transition_probs = None
 
         scales = tuple(artifact.get("metadata", {}).get("diffusion_scales", ()))
         if len(scales) != self.n_scales:
@@ -91,7 +67,6 @@ class HeatGeoCandidateSampler:
         self.epoch = int(epoch)
 
     _STREAM_CANDIDATES = 0
-    _STREAM_ROWS = 1
 
     def _rng(self, idx: int, stream: int = 0) -> np.random.Generator:
         return np.random.default_rng(
@@ -221,77 +196,9 @@ class HeatGeoCandidateSampler:
             excluded.add(node)
         return drawn
 
-    def _sample_walks(self, idx: int) -> tuple[np.ndarray, list[int]]:
-        """Sample non-backtracking teacher walks and return visited rows."""
-        rng = self._rng(idx, self._STREAM_ROWS)
-        walks = np.empty((self.num_walks, self.walk_length + 1), dtype=np.int64)
-        visited: dict[int, None] = {}
-        for walk in range(self.num_walks):
-            current = int(idx)
-            previous = -1
-            walks[walk, 0] = current
-            for step in range(self.walk_length):
-                neighbors = self.transition_neighbors[current]
-                probs = self.transition_probs[current]
-                valid = (neighbors >= 0) & (probs > 0)
-                if previous >= 0:
-                    forward = valid & (neighbors != previous)
-                    if forward.any():
-                        valid = forward
-                if not valid.any():
-                    walks[walk, step + 1] = current
-                    continue
-                choices = neighbors[valid]
-                choice_probs = probs[valid].astype(np.float64)
-                choice_probs /= choice_probs.sum()
-                next_node = int(rng.choice(choices, p=choice_probs))
-                walks[walk, step + 1] = next_node
-                if next_node != idx:
-                    visited[next_node] = None
-                previous, current = current, next_node
-        return walks, list(visited)
-
-    def sample_with_rows(self, idx: int) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-        if self.num_walks > 0:
-            row_paths, visited_rows = self._sample_walks(idx)
-        else:
-            row_paths = np.full((1, 2), -1, dtype=np.int64)
-            visited_rows = []
-
+    def sample_torch(self, idx: int) -> tuple[torch.Tensor, torch.Tensor]:
         candidate_arr, teacher_probs = self.sample(idx)
-        if not visited_rows:
-            return candidate_arr, teacher_probs, row_paths
-
-        existing = set(int(node) for node in candidate_arr)
-        missing_rows = [node for node in visited_rows if node not in existing]
-        pool_set = {int(node) for node in self.pool_indices[idx] if int(node) >= 0}
-        hard_set = {int(node) for node in self.hard_neg_indices[idx] if int(node) >= 0}
-        replaceable = [
-            position
-            for position, node in enumerate(candidate_arr)
-            if int(node) not in pool_set
-            and int(node) not in hard_set
-            and int(node) != idx
-        ]
-        for node, position in zip(missing_rows, replaceable):
-            candidate_arr[position] = node
-
-        position_of = {
-            int(node): position
-            for position, node in enumerate(self.pool_indices[idx])
-            if int(node) >= 0
-        }
-        teacher_probs.fill(0.0)
-        for position, node in enumerate(candidate_arr):
-            pool_position = position_of.get(int(node), -1)
-            if pool_position >= 0:
-                teacher_probs[:, position] = self.pool_probs[:, idx, pool_position]
-        return candidate_arr, teacher_probs, row_paths
-
-    def sample_torch(self, idx: int) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        candidate_arr, teacher_probs, row_paths = self.sample_with_rows(idx)
         return (
             torch.from_numpy(candidate_arr).long(),
             torch.from_numpy(teacher_probs).float(),
-            torch.from_numpy(row_paths).long(),
         )

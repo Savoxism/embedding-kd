@@ -1,9 +1,5 @@
 from .base_config import BaseConfig
 
-# Kept next to the config rather than imported from the criterion so that
-# `main.py --row_mode` can validate an override without constructing a module.
-ROW_MODES = ("walk", "closure_u", "closure_m", "closure_ht")
-
 
 class HeatGeoConfig(BaseConfig):
     distill_method = "heatgeo"
@@ -58,69 +54,36 @@ class HeatGeoConfig(BaseConfig):
     # omega_r = 1/r and omega_0 = omega_1 are derived centrally from these scales.
 
     # ---- Row Supervision -----------------------------------------------------
-    # L_row matches each selected node's complete available transition row rather
-    # than a sampled next step, so this is dense row-kernel supervision, not a
-    # trajectory likelihood. `row_mode` picks how those nodes are selected:
+    # L_row promotes the teacher-selected pool columns (the diffusion support, not
+    # the hard/uniform negatives) to auxiliary rows and matches each one's complete
+    # available transition row, weighted uniformly. Batch anchors are excluded:
+    # L_rel already matches their transition row as its r=1 target. The row set is a
+    # deterministic function of the candidate pool, so this term costs no selection
+    # hyperparameter -- row_weight is the only knob L_row has.
     #
-    #   "walk"       non-backtracking teacher walks discover them; nu is the visit
-    #                count. Costs num_walks and walk_length, neither of which
-    #                appears in the objective -- the trajectory is never a target.
-    #   "closure_u"  every teacher-selected pool column (the diffusion support,
-    #                not the hard/uniform negatives) is promoted to a row, weighted
-    #                uniformly. Batch anchors are excluded: L_rel already matches
-    #                their transition row as its r=1 target. No walk knobs.
-    #   "closure_m"  the same rows, weighted by the teacher mass the pool exposes
-    #                for each, m_B(j) = P^T_j(Omega_j). No walk knobs.
-    #   "closure_ht" the same rows, weighted by 1/c_B(j) (inverse inclusion count).
-    #                The bias ladder: selection is already mass-proportional, so
-    #                closure_m squares the hub bias (measured -0.10), closure_u
-    #                keeps it linear, closure_ht approximately cancels it -- the
-    #                epoch-level row measure approaches uniform over the corpus.
-    #                No walk knobs.
+    # Four alternatives were implemented and measured on Qwen3-0.6B -> MiniLMv2-H384
+    # (seed 42, 5 epochs, row_weight 1.0); all lost and were deleted. The code is in
+    # git history at b1f683b and earlier, and the numbers are in
+    # docs/experiments/qwen-minilm-tuning.md:
     #
-    # closure_u is the control for closure_m: identical row sets, so the pair
-    # isolates the weighting. Under a closure mode num_walks is forced to 0 below,
-    # which also stops walk-visited nodes from displacing uniform negatives in the
-    # candidate draw -- the one way the walk changes L_rel as well as L_row.
+    #   non-backtracking walk selection   74.88, ties uniform closure but costs
+    #                                     num_walks + walk_length, and the sampler
+    #                                     had to inject visited nodes into the draw
+    #   weight by exposed mass m_B(j)     74.76, squares a selection bias that is
+    #                                     already mass-proportional
+    #   weight by 1/c_B(j)                inert, c_B(j)=1 for ~99% of rows at this
+    #                                     corpus and batch size
+    #   ambient r=0 term per row          -0.30 out-of-domain, the benchmarks it was
+    #                                     meant to calibrate
     #
-    # Measured on Qwen3-0.6B -> MiniLMv2-H384, row_weight 1.0, seed 42:
-    # walk 74.88, closure_u 74.86, closure_m 74.76. closure_u holds the walk's
-    # result to within noise while costing zero walk hyperparameters, so it is the
-    # default. closure_m loses 0.10: a row with high exposed mass sits deep inside
-    # some anchor's neighbourhood, which is exactly where its transition row most
-    # nearly duplicates the r=1 target L_rel already gives that anchor, so weighting
-    # by mass concentrates nu on the redundant rows. `row_eff_count` in the epoch
-    # log measures that concentration directly.
-    #
-    # "walk" is kept because it is the ablation this replaced, not because it is
-    # reachable by default.
-    row_mode = "closure_u"
-    # Experiment flag, to be resolved into always-on or deleted: give every
-    # promoted row an ambient r=0 term over the shared pool, mirroring the anchor
-    # stack (weight tied omega_amb = omega_1, temperature direct_temp on both
-    # sides -- no new free parameter). Motivated by row_exposed_mass = 0.44: the
-    # restricted row target renormalizes less than half of each row's true
-    # transition mass, in a method whose every other truncation is held to 1%.
-    row_ambient = False
-    num_walks = 4
-    walk_length = 4
-    # 1.0 matches the selected arm: the tuning table is monotone in row_weight
-    # (0.5 -> 74.63, 1.0 -> 74.88) and was never probed above 1.0 -- values > 1
-    # are an open experiment, not a tuned optimum.
+    # uniform closure:                    74.86 at row_start_epoch 2, 74.82 at 1
     row_weight = 1.0
     # Human-facing, one-based epoch number. At 1 the knob is inert: L_row is on for
-    # every epoch, and the curriculum disappears along with the parameter.
-    #
-    # The warm-up existed because the walk produced stochastic, noisy auxiliary rows
-    # that were worth withholding for an epoch. Closure does not: its rows are the
-    # candidate columns L_rel already selected, and the epoch-1 diagnostics of the
-    # start-at-1 run show the same 843 rows at the same 0.44 exposed mass as every
-    # later epoch, with loss_rel ending *lower* than the start-at-2 run (0.6502 vs
-    # 0.6686). Measured at row_weight 1.0, seed 42: closure_u 74.86 starting at 2,
-    # 74.82 starting at 1 -- inside single-seed noise, against a walk baseline of
-    # 74.88.
-    #
-    # Set to 2 to restore the curriculum; the walk mode is the arm that wants it.
+    # every epoch, and the curriculum disappears along with the parameter. The
+    # warm-up existed because walk selection produced stochastic, noisy auxiliary
+    # rows worth withholding for an epoch; the promoted columns are not noisy, and
+    # the epoch-1 diagnostics of the start-at-1 run match every later epoch (same
+    # ~843 rows at the same 0.44 exposed mass) with a lower final loss_rel.
     row_start_epoch = 1
 
     # ---- Truncation ----------------------------------------------------------
@@ -202,25 +165,6 @@ class HeatGeoConfig(BaseConfig):
     # carried, so deleting them changes no behaviour. Re-adding one is only
     # meaningful together with the kd_*_layers pair.
 
-    def resolve_row_mode(self) -> None:
-        """Validate ``row_mode`` and drop the walk knobs the closure modes do not own.
-
-        Called from ``__init__`` and again by ``main.py`` after the CLI overrides,
-        which are plain ``setattr`` and so bypass every check here. Forcing
-        ``num_walks`` to 0 rather than merely ignoring it keeps the sampler, the run
-        banner and the artifact requirement honest: with ``num_walks > 0`` the
-        sampler would still draw walks, still demand the transition arrays for that
-        draw, and still let visited nodes displace uniform negatives in the candidate
-        set -- which changes L_rel too, in a run whose whole point is that only
-        L_row's row selection changed.
-        """
-        if self.row_mode not in ROW_MODES:
-            raise ValueError(
-                f"row_mode must be one of {ROW_MODES}, got {self.row_mode!r}"
-            )
-        if self.row_mode != "walk":
-            self.num_walks = 0
-
     def __init__(self, **kwargs):
         # An unknown key is a typo, not a no-op. The previous version skipped it
         # silently, so `HeatGeoConfig(walk_lenght=8)` ran the default 4 and looked
@@ -232,11 +176,6 @@ class HeatGeoConfig(BaseConfig):
             )
         for k, v in kwargs.items():
             setattr(self, k, v)
-        self.resolve_row_mode()
-        if self.num_walks < 0:
-            raise ValueError("num_walks must be non-negative")
-        if self.walk_length < 1:
-            raise ValueError("walk_length must be positive")
         if self.row_weight < 0:
             raise ValueError("row_weight must be non-negative")
         if self.row_start_epoch < 1:

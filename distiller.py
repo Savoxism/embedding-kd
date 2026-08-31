@@ -296,8 +296,6 @@ class KnowledgeDistiller:
                         teacher_embeddings=self.teacher_cls_all[:, l_idx, :],
                         direct_temp=config.direct_temp,
                         row_weight=config.row_weight,
-                        row_mode=getattr(config, "row_mode", "walk"),
-                        row_ambient=bool(getattr(config, "row_ambient", False)),
                         row_temps=getattr(self, "heatgeo_artifact", {}).get(
                             "row_temps"
                         ),
@@ -335,8 +333,6 @@ class KnowledgeDistiller:
                     teacher_embeddings=self.teacher_cls_all,
                     direct_temp=config.direct_temp,
                     row_weight=config.row_weight,
-                    row_mode=getattr(config, "row_mode", "walk"),
-                    row_ambient=bool(getattr(config, "row_ambient", False)),
                     row_temps=getattr(self, "heatgeo_artifact", {}).get("row_temps"),
                     transition_neighbors=getattr(self, "heatgeo_artifact", {}).get(
                         "transition_neighbors"
@@ -758,8 +754,6 @@ class KnowledgeDistiller:
                     random_neg_k=cfg.random_neg_k,
                     seed=cfg.seed,
                     deterministic_topm=cfg.deterministic_topm,
-                    num_walks=cfg.num_walks,
-                    walk_length=cfg.walk_length,
                 )
                 anchor_texts = df[self.heatgeo_anchor_column].astype(str).tolist()
                 self.train_ds = TextPairWithTeacherAndHeatGeo(
@@ -953,7 +947,6 @@ class KnowledgeDistiller:
                     "candidate_idx",
                     "candidate_inverse",
                     "teacher_probs",
-                    "row_paths",
                 }:
                     batch_s[k] = v.to(self.device_s, non_blocking=True)
 
@@ -1048,7 +1041,6 @@ class KnowledgeDistiller:
                             teacher_probs=batch_s["teacher_probs"],
                             candidate_idx=batch_s.get("candidate_idx"),
                             anchor_idx=batch_s.get("idx"),
-                            row_paths=batch_s.get("row_paths"),
                         )
                         total_loss += heat_loss * getattr(cfg, "lambda_heatgeo", 1.0)
 
@@ -1144,7 +1136,6 @@ class KnowledgeDistiller:
                         teacher_probs=batch_s["teacher_probs"],
                         candidate_idx=batch_s.get("candidate_idx"),
                         anchor_idx=batch_s.get("idx"),
-                        row_paths=batch_s.get("row_paths"),
                     )
                     loss = loss.float()
 
@@ -1878,11 +1869,8 @@ class KnowledgeDistiller:
                 "loss_diff",
                 "loss_row_weighted",
                 "row_count",
-                "row_eff_count",
                 "row_exposed_mass",
-                "row_amb_kl",
                 "row_valid_ratio",
-                "row_node_hit_ratio",
                 "js_floor",
                 "loss_excess",
                 "target_entropy",
@@ -2300,14 +2288,8 @@ class KnowledgeDistiller:
             for epoch in range(cfg.epochs):
                 self.current_epoch = epoch
 
-                row_mode = getattr(cfg, "row_mode", "walk")
-                # Only the walk mode needs walks to have been drawn; the closure
-                # modes read their rows off the shared pool, and cfg.num_walks is 0
-                # for them by construction.
-                row_source_ready = row_mode != "walk" or cfg.num_walks > 0
                 use_row = (
                     cfg.distill_method == "heatgeo"
-                    and row_source_ready
                     and cfg.row_weight > 0
                     and epoch + 1 >= cfg.row_start_epoch
                 )
@@ -2319,7 +2301,7 @@ class KnowledgeDistiller:
                 ):
                     self.criterion.use_row_loss = use_row
                 if use_row:
-                    print(f"L_row is ENABLED for Epoch {epoch + 1} (mode={row_mode})")
+                    print(f"L_row is ENABLED for Epoch {epoch + 1}")
 
                 avg_loss = self.train_epoch(epoch)
                 validation_results = None
