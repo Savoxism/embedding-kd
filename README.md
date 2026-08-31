@@ -9,8 +9,8 @@ The framework supports arbitrary teacher-student pairs. Tested configurations in
 | Teacher | Student | Notes |
 |:---|:---|:---|
 | `Qwen/Qwen3-Embedding-4B` | `google-bert/bert-base-uncased` | Default config |
-| `Qwen/Qwen3-Embedding-0.6B` | `nreimers/MiniLMv2-L6-H384-distilled-from-BERT-Large` | Lightweight |
-| `BAAI/bge-m3` | `nreimers/MiniLMv2-L6-H384-distilled-from-BERT-Large` | Alternative teacher |
+| `Qwen/Qwen3-Embedding-0.6B` | `nreimers/MiniLMv2-L6-H384-distilled-from-BERT-Base` | Lightweight |
+| `BAAI/bge-m3` | `nreimers/MiniLMv2-L6-H384-distilled-from-BERT-Base` | Alternative teacher |
 
 The training corpus follows the TALAS paper setup: ~15K unlabeled sentences sampled from three in-domain datasets. The default corpus is `data/train_set/merged_3_data_5k_each.csv`.
 
@@ -151,7 +151,7 @@ bash scripts/train_heatgeo.sh
 Override settings via environment variables:
 
 ```bash
-STUDENT_MODEL="nreimers/MiniLMv2-L6-H384-distilled-from-BERT-Large" \
+STUDENT_MODEL="nreimers/MiniLMv2-L6-H384-distilled-from-BERT-Base" \
 TEACHER_MODEL="Qwen/Qwen3-Embedding-0.6B" \
 BATCH_SIZE=32 \
 EPOCHS=5 \
@@ -170,7 +170,7 @@ WEIGHTS_DIR="/path/to/weights" bash scripts/train_heatgeo.sh --no_wandb
 python3 main.py \
   --method heatgeo \
   --train_data data/train_set/merged_3_data_5k_each.csv \
-  --student_model nreimers/MiniLMv2-L6-H384-distilled-from-BERT-Large \
+  --student_model nreimers/MiniLMv2-L6-H384-distilled-from-BERT-Base \
   --teacher_model Qwen/Qwen3-Embedding-0.6B \
   --batch_size 32 \
   --epochs 5 \

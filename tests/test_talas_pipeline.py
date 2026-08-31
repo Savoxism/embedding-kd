@@ -20,7 +20,6 @@ from distiller import KnowledgeDistiller
 from scripts.summarize_talas import SEEDS, TASKS, aggregate_run
 from src.cache_teacher import validate_cached_embeddings
 
-
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
 
@@ -29,12 +28,12 @@ def test_talas_paper_pair_presets_are_exact():
     assert TALAS_PAPER_PAIRS == {
         "qwen3_0_6b_to_minilmv2_h384": {
             "teacher": "Qwen/Qwen3-Embedding-0.6B",
-            "student": "nreimers/MiniLMv2-L6-H384-distilled-from-BERT-Large",
+            "student": "nreimers/MiniLMv2-L6-H384-distilled-from-BERT-Base",
             "pooling_method": "last_token",
         },
         "bge_m3_to_minilmv2_h768": {
             "teacher": "BAAI/bge-m3",
-            "student": "nreimers/MiniLMv2-L6-H768-distilled-from-BERT-Large",
+            "student": "nreimers/MiniLMv2-L6-H768-distilled-from-BERT-Base",
             "pooling_method": "cls",
         },
         "qwen3_4b_to_bert_base": {
@@ -108,7 +107,10 @@ def test_shell_launcher_resolves_root_and_pair_from_any_working_directory(
     )
     preset = TALAS_PAPER_PAIRS[pair]
     assert str(REPO_ROOT / "main.py") in result.stdout
-    assert str(REPO_ROOT / "data" / "train_set" / "merged_3_data_5k_each.csv") in result.stdout
+    assert (
+        str(REPO_ROOT / "data" / "train_set" / "merged_3_data_5k_each.csv")
+        in result.stdout
+    )
     assert preset["teacher"] in result.stdout
     assert preset["student"] in result.stdout
     assert f"--talas_pair {pair}" in result.stdout
@@ -207,9 +209,7 @@ def test_talas_smoke_step_updates_student_with_equal_projection_lr():
     assert torch.isfinite(loss)
     assert not torch.equal(before, distiller.model_student.emb.weight.detach())
     assert {group["lr"] for group in distiller.optimizer.param_groups} == {2e-6}
-    assert {group["initial_lr"] for group in distiller.optimizer.param_groups} == {
-        2e-5
-    }
+    assert {group["initial_lr"] for group in distiller.optimizer.param_groups} == {2e-5}
 
 
 def _write_synthetic_run(run_root: Path, pair: str, seed: int) -> None:

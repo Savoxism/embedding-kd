@@ -6,7 +6,7 @@ class RKDConfig(BaseConfig):
 
     distill_method = "rkd"
 
-    student_model_name = "nreimers/MiniLMv2-L6-H384-distilled-from-BERT-Large"
+    student_model_name = "nreimers/MiniLMv2-L6-H384-distilled-from-BERT-Base"
     student_dtype = "float32"
     teacher_model_name = "Qwen/Qwen3-Embedding-0.6B"
     teacher_dtype = "bfloat16"

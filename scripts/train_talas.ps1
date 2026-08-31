@@ -34,12 +34,12 @@ $CacheRoot = if ($env:CACHE_ROOT) {
 $Pairs = @{
     "qwen3_0_6b_to_minilmv2_h384" = @{
         Teacher = "Qwen/Qwen3-Embedding-0.6B"
-        Student = "nreimers/MiniLMv2-L6-H384-distilled-from-BERT-Large"
+        Student = "nreimers/MiniLMv2-L6-H384-distilled-from-BERT-Base"
         Pooling = "last_token"
     }
     "bge_m3_to_minilmv2_h768" = @{
         Teacher = "BAAI/bge-m3"
-        Student = "nreimers/MiniLMv2-L6-H768-distilled-from-BERT-Large"
+        Student = "nreimers/MiniLMv2-L6-H768-distilled-from-BERT-Base"
         Pooling = "cls"
     }
     "qwen3_4b_to_bert_base" = @{
