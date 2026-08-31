@@ -288,6 +288,8 @@ class KnowledgeDistiller:
                         teacher_embeddings=self.teacher_cls_all[:, l_idx, :],
                         direct_temp=config.direct_temp,
                         mass_weight=config.mass_weight,
+                        geo_weight=config.geo_weight,
+                        sym_weight=config.sym_weight,
                         row_temps=getattr(self, "heatgeo_artifact", {}).get("row_temps"),
                     ).to(self.device_s)
                     self.heatgeo_criterions.append(criterion)
@@ -317,6 +319,8 @@ class KnowledgeDistiller:
                     teacher_embeddings=self.teacher_cls_all,
                     direct_temp=config.direct_temp,
                     mass_weight=config.mass_weight,
+                    geo_weight=config.geo_weight,
+                    sym_weight=config.sym_weight,
                     row_temps=getattr(self, "heatgeo_artifact", {}).get("row_temps"),
                 ).to(self.device_s)
                 self.scheduler = self._build_scheduler()

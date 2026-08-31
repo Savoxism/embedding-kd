@@ -209,6 +209,8 @@ class HeatGeoDistillation(nn.Module):
         teacher_embeddings: torch.Tensor | None = None,
         direct_temp: float = 0.10,
         mass_weight: float = 0.5,
+        geo_weight: float = 0.0,
+        sym_weight: float = 0.0,
         row_temps: torch.Tensor | None = None,
         **kwargs,
     ):
@@ -241,7 +243,13 @@ class HeatGeoDistillation(nn.Module):
         self.diag_topk = DIAG_TOPK
         if mass_weight < 0.0:
             raise ValueError("mass_weight must be non-negative")
+        if geo_weight < 0.0:
+            raise ValueError("geo_weight must be non-negative")
+        if sym_weight < 0.0:
+            raise ValueError("sym_weight must be non-negative")
         self.mass_weight = float(mass_weight)
+        self.geo_weight = float(geo_weight)
+        self.sym_weight = float(sym_weight)
 
         self.use_direct = teacher_embeddings is not None
         if self.use_direct:
@@ -465,6 +473,93 @@ class HeatGeoDistillation(nn.Module):
         }
         return loss, metrics
 
+    def _selected_geometry_losses(
+        self,
+        similarity: torch.Tensor,
+        teacher_probs: torch.Tensor,
+        candidate_idx: torch.Tensor,
+        anchor_idx: torch.Tensor,
+    ) -> tuple[torch.Tensor, torch.Tensor, dict[str, torch.Tensor]]:
+        """Compute directed and unique-edge cosine geometry objectives.
+
+        Diffusion scales are first merged with the canonical ``1/r`` weights.
+        ``L_geo`` is the theorem-aligned conditional expectation of bounded cosine
+        distortion on each anchor's selected support. ``L_sym`` groups the same
+        selected directed relations by unordered corpus edge, adds the two available
+        directional masses, and scores every unique edge once.
+        """
+        zero = similarity.new_zeros(())
+        if self.teacher_bank is None:
+            return zero, zero, {
+                "geo_relations": zero,
+                "sym_edges": zero,
+            }
+
+        scale_weights = self._resolved(
+            self.scale_weights, teacher_probs.size(1)
+        ).to(teacher_probs.dtype)
+        scale_weights = scale_weights / scale_weights.sum().clamp_min(1e-12)
+        selected_mass = (
+            teacher_probs * scale_weights.view(1, -1, 1)
+        ).sum(dim=1)
+        self_mask = candidate_idx == anchor_idx.view(-1, 1)
+        selected_mass = selected_mass.masked_fill(self_mask, 0.0)
+        selected_distribution = selected_mass / selected_mass.sum(
+            dim=-1, keepdim=True
+        ).clamp_min(1e-12)
+        selected = selected_mass > 0
+
+        teacher_anchor = self.teacher_bank.index_select(0, anchor_idx).float()
+        teacher_candidate = self.teacher_bank.index_select(
+            0, candidate_idx.reshape(-1)
+        ).float()
+        teacher_candidate = teacher_candidate.view(*candidate_idx.shape, -1)
+        teacher_similarity = torch.einsum(
+            "bd,bcd->bc", teacher_anchor, teacher_candidate
+        )
+        squared_error = (similarity - teacher_similarity).square()
+
+        # ell_ij = (cos_S(i,j) - cos_T(i,j))^2 / 4 lies in [0, 1].
+        loss_geo = (selected_distribution * squared_error / 4.0).sum(dim=-1).mean()
+
+        flat_selected = selected.reshape(-1)
+        directed_anchor = anchor_idx.view(-1, 1).expand_as(candidate_idx).reshape(-1)
+        directed_candidate = candidate_idx.reshape(-1)
+        edge_left = torch.minimum(directed_anchor, directed_candidate)[flat_selected]
+        edge_right = torch.maximum(directed_anchor, directed_candidate)[flat_selected]
+        n_items = int(self.teacher_bank.size(0))
+        edge_key = edge_left * n_items + edge_right
+        unique_key, inverse = torch.unique(edge_key, sorted=False, return_inverse=True)
+        n_edges = unique_key.numel()
+
+        directed_weight = selected_distribution.reshape(-1)[flat_selected]
+        directed_similarity = similarity.reshape(-1)[flat_selected]
+        edge_weight = similarity.new_zeros(n_edges)
+        edge_similarity = similarity.new_zeros(n_edges)
+        edge_count = similarity.new_zeros(n_edges)
+        edge_weight.scatter_add_(0, inverse, directed_weight)
+        edge_similarity.scatter_add_(0, inverse, directed_similarity)
+        edge_count.scatter_add_(0, inverse, torch.ones_like(directed_similarity))
+        edge_similarity = edge_similarity / edge_count.clamp_min(1.0)
+
+        unique_left = torch.div(unique_key, n_items, rounding_mode="floor")
+        unique_right = unique_key.remainder(n_items)
+        teacher_edge_similarity = (
+            self.teacher_bank.index_select(0, unique_left).float()
+            * self.teacher_bank.index_select(0, unique_right).float()
+        ).sum(dim=-1)
+        # w_ij = 1/2 [p_i(j|C_i) + p_j(i|C_j)]. A direction absent from the
+        # current selected union contributes zero; reciprocal edges are merged.
+        edge_weight = 0.5 * edge_weight
+        loss_sym = (
+            edge_weight * (edge_similarity - teacher_edge_similarity).square()
+        ).sum() / max(1, n_edges)
+
+        return loss_geo, loss_sym, {
+            "geo_relations": selected.float().sum(),
+            "sym_edges": similarity.new_tensor(float(n_edges)),
+        }
+
     def forward(
         self,
         anchor_embeddings: torch.Tensor,
@@ -488,6 +583,7 @@ class HeatGeoDistillation(nn.Module):
         n_scales = teacher_probs.size(1)
 
         teacher_probs = teacher_probs.clamp_min(0.0)
+        absolute_teacher_probs = teacher_probs
         teacher_support_mass = teacher_probs.sum(dim=-1)
         support_mask = teacher_probs.sum(dim=1) > 0
         teacher_probs = teacher_probs / teacher_probs.sum(
@@ -609,6 +705,24 @@ class HeatGeoDistillation(nn.Module):
                 diffusion_temps=diffusion_temps,
             )
 
+        loss_geo = torch.zeros((), device=anchor_embeddings.device)
+        loss_sym = torch.zeros((), device=anchor_embeddings.device)
+        geometry_metrics = {
+            "geo_relations": loss_geo,
+            "sym_edges": loss_sym,
+        }
+        if (
+            (self.geo_weight > 0.0 or self.sym_weight > 0.0)
+            and candidate_idx is not None
+            and anchor_idx is not None
+        ):
+            loss_geo, loss_sym, geometry_metrics = self._selected_geometry_losses(
+                similarity=similarity_own,
+                teacher_probs=absolute_teacher_probs,
+                candidate_idx=candidate_idx,
+                anchor_idx=anchor_idx,
+            )
+
         kl_per_scale = []
         log_probs_per_scale = []
         for scale_idx in range(n_scales):
@@ -631,11 +745,18 @@ class HeatGeoDistillation(nn.Module):
             kl_per_scale.append(contribution.sum(dim=-1))
         kl_per_scale = torch.stack(kl_per_scale, dim=1)
         loss_diff = (kl_per_scale * weights.view(1, -1)).sum(dim=-1).mean()
-        total_loss = loss_diff + self.mass_weight * loss_mass
+        total_loss = (
+            loss_diff
+            + self.mass_weight * loss_mass
+            + self.geo_weight * loss_geo
+            + self.sym_weight * loss_sym
+        )
         _assert_finite_tensors(
             (
                 ("loss_diff", loss_diff),
                 ("loss_mass", loss_mass),
+                ("loss_geo", loss_geo),
+                ("loss_sym", loss_sym),
                 ("total_loss", total_loss),
             )
         )
@@ -644,7 +765,10 @@ class HeatGeoDistillation(nn.Module):
             total_loss=total_loss,
             loss_diff=loss_diff,
             loss_mass=loss_mass,
+            loss_geo=loss_geo,
+            loss_sym=loss_sym,
             mass_metrics=mass_metrics,
+            geometry_metrics=geometry_metrics,
             kl_per_scale=kl_per_scale,
             log_probs_per_scale=log_probs_per_scale,
             target=target,
@@ -662,7 +786,10 @@ class HeatGeoDistillation(nn.Module):
         total_loss: torch.Tensor,
         loss_diff: torch.Tensor,
         loss_mass: torch.Tensor,
+        loss_geo: torch.Tensor,
+        loss_sym: torch.Tensor,
         mass_metrics: dict[str, torch.Tensor],
+        geometry_metrics: dict[str, torch.Tensor],
         kl_per_scale: torch.Tensor,
         log_probs_per_scale: list[torch.Tensor],
         target: torch.Tensor,
@@ -745,6 +872,12 @@ class HeatGeoDistillation(nn.Module):
             loss_diff.detach(),
             loss_mass.detach(),
             (self.mass_weight * loss_mass).detach(),
+            loss_geo.detach(),
+            (self.geo_weight * loss_geo).detach(),
+            loss_sym.detach(),
+            (self.sym_weight * loss_sym).detach(),
+            geometry_metrics["geo_relations"].detach(),
+            geometry_metrics["sym_edges"].detach(),
             mass_metrics["teacher_support_mass"].detach(),
             mass_metrics["student_support_mass"].detach(),
             mass_metrics["support_mass_abs_error"].detach(),
@@ -768,6 +901,12 @@ class HeatGeoDistillation(nn.Module):
             "loss_diff",
             "loss_mass",
             "loss_mass_weighted",
+            "loss_geo",
+            "loss_geo_weighted",
+            "loss_sym",
+            "loss_sym_weighted",
+            "geo_relations",
+            "sym_edges",
             "teacher_support_mass",
             "student_support_mass",
             "support_mass_abs_error",

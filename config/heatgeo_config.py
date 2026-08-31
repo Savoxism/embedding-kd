@@ -58,6 +58,14 @@ class HeatGeoConfig(BaseConfig):
     # there are no walk paths, row-loss curriculum, or transition-row loss buffers.
     mass_weight = 0.5
 
+    # ---- Selected-Support Geometry -------------------------------------------
+    # L_geo directly minimizes the theorem's teacher-mass-weighted bounded cosine
+    # distortion on each selected support. L_sym groups those directed relations
+    # into unordered edges and scores each shared cosine once. Both are opt-in so
+    # existing L_rel + L_mass runs remain exactly reproducible.
+    geo_weight = 0.0
+    sym_weight = 0.0
+
     # ---- Truncation ----------------------------------------------------------
     # Every capacity in the build is the same operation: keep a subset S of a
     # probability row and renormalize. Discarding mass delta gives exactly
@@ -123,8 +131,9 @@ class HeatGeoConfig(BaseConfig):
     # kd_student_layers = [4, 8, 12, 12]
 
     # ---- Removed: auxiliary objectives ---------------------------------------
-    # The objective is exactly two terms, L = L_rel + mass_weight * L_mass, both
-    # inside the HeatGeo criterion. lambda_heatgeo, lambda_cosine, lambda_infonce,
+    # The objective is L_rel + mass_weight * L_mass + geo_weight * L_geo
+    # + sym_weight * L_sym, all inside the HeatGeo criterion. lambda_heatgeo,
+    # lambda_cosine, lambda_infonce,
     # lambda_simcse, simcse_temp, simcse_start_epoch and lambda_sim used to sit
     # here at 0. Every one of them is read only inside the multi-layer branch
     # above, so on this path they were unreachable: they printed in the run banner
@@ -151,3 +160,7 @@ class HeatGeoConfig(BaseConfig):
             )
         if self.mass_weight < 0:
             raise ValueError("mass_weight must be non-negative")
+        if self.geo_weight < 0:
+            raise ValueError("geo_weight must be non-negative")
+        if self.sym_weight < 0:
+            raise ValueError("sym_weight must be non-negative")

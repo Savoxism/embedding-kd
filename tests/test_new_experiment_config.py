@@ -29,6 +29,10 @@ def test_heatgeo_cli_overrides(monkeypatch):
             "heatgeo",
             "--mass_weight",
             "0.8",
+            "--geo_weight",
+            "0.3",
+            "--sym_weight",
+            "0.4",
             "--perplexity",
             "45",
             "--diffusion_quota",
@@ -53,6 +57,8 @@ def test_heatgeo_cli_overrides(monkeypatch):
     config = main.get_config(args.method, args)
 
     assert config.mass_weight == 0.8
+    assert config.geo_weight == 0.3
+    assert config.sym_weight == 0.4
     assert not hasattr(config, "walk_temp")
     assert config.perplexity == 45
     assert (
@@ -306,6 +312,126 @@ def test_support_mass_loss_matches_bernoulli_kl():
     assert metrics["student_support_mass"] == pytest.approx(alpha_s.item(), rel=1e-5)
     assert total.item() == pytest.approx(
         metrics["loss_diff"] + 0.7 * expected.item(), rel=1e-5
+    )
+
+
+def _geometry_loss_inputs():
+    teacher_bank = F.normalize(
+        torch.tensor(
+            [
+                [1.0, 0.0, 0.0],
+                [0.8, 0.6, 0.0],
+                [0.0, 1.0, 0.0],
+            ]
+        ),
+        dim=-1,
+    )
+    anchor = F.normalize(
+        torch.tensor([[1.0, 0.2, 0.0], [0.7, 0.7, 0.0]]), dim=-1
+    )
+    candidates = F.normalize(
+        torch.tensor(
+            [
+                [[0.9, 0.4, 0.0], [0.1, 0.9, 0.0]],
+                [[0.9, 0.1, 0.0], [0.2, 0.8, 0.0]],
+            ]
+        ),
+        dim=-1,
+    )
+    teacher_probs = torch.tensor([[[0.75, 0.25]], [[0.20, 0.80]]])
+    candidate_idx = torch.tensor([[1, 2], [0, 2]], dtype=torch.long)
+    anchor_idx = torch.tensor([0, 1], dtype=torch.long)
+    return teacher_bank, anchor, candidates, teacher_probs, candidate_idx, anchor_idx
+
+
+def test_selected_geometry_loss_matches_mass_weighted_cosine_distortion():
+    teacher_bank, anchor, candidates, teacher_probs, candidate_idx, anchor_idx = (
+        _geometry_loss_inputs()
+    )
+    criterion = HeatGeoDistillation(
+        student_dim=3,
+        teacher_dim=3,
+        teacher_embeddings=teacher_bank,
+        mass_weight=0.0,
+        geo_weight=1.0,
+        sym_weight=0.0,
+    )
+
+    total, metrics = criterion(
+        anchor_embeddings=anchor,
+        candidate_embeddings=candidates,
+        teacher_probs=teacher_probs,
+        candidate_idx=candidate_idx,
+        anchor_idx=anchor_idx,
+    )
+
+    student_similarity = torch.einsum("bd,bcd->bc", anchor, candidates)
+    stored_teacher_bank = criterion.teacher_bank.float()
+    teacher_similarity = torch.einsum(
+        "bd,bcd->bc",
+        stored_teacher_bank.index_select(0, anchor_idx),
+        stored_teacher_bank.index_select(0, candidate_idx.reshape(-1)).view(2, 2, -1),
+    )
+    expected = (
+        teacher_probs.squeeze(1)
+        * (student_similarity - teacher_similarity).square()
+        / 4.0
+    ).sum(dim=-1).mean()
+
+    assert metrics["loss_geo"] == pytest.approx(expected.item(), rel=1e-5)
+    assert metrics["geo_relations"] == 4.0
+    assert total.item() == pytest.approx(
+        metrics["loss_diff"] + expected.item(), rel=1e-5
+    )
+
+
+def test_symmetric_geometry_loss_scores_each_unordered_edge_once():
+    teacher_bank, anchor, candidates, teacher_probs, candidate_idx, anchor_idx = (
+        _geometry_loss_inputs()
+    )
+    criterion = HeatGeoDistillation(
+        student_dim=3,
+        teacher_dim=3,
+        teacher_embeddings=teacher_bank,
+        mass_weight=0.0,
+        geo_weight=0.0,
+        sym_weight=1.0,
+    )
+
+    total, metrics = criterion(
+        anchor_embeddings=anchor,
+        candidate_embeddings=candidates,
+        teacher_probs=teacher_probs,
+        candidate_idx=candidate_idx,
+        anchor_idx=anchor_idx,
+    )
+
+    directed_student = torch.einsum("bd,bcd->bc", anchor, candidates)
+    student_edges = torch.stack(
+        [
+            0.5 * (directed_student[0, 0] + directed_student[1, 0]),
+            directed_student[0, 1],
+            directed_student[1, 1],
+        ]
+    )
+    teacher_edges = torch.stack(
+        [
+            criterion.teacher_bank[0].float() @ criterion.teacher_bank[1].float(),
+            criterion.teacher_bank[0].float() @ criterion.teacher_bank[2].float(),
+            criterion.teacher_bank[1].float() @ criterion.teacher_bank[2].float(),
+        ]
+    )
+    edge_weights = torch.tensor(
+        [0.5 * (0.75 + 0.20), 0.5 * 0.25, 0.5 * 0.80]
+    )
+    expected = (
+        edge_weights * (student_edges - teacher_edges).square()
+    ).sum() / 3
+
+    assert metrics["loss_sym"] == pytest.approx(expected.item(), rel=1e-5)
+    assert metrics["sym_edges"] == 3.0
+    assert total.item() == pytest.approx(
+        metrics["loss_diff"] + expected.item(), rel=1e-5
     )
 
 

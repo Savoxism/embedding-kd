@@ -99,6 +99,8 @@ weights, capacities, and correctness policies are resolved internally:
 | Teacher Graph | `graph_k`, `perplexity`, `diffusion_scales`, `truncation_tolerance` | kNN construction, adaptive row bandwidths, and diffusion |
 | Candidate Sampling | `diffusion_quota`, `hard_neg_k`, `random_neg_k` | Per-anchor composition; total size is their sum |
 | Mass Calibration | `mass_weight` | Weight of selected-vs-complement Bernoulli KL |
+| Directed Geometry | `geo_weight` | Weight of teacher-mass-weighted selected-support cosine distortion |
+| Symmetric Geometry | `sym_weight` | Weight of unique unordered-edge cosine distortion |
 | Training | `batch_size`, `epochs`, `learning_rate`, `min_lr` | Standard training setup |
 | Ambient profile | `direct_temp` | Shared teacher/student temperature for scale 0 |
 

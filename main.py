@@ -72,6 +72,8 @@ def parse_args():
     )
     parser.add_argument("--truncation_tolerance", type=float, default=None)
     parser.add_argument("--mass_weight", type=float, default=None)
+    parser.add_argument("--geo_weight", type=float, default=None)
+    parser.add_argument("--sym_weight", type=float, default=None)
     parser.add_argument("--direct_temp", type=float, default=None)
     parser.add_argument("--diffusion_quota", type=int, default=None)
     parser.add_argument("--hard_neg_k", type=int, default=None)
@@ -203,6 +205,8 @@ def get_config(method: str, args):
         "graph_k",
         "truncation_tolerance",
         "mass_weight",
+        "geo_weight",
+        "sym_weight",
         "direct_temp",
         "diffusion_quota",
         "hard_neg_k",
