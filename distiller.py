@@ -64,6 +64,7 @@ from src.evaluation.evaluation_automodel import (
 from src.heatgeo import HeatGeoCandidateSampler, build_or_load_heatgeo_artifact
 from src.heatgeo.policy import (
     DETERMINISTIC_TOPM,
+    FIXED_BANDWIDTH_TEMP,
     ROW_COVERAGE_TAU,
     derive_diffusion_quota,
 )
@@ -166,6 +167,24 @@ class KnowledgeDistiller:
             # hand the criterion `None` and make it blame the graph artifact for what
             # is really a setup-ordering bug.
             artifact = self.heatgeo_artifact
+            # --direct_temp 0 derives the last free student temperature from the
+            # graph itself: the median entropic-affinity bandwidth. The ambient
+            # target is the same softmax-of-cosines construction as the transition
+            # rows with the sparsification removed, so the graph's own typical
+            # bandwidth is the natural scale for it. Written back onto the config so
+            # the run manifest and banner record the concrete value, exactly as
+            # derived diffusion_quota is.
+            if config.direct_temp == 0.0:
+                row_temps = artifact.get("row_temps")
+                config.direct_temp = (
+                    float(row_temps.median())
+                    if row_temps is not None
+                    else FIXED_BANDWIDTH_TEMP
+                )
+                print(
+                    f"Derived direct_temp={config.direct_temp:.4f} "
+                    "(median graph bandwidth; requested via --direct_temp 0)"
+                )
             self.criterion = HeatGeoDistillation(
                 diffusion_scales=config.diffusion_scales,
                 teacher_embeddings=self.teacher_cls_all,

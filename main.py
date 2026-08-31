@@ -71,7 +71,18 @@ def parse_args():
     parser.add_argument("--row_weight", type=float, default=None)
     parser.add_argument("--unbiased_geometry_weight", type=float, default=None)
     parser.add_argument("--row_start_epoch", type=int, default=None)
-    parser.add_argument("--direct_temp", type=float, default=None)
+    parser.add_argument(
+        "--direct_temp",
+        type=float,
+        default=None,
+        help="Ambient-scale temperature; 0 derives it as the median graph bandwidth",
+    )
+    parser.add_argument(
+        "--diffusion_scales",
+        type=str,
+        default=None,
+        help="Comma-separated diffusion scales, e.g. '1,2,4'; '1' drops multi-hop",
+    )
     parser.add_argument("--diffusion_quota", type=int, default=None)
     parser.add_argument("--hard_neg_k", type=int, default=None)
     parser.add_argument("--random_neg_k", type=int, default=None)
@@ -211,6 +222,22 @@ def get_config(method: str, args):
     # entropic-affinity bandwidth and selects the fixed-bandwidth baseline.
     if args.perplexity is not None:
         config.perplexity = None if args.perplexity <= 0 else args.perplexity
+    # Parsed here rather than in the generic loop above because the flag is a
+    # comma-separated string and the config stores a tuple of ints. Sorting,
+    # uniqueness and the r=1 anchor are validated downstream by the artifact
+    # builder and the criterion, which both raise with the reason.
+    if args.diffusion_scales is not None:
+        try:
+            config.diffusion_scales = tuple(
+                int(part) for part in args.diffusion_scales.split(",") if part.strip()
+            )
+        except ValueError as exc:
+            raise ValueError(
+                f"--diffusion_scales must be comma-separated integers, "
+                f"got {args.diffusion_scales!r}"
+            ) from exc
+        if not config.diffusion_scales:
+            raise ValueError("--diffusion_scales must name at least one scale")
 
     if args.w_task is not None:
         config.w_task = args.w_task

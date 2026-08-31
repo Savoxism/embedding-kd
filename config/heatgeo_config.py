@@ -36,8 +36,13 @@ class HeatGeoConfig(BaseConfig):
     # omega_0 is derived as omega_1 inside the criterion; it is not configurable.
     # Measured flat: 0.07 vs 0.10 on Qwen3-0.6B -> MiniLMv2-H384 (seed 42) was a
     # tie (75.25 vs 75.21), so the Hinton-convention default is kept rather than
-    # tuned.
-    direct_temp = 0.10  # shared by both sides of the direct scale
+    # tuned. This is the last student temperature that is still a free choice; 0
+    # derives it at startup as the median entropic-affinity bandwidth of the graph
+    # (the ambient target is the transition-row construction with the
+    # sparsification removed, so the graph's typical bandwidth is its natural
+    # scale). If the derived arm measures flat too, 0 becomes the default and no
+    # student temperature anywhere in the method is a hyperparameter.
+    direct_temp = 0.10  # shared by both sides of the direct scale; 0 = derived
 
     # Optional head--tail estimator of teacher-weighted cosine distortion. The
     # deterministic stratum is evaluated exactly and one teacher-proportional tail
@@ -203,6 +208,8 @@ class HeatGeoConfig(BaseConfig):
             setattr(self, k, v)
         if self.row_weight < 0:
             raise ValueError("row_weight must be non-negative")
+        if self.direct_temp < 0:
+            raise ValueError("direct_temp must be positive, or 0 to derive it")
         if self.unbiased_geometry_weight < 0:
             raise ValueError("unbiased_geometry_weight must be non-negative")
         if self.row_start_epoch < 1:

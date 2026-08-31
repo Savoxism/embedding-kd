@@ -734,6 +734,78 @@ class HeatGeoDistillation(nn.Module):
             ).sum(dim=-1).mean(),
         }
 
+    @torch.no_grad()
+    def _ambient_diffusion_audit(
+        self,
+        target: torch.Tensor,
+        self_mask: torch.Tensor,
+        own_mask: torch.Tensor,
+    ) -> dict[str, torch.Tensor]:
+        """How much the ambient and diffusion scales still argue inside the own draw.
+
+        The domain split silenced their disagreement on *other anchors'* columns,
+        but both scales still score the anchor's own candidates, and there the
+        contested ground is the zero-diffusion-target columns: hard negatives carry
+        high teacher cosine (so real ambient mass) and exactly zero diffusion mass
+        (excluded from the mutual-kNN graph), so ambient pulls up what the r>=1
+        softmax normalization pushes down. Uniform negatives sit in the same set but
+        their teacher cosine is low, so `amb_mass_on_zero_diff` is dominated by the
+        hard negatives without the criterion needing to know the draw's segmenting.
+
+        This is the same loss-floor accounting that motivated the domain split (the
+        0.42-nat JS on the shared pool), scoped to what remains. Read it as: if
+        `amb_diff_js_own` stays near zero, the residual tension is noise; if it is a
+        large share of the loss floor, the diffusion domain is the next thing to
+        restrict. Diagnostics only -- nothing here touches the objective.
+        """
+        zero = target.new_zeros(())
+        empty = {
+            "amb_mass_own": zero,
+            "amb_mass_on_zero_diff": zero,
+            "amb_diff_js_own": zero,
+        }
+        if not getattr(self, "direct_active", False):
+            return empty
+
+        # `target` already carries the ambient profile at index 0, so index 1 is the
+        # r=1 transition target and 1: is the whole diffusion group.
+        ambient = target[:, 0, :]
+        own_valid = own_mask & ~self_mask
+        amb_own = ambient * own_valid
+        amb_mass_own = amb_own.sum(dim=-1)
+
+        diffusion_total = target[:, 1:, :].sum(dim=1)
+        zero_diff = own_valid & (diffusion_total <= 0)
+        amb_mass_zero = (ambient * zero_diff).sum(dim=-1)
+
+        neighbor = target[:, 1, :]
+        usable = (amb_mass_own > 1e-12) & (neighbor.sum(dim=-1) > 0)
+        if bool(usable.any()):
+            a_own = amb_own[usable] / amb_own[usable].sum(dim=-1, keepdim=True)
+            g_nbr = neighbor[usable]
+            mixture = 0.5 * (a_own + g_nbr)
+
+            def _entropy(p: torch.Tensor) -> torch.Tensor:
+                logp = torch.where(
+                    p > 0, p.clamp_min(1e-12).log(), torch.zeros_like(p)
+                )
+                return -(p * logp).sum(dim=-1)
+
+            js = (
+                _entropy(mixture)
+                - 0.5 * _entropy(a_own)
+                - 0.5 * _entropy(g_nbr)
+            ).clamp_min(0.0)
+            js_mean = js.mean()
+        else:
+            js_mean = zero
+
+        return {
+            "amb_mass_own": amb_mass_own.mean(),
+            "amb_mass_on_zero_diff": amb_mass_zero.mean(),
+            "amb_diff_js_own": js_mean,
+        }
+
     def forward(
         self,
         anchor_embeddings: torch.Tensor,
@@ -981,6 +1053,7 @@ class HeatGeoDistillation(nn.Module):
                 self.unbiased_geometry_weight * loss_geometry,
             ),
             *geometry_metrics.items(),
+            *self._ambient_diffusion_audit(target, self_mask, own_mask).items(),
         ]
         geometry_values = torch.stack(
             [value.detach().float() for _, value in geometry_entries]

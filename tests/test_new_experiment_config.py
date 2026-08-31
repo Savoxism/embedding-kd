@@ -904,3 +904,95 @@ def test_final_student_weights_are_idempotent(tmp_path):
     assert [path.name for path in files] == ["student_epoch_5.pt"]
     payload = torch.load(files[0], map_location="cpu", weights_only=False)
     assert payload["epoch"] == 5
+
+
+def test_heatgeo_cli_diffusion_scales_and_derived_direct_temp(monkeypatch):
+    """The two new ablation surfaces: R override and the derived tau_0 sentinel."""
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "main.py",
+            "--method",
+            "heatgeo",
+            "--diffusion_scales",
+            "1",
+            "--direct_temp",
+            "0",
+        ],
+    )
+    args = main.parse_args()
+    config = main.get_config(args.method, args)
+    assert config.diffusion_scales == (1,)
+    # 0 is the "derive from the graph" sentinel; the distiller resolves it to the
+    # median entropic-affinity bandwidth before the criterion is constructed.
+    assert config.direct_temp == 0.0
+
+    from config import HeatGeoConfig
+
+    with pytest.raises(ValueError, match="direct_temp"):
+        HeatGeoConfig(direct_temp=-0.1)
+
+
+def test_heatgeo_ambient_diffusion_audit_metrics():
+    """The residual ambient-vs-diffusion audit inside the own draw.
+
+    The domain split silenced the argument on other anchors' columns; these
+    metrics measure what remains on the anchor's own zero-diffusion-target
+    columns (hard/uniform negatives). Diagnostics only: the loss decomposition
+    identities are pinned elsewhere and must be unaffected.
+    """
+    torch.manual_seed(7)
+    teacher_bank = F.normalize(torch.randn(6, 4), dim=-1)
+    anchor_embeddings = F.normalize(torch.randn(2, 4), dim=-1)
+    candidate_embeddings = F.normalize(torch.randn(2, 3, 4), dim=-1)
+    candidate_idx = torch.tensor([[1, 2, 3], [0, 4, 5]], dtype=torch.long)
+    anchor_idx = torch.tensor([0, 1], dtype=torch.long)
+
+    criterion = HeatGeoDistillation(
+        diffusion_scales=(1, 2),
+        teacher_embeddings=teacher_bank,
+        row_weight=0.0,
+    )
+
+    # Every own column carries diffusion mass -> nothing is contested.
+    dense_probs = torch.rand(2, 2, 3) + 0.1
+    _, metrics = criterion(
+        anchor_embeddings=anchor_embeddings,
+        candidate_embeddings=candidate_embeddings,
+        teacher_probs=dense_probs,
+        candidate_idx=candidate_idx,
+        anchor_idx=anchor_idx,
+    )
+    assert metrics["amb_mass_on_zero_diff"] == pytest.approx(0.0, abs=1e-8)
+    assert 0.0 < metrics["amb_mass_own"] <= 1.0 + 1e-6
+    assert metrics["amb_diff_js_own"] >= 0.0
+
+    # The last own column of each anchor has zero mass at every diffusion scale
+    # (a stand-in hard negative): the ambient mass it carries is the contested
+    # ground the metric must report.
+    contested = torch.rand(2, 2, 3) + 0.1
+    contested[:, :, -1] = 0.0
+    _, metrics = criterion(
+        anchor_embeddings=anchor_embeddings,
+        candidate_embeddings=candidate_embeddings,
+        teacher_probs=contested,
+        candidate_idx=candidate_idx,
+        anchor_idx=anchor_idx,
+    )
+    assert metrics["amb_mass_on_zero_diff"] > 0.0
+    assert (
+        metrics["amb_mass_on_zero_diff"] <= metrics["amb_mass_own"] + 1e-8
+    )
+    # JS is bounded by log 2 and positive once the supports differ.
+    assert 0.0 < metrics["amb_diff_js_own"] <= float(np.log(2.0)) + 1e-6
+
+    # Without corpus indices the ambient scale is off and the audit reports
+    # inert zeros rather than raising.
+    _, metrics = criterion(
+        anchor_embeddings=anchor_embeddings,
+        candidate_embeddings=candidate_embeddings,
+        teacher_probs=dense_probs,
+    )
+    assert metrics["amb_mass_own"] == 0.0
+    assert metrics["amb_diff_js_own"] == 0.0
