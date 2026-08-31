@@ -62,6 +62,11 @@ from src.evaluation.evaluation_automodel import (
     test_sts_tasks,
 )
 from src.heatgeo import HeatGeoCandidateSampler, build_or_load_heatgeo_artifact
+from src.heatgeo.policy import (
+    DETERMINISTIC_TOPM,
+    ROW_COVERAGE_TAU,
+    derive_diffusion_quota,
+)
 from src.loss import info_nce
 
 
@@ -525,13 +530,24 @@ class KnowledgeDistiller:
             print("Teacher model freed from GPU memory")
 
             if cfg.distill_method == "heatgeo":
+                if cfg.diffusion_quota is None:
+                    # Written back onto the config so the run manifest and the
+                    # banner below record the concrete value this run trained on.
+                    cfg.diffusion_quota = derive_diffusion_quota(
+                        self.heatgeo_artifact["pool_probs"].numpy(),
+                        self.heatgeo_artifact["metadata"]["diffusion_scales"],
+                    )
+                    print(
+                        f"Derived diffusion_quota={cfg.diffusion_quota} "
+                        f"(coverage tau={ROW_COVERAGE_TAU} at the median anchor)"
+                    )
                 self.heatgeo_sampler = HeatGeoCandidateSampler(
                     artifact=self.heatgeo_artifact,
                     diffusion_quota=cfg.diffusion_quota,
                     hard_neg_k=cfg.hard_neg_k,
                     random_neg_k=cfg.random_neg_k,
                     seed=cfg.seed,
-                    deterministic_topm=cfg.deterministic_topm,
+                    deterministic_topm=DETERMINISTIC_TOPM,
                 )
                 anchor_texts = df[self.heatgeo_anchor_column].astype(str).tolist()
                 self.train_ds = TextPairWithTeacherAndHeatGeo(

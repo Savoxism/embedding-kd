@@ -8,13 +8,15 @@ import torch.nn.functional as F
 
 import main
 from distiller import KnowledgeDistiller, add_domain_averages
-from src.distill.checkpointing import save_student_weights
 from src.criterions.heatgeo_distillation import HeatGeoDistillation
+from src.distill.checkpointing import save_student_weights
 from src.heatgeo.candidate_sampler import HeatGeoCandidateSampler
 from src.heatgeo.graph_builder import _entropic_affinity, _mass_prefix, _softmax_at
 from src.heatgeo.policy import (
     FIXED_BANDWIDTH_TEMP,
+    ROW_COVERAGE_TAU,
     candidate_budget,
+    derive_diffusion_quota,
     hard_negative_pool_size,
     normalized_diffusion_weights,
 )
@@ -98,10 +100,12 @@ def test_evaluation_table_renders_every_family(capsys):
     from src.distill.benchmarks import print_evaluation_table
 
     results = {
-        "classification": {"data/test_set/emotion_test.csv": {"accuracy": 0.7,
-                                                              "f1": 0.62}},
-        "pair": {"data/test_set/wic_test.csv": {"accuracy": 0.62,
-                                                "average_precision": 0.65}},
+        "classification": {
+            "data/test_set/emotion_test.csv": {"accuracy": 0.7, "f1": 0.62}
+        },
+        "pair": {
+            "data/test_set/wic_test.csv": {"accuracy": 0.62, "average_precision": 0.65}
+        },
         "sts": {"data/test_set/stsb_test.csv": 0.766},
     }
     print_evaluation_table(current_epoch=3, split="test", results=results)
@@ -238,6 +242,25 @@ def test_canonical_policy_preserves_the_previous_resolved_values():
     )
 
 
+def test_derived_diffusion_quota_reads_the_coverage_knee_off_the_artifact():
+    # Anchor 0 concentrates its mixture in 2 columns, anchor 1 needs 4, anchor 2
+    # never reaches tau at all (tiny component) and must fall back to its full
+    # 2-column support. The median anchor decides.
+    single_scale = np.zeros((1, 3, 5), dtype=np.float32)
+    single_scale[0, 0] = [0.6, 0.2, 0.1, 0.05, 0.05]
+    single_scale[0, 1] = [0.2, 0.2, 0.2, 0.2, 0.2]
+    single_scale[0, 2] = [0.3, 0.3, 0.0, 0.0, 0.0]
+    assert ROW_COVERAGE_TAU == 0.7
+    assert derive_diffusion_quota(single_scale, (1,)) == 2
+
+    # The mixture is weighted by omega_r = 1/r, so a broad r=2 row cannot drag
+    # the quota up as far as its raw mass suggests.
+    two_scale = np.zeros((2, 1, 5), dtype=np.float32)
+    two_scale[0, 0] = [0.9, 0.1, 0.0, 0.0, 0.0]
+    two_scale[1, 0] = [0.2, 0.2, 0.2, 0.2, 0.2]
+    assert derive_diffusion_quota(two_scale, (1, 2)) == 2
+
+
 def test_heatgeo_relational_loss_reports_semantic_decomposition():
     """Renaming the scale groups must not change the optimized objective."""
     torch.manual_seed(7)
@@ -370,8 +393,12 @@ def test_sampler_mixture_row_matches_the_weighted_pool_and_feeds_the_spill():
         "metadata": {"diffusion_scales": (1, 2)},
     }
     sampler = HeatGeoCandidateSampler(
-        artifact=artifact, diffusion_quota=5, hard_neg_k=0, random_neg_k=1,
-        deterministic_topm=1, seed=0,
+        artifact=artifact,
+        diffusion_quota=5,
+        hard_neg_k=0,
+        random_neg_k=1,
+        deterministic_topm=1,
+        seed=0,
     )
 
     weights = np.array([1.0, 0.5])

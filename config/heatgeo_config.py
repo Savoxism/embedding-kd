@@ -34,6 +34,9 @@ class HeatGeoConfig(BaseConfig):
 
     # ---- Direct Scale (r=0) --------------------------------------------------
     # omega_0 is derived as omega_1 inside the criterion; it is not configurable.
+    # Measured flat: 0.07 vs 0.10 on Qwen3-0.6B -> MiniLMv2-H384 (seed 42) was a
+    # tie (75.25 vs 75.21), so the Hinton-convention default is kept rather than
+    # tuned.
     direct_temp = 0.10  # shared by both sides of the direct scale
 
     # ---- Teacher Graph -------------------------------------------------------
@@ -104,12 +107,21 @@ class HeatGeoConfig(BaseConfig):
     truncation_tolerance = 0.01
 
     # ---- Per-Epoch Candidate Sampling ---------------------------------------
-    diffusion_quota = 14
-    hard_neg_k = 26
+    # None derives the support size from the graph artifact at startup: the
+    # smallest k reaching ROW_COVERAGE_TAU mixture-mass coverage at the median
+    # anchor (src/heatgeo/policy.py, where the sweep evidence for the target is
+    # recorded). An int (CLI --diffusion_quota) still overrides for ablations.
+    diffusion_quota = None
+    # 40/26 is the best-known arm (75.29 on Qwen3-0.6B -> MiniLMv2-H384, graph
+    # v9, seed 42). The hard:random split has not been shown flat yet -- that one
+    # ablation is what stands between these two numbers and a single derived
+    # candidate budget.
+    hard_neg_k = 40
     random_neg_k = 26
-    # candidate_size is derived as 14 + 26 + 26 = 66. Candidates are always
-    # resampled per epoch with mass-proportional stochastic tails.
-    deterministic_topm = 2
+    # candidate_size is derived as the sum of the three quotas. Candidates are
+    # always resampled per epoch with mass-proportional stochastic tails; the
+    # deterministic head of each draw is DETERMINISTIC_TOPM in policy.py, not a
+    # config knob.
 
     # ---- Corpus Columns ------------------------------------------------------
     # Which column is the graph node, and which defines "same source" for hard
@@ -122,7 +134,11 @@ class HeatGeoConfig(BaseConfig):
     # ---- Training Setup ------------------------------------------------------
     batch_size = 64
     epochs = 5
-    learning_rate = 2e-5
+    # 2e-5 undertrains inside the fixed 5-epoch budget: validation avg was still
+    # rising monotonically at epoch 5. At 3e-5 the test avg plateaus from epoch 2
+    # (74.59 -> 75.19 -> ~flat) with stable grad norms, so the budget is actually
+    # spent.
+    learning_rate = 3e-5
     min_lr = 3e-6
     num_workers = 4
     # Validate every epoch. This was 0, which made a five-epoch run report exactly
@@ -181,3 +197,5 @@ class HeatGeoConfig(BaseConfig):
             raise ValueError("row_weight must be non-negative")
         if self.row_start_epoch < 1:
             raise ValueError("row_start_epoch must be at least 1")
+        if self.diffusion_quota is not None and self.diffusion_quota < 0:
+            raise ValueError("diffusion_quota must be None (derived) or non-negative")

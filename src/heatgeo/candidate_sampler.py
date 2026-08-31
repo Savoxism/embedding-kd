@@ -1,7 +1,7 @@
 import numpy as np
 import torch
 
-from .policy import candidate_budget, normalized_diffusion_weights
+from .policy import DETERMINISTIC_TOPM, candidate_budget, normalized_diffusion_weights
 
 
 def _gumbel_topk(probs: np.ndarray, k: int, rng: np.random.Generator) -> np.ndarray:
@@ -33,7 +33,7 @@ class HeatGeoCandidateSampler:
         hard_neg_k: int,
         random_neg_k: int,
         seed: int,
-        deterministic_topm: int = 4,
+        deterministic_topm: int = DETERMINISTIC_TOPM,
     ):
         self.pool_indices = artifact["pool_indices"].numpy()
         self.pool_probs = artifact["pool_probs"].numpy()
