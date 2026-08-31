@@ -16,7 +16,7 @@ Diffusion & Scales $\{1,2,4\}$; truncation tolerance $0.01$ \\
 Candidates & $66$ per anchor: $14$ target, $26$ hard, $26$ random \\
 Optimization & AdamW; batch size $32$; $5$ epochs; LR $2\times10^{-5}$ \\
 Schedule & $6\%$ warm-up; cosine decay to $3\times10^{-6}$ \\
-Mass calibration & Stratified hard/uniform complement; $\lambda_{\mathrm{mass}}=0.5$ \\
+Row supervision & $4$ walks of length $4$; $\lambda_{\mathrm{row}}=0.5$ \\
 Ambient profile & Temperature $0.10$ \\
 \bottomrule
 \end{tabular}
@@ -32,14 +32,14 @@ Teacher embeddings, graph neighborhoods, and diffusion targets are computed once
 \label{app:entropic-bandwidth}
 For each graph row, we choose its softmax temperature by bisection so that the transition distribution has the target perplexity in Table~\ref{tab:ripple-config}. Rows whose degree is below the target use the largest feasible entropy; degree-one and constant-score rows use the uniform distribution on their available support. Broader diffusion profiles use temperature scaled by the square root of the walk scale and loss weight inversely proportional to scale. Sparse profiles retain the smallest support carrying at least $99\%$ of their mass.
 
-For candidate selection, RIPPLE keeps the highest-mass target entries and samples the remaining target quota without replacement in proportion to teacher mass. The complement is partitioned into a hard-negative stratum and all remaining corpus items. Each stratum is sampled uniformly without replacement using the quotas in Table~\ref{tab:ripple-config}; every sampled ambient item carries inverse marginal inclusion probability $H/k_h$ or $U/k_u$. Candidates are deduplicated across anchors before encoding.
+For candidate selection, RIPPLE keeps the highest-mass target entries and samples the remaining target quota without replacement in proportion to teacher mass. It then adds hard and random negatives using the quotas in Table~\ref{tab:ripple-config}. Non-backtracking teacher walks select additional transition rows; visited nodes replace random negatives when needed. Candidates are deduplicated across anchors before encoding.
 
 \subsection{Controlled Comparisons}
 
 \paragraph{Core ablations.}
 \label{app:ablation-protocol}
-All variants use the same initialization, optimizer, epochs, seeds, and scored anchor--column budget. Batch-local KD normalizes over co-occurring examples; random corpus support uses a uniformly sampled support of matched size; one-step RIPPLE uses only direct graph rows; diffusion adds broader targets; and full RIPPLE adds support-mass calibration. The random-graph control preserves graph size and degree sequence while rewiring adjacency, then uses the same targets, sampler, and loss construction.
+All variants use the same initialization, optimizer, epochs, seeds, and scored anchor--column budget. Batch-local KD normalizes over co-occurring examples; random corpus support uses a uniformly sampled support of matched size; one-step RIPPLE uses only direct graph rows; diffusion adds broader targets; and full RIPPLE adds walk-selected row supervision. An injection-only control uses the same walks and candidate replacement with $\lambda_{\mathrm{row}}=0$. The random-graph control preserves graph size and degree sequence while rewiring adjacency, then uses the same targets, sampler, and loss construction.
 
 \paragraph{Mechanism and efficiency diagnostics.}
 \label{app:diagnostic-protocols}
-Graph-width comparisons hold candidate budget and optimization fixed and report retained teacher mass plus JS divergence in fixed teacher-rank bands. Candidate-budget comparisons report retained mass, selected-versus-unselected mass calibration, student off-support mass, gradient agreement with full scoring, time, and peak memory. Mass-calibration comparisons report Bernoulli KL, absolute support-mass error, and sampled-versus-full complement-partition error. All diagnostics use the same anchor set, hardware, and software stack across variants.
+Graph-width comparisons hold candidate budget and optimization fixed and report retained teacher mass plus JS divergence in fixed teacher-rank bands. Candidate-budget comparisons report retained mass, row hit rate, effective row denominator, time, and peak memory. Row-supervision comparisons report transition-row KL, distinct supervised rows, and walk coverage. All diagnostics use the same anchor set, hardware, and software stack across variants.

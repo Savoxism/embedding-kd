@@ -16,11 +16,10 @@ from .policy import (
     normalized_diffusion_weights,
 )
 
-# 7: the lazy-walk truncation holds the anchor's own column out of the tolerance
-#    budget, so the discarded mass of every target is `truncation_tolerance`.
-#    Row supervision has since been removed, but its padded transition arrays were
-#    auxiliary only: existing v7 diffusion targets remain valid and are reusable.
-ARTIFACT_VERSION = 7
+# 8: restore padded transition rows required by L_row. Version 7 diffusion targets
+#    remain mathematically valid, but do not contain the arrays needed to sample and
+#    supervise non-anchor rows, so those caches must be rebuilt once.
+ARTIFACT_VERSION = 8
 
 # Anchors diffused per sparse matrix product. The intermediate X @ P holds up to
 # block_size * keep_topk * max_degree nonzeros, so this trades memory for the
@@ -922,11 +921,20 @@ def build_or_load_heatgeo_artifact(
         _target_sharpness_stats(pool_indices, pool_probs, scales, weights)
     )
 
+    max_degree = max(len(neighbors) for neighbors in row_neighbors)
+    transition_neighbors = np.full((n_items, max_degree), -1, dtype=np.int64)
+    transition_probs = np.zeros((n_items, max_degree), dtype=np.float32)
+    for row, (neighbors, probs) in enumerate(zip(row_neighbors, row_probs)):
+        transition_neighbors[row, : len(neighbors)] = neighbors
+        transition_probs[row, : len(probs)] = probs
+
     artifact = {
         "pool_indices": torch.from_numpy(pool_indices).long(),
         "pool_probs": torch.from_numpy(pool_probs).float(),
         "hard_neg_indices": torch.from_numpy(hard_neg_indices).long(),
         "source_ids": torch.from_numpy(source_array).long(),
+        "transition_neighbors": torch.from_numpy(transition_neighbors).long(),
+        "transition_probs": torch.from_numpy(transition_probs).float(),
         # The temperature each transition row was built at. The criterion matches
         # row i at row_temps[i]: the tie is per row, and the shift family that
         # makes zero loss attainable does not depend on the value.

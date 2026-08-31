@@ -71,9 +71,10 @@ def parse_args():
         help="Target transition-row perplexity; 0 uses the fixed-bandwidth baseline",
     )
     parser.add_argument("--truncation_tolerance", type=float, default=None)
-    parser.add_argument("--mass_weight", type=float, default=None)
-    parser.add_argument("--geo_weight", type=float, default=None)
-    parser.add_argument("--sym_weight", type=float, default=None)
+    parser.add_argument("--num_walks", type=int, default=None)
+    parser.add_argument("--walk_length", type=int, default=None)
+    parser.add_argument("--row_weight", type=float, default=None)
+    parser.add_argument("--row_start_epoch", type=int, default=None)
     parser.add_argument("--direct_temp", type=float, default=None)
     parser.add_argument("--diffusion_quota", type=int, default=None)
     parser.add_argument("--hard_neg_k", type=int, default=None)
@@ -204,9 +205,10 @@ def get_config(method: str, args):
     heatgeo_overrides = (
         "graph_k",
         "truncation_tolerance",
-        "mass_weight",
-        "geo_weight",
-        "sym_weight",
+        "num_walks",
+        "walk_length",
+        "row_weight",
+        "row_start_epoch",
         "direct_temp",
         "diffusion_quota",
         "hard_neg_k",

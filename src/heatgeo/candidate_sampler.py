@@ -19,15 +19,11 @@ def _gumbel_topk(probs: np.ndarray, k: int, rng: np.random.Generator) -> np.ndar
 
 
 class HeatGeoCandidateSampler:
-    """Draw teacher support plus a stratified sample of its complement.
+    """Draw relational candidates and teacher-walk rows for ``L_row``.
 
-    Teacher-selected entries define ``C_i`` and retain their absolute diffusion
-    probability. Hard and uniform ambient entries are sampled from disjoint strata
-    and carry inverse inclusion probabilities. The criterion uses those weights to
-    estimate the full student partition outside ``C_i`` for support-mass calibration.
-
-    Sampling is seeded by ``(seed, epoch, idx)``, so it is reproducible and safe in
-    multi-worker dataloaders while still changing between epochs.
+    Candidate and walk streams are independently seeded by ``(seed, epoch, idx)``.
+    Walk-visited nodes replace uniform negatives when possible, so their embeddings
+    can supervise transition rows without an additional student forward pass.
     """
 
     def __init__(
@@ -38,6 +34,8 @@ class HeatGeoCandidateSampler:
         random_neg_k: int,
         seed: int,
         deterministic_topm: int = 4,
+        num_walks: int = 0,
+        walk_length: int = 1,
     ):
         self.pool_indices = artifact["pool_indices"].numpy()
         self.pool_probs = artifact["pool_probs"].numpy()
@@ -51,13 +49,30 @@ class HeatGeoCandidateSampler:
         self.diffusion_quota = int(diffusion_quota)
         self.hard_neg_k = int(hard_neg_k)
         self.random_neg_k = int(random_neg_k)
-        if self.random_neg_k < 1:
-            raise ValueError(
-                "random_neg_k must be positive: L_mass needs a sample from the "
-                "non-hard complement stratum"
-            )
         self.deterministic_topm = int(deterministic_topm)
         self.seed = int(seed)
+        self.num_walks = int(num_walks)
+        self.walk_length = int(walk_length)
+        if self.num_walks < 0:
+            raise ValueError("num_walks must be non-negative")
+        if self.walk_length < 1:
+            raise ValueError("walk_length must be positive")
+        if self.num_walks > 0:
+            missing = {
+                key
+                for key in ("transition_neighbors", "transition_probs")
+                if key not in artifact
+            }
+            if missing:
+                raise ValueError(
+                    "L_row sampling requires graph transition arrays; rebuild the "
+                    f"HeatGeo artifact (missing: {', '.join(sorted(missing))})"
+                )
+            self.transition_neighbors = artifact["transition_neighbors"].numpy()
+            self.transition_probs = artifact["transition_probs"].numpy()
+        else:
+            self.transition_neighbors = None
+            self.transition_probs = None
 
         scales = tuple(artifact.get("metadata", {}).get("diffusion_scales", ()))
         if len(scales) != self.n_scales:
@@ -75,9 +90,12 @@ class HeatGeoCandidateSampler:
     def set_epoch(self, epoch: int) -> None:
         self.epoch = int(epoch)
 
-    def _rng(self, idx: int) -> np.random.Generator:
+    _STREAM_CANDIDATES = 0
+    _STREAM_ROWS = 1
+
+    def _rng(self, idx: int, stream: int = 0) -> np.random.Generator:
         return np.random.default_rng(
-            np.random.SeedSequence([self.seed, self.epoch, idx])
+            np.random.SeedSequence([self.seed, self.epoch, idx, stream])
         )
 
     def _scale_quotas(self, total: int) -> list[int]:
@@ -131,9 +149,9 @@ class HeatGeoCandidateSampler:
         support_positions = np.asarray(positions, dtype=np.int64)
         return pool[support_positions].astype(np.int64), support_positions
 
-    def sample(self, idx: int) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-        """Return candidates, absolute teacher mass, and ambient HT weights."""
-        rng = self._rng(idx)
+    def sample(self, idx: int) -> tuple[np.ndarray, np.ndarray]:
+        """Return candidates and diffusion targets restricted to that draw."""
+        rng = self._rng(idx, self._STREAM_CANDIDATES)
         support, support_positions = self._select_support(idx, rng)
         support_set = set(int(node) for node in support)
 
@@ -173,23 +191,12 @@ class HeatGeoCandidateSampler:
         )
         candidate_arr = np.concatenate([support, hard_nodes, uniform_nodes])
 
-        ambient_importance = np.zeros(candidate_arr.size, dtype=np.float32)
-        hard_end = support.size + n_hard
-        if n_hard:
-            ambient_importance[support.size : hard_end] = len(hard_pool) / n_hard
-        if n_uniform:
-            ambient_importance[hard_end:] = uniform_population / n_uniform
-
-        # Only the deliberate teacher support belongs to C_i. An ambient draw that
-        # happens to hit another graph node remains in the complement estimator.
-        teacher_probs = np.zeros(
-            (self.n_scales, candidate_arr.size), dtype=np.float32
-        )
+        teacher_probs = np.zeros((self.n_scales, candidate_arr.size), dtype=np.float32)
         if support.size:
             teacher_probs[:, : support.size] = self.pool_probs[
                 :, idx, support_positions
             ]
-        return candidate_arr, teacher_probs, ambient_importance
+        return candidate_arr, teacher_probs
 
     def _draw_random(
         self, rng: np.random.Generator, excluded: set[int], count: int
@@ -214,10 +221,77 @@ class HeatGeoCandidateSampler:
             excluded.add(node)
         return drawn
 
+    def _sample_walks(self, idx: int) -> tuple[np.ndarray, list[int]]:
+        """Sample non-backtracking teacher walks and return visited rows."""
+        rng = self._rng(idx, self._STREAM_ROWS)
+        walks = np.empty((self.num_walks, self.walk_length + 1), dtype=np.int64)
+        visited: dict[int, None] = {}
+        for walk in range(self.num_walks):
+            current = int(idx)
+            previous = -1
+            walks[walk, 0] = current
+            for step in range(self.walk_length):
+                neighbors = self.transition_neighbors[current]
+                probs = self.transition_probs[current]
+                valid = (neighbors >= 0) & (probs > 0)
+                if previous >= 0:
+                    forward = valid & (neighbors != previous)
+                    if forward.any():
+                        valid = forward
+                if not valid.any():
+                    walks[walk, step + 1] = current
+                    continue
+                choices = neighbors[valid]
+                choice_probs = probs[valid].astype(np.float64)
+                choice_probs /= choice_probs.sum()
+                next_node = int(rng.choice(choices, p=choice_probs))
+                walks[walk, step + 1] = next_node
+                if next_node != idx:
+                    visited[next_node] = None
+                previous, current = current, next_node
+        return walks, list(visited)
+
+    def sample_with_rows(self, idx: int) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        if self.num_walks > 0:
+            row_paths, visited_rows = self._sample_walks(idx)
+        else:
+            row_paths = np.full((1, 2), -1, dtype=np.int64)
+            visited_rows = []
+
+        candidate_arr, teacher_probs = self.sample(idx)
+        if not visited_rows:
+            return candidate_arr, teacher_probs, row_paths
+
+        existing = set(int(node) for node in candidate_arr)
+        missing_rows = [node for node in visited_rows if node not in existing]
+        pool_set = {int(node) for node in self.pool_indices[idx] if int(node) >= 0}
+        hard_set = {int(node) for node in self.hard_neg_indices[idx] if int(node) >= 0}
+        replaceable = [
+            position
+            for position, node in enumerate(candidate_arr)
+            if int(node) not in pool_set
+            and int(node) not in hard_set
+            and int(node) != idx
+        ]
+        for node, position in zip(missing_rows, replaceable):
+            candidate_arr[position] = node
+
+        position_of = {
+            int(node): position
+            for position, node in enumerate(self.pool_indices[idx])
+            if int(node) >= 0
+        }
+        teacher_probs.fill(0.0)
+        for position, node in enumerate(candidate_arr):
+            pool_position = position_of.get(int(node), -1)
+            if pool_position >= 0:
+                teacher_probs[:, position] = self.pool_probs[:, idx, pool_position]
+        return candidate_arr, teacher_probs, row_paths
+
     def sample_torch(self, idx: int) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        candidate_arr, teacher_probs, ambient_importance = self.sample(idx)
+        candidate_arr, teacher_probs, row_paths = self.sample_with_rows(idx)
         return (
             torch.from_numpy(candidate_arr).long(),
             torch.from_numpy(teacher_probs).float(),
-            torch.from_numpy(ambient_importance).float(),
+            torch.from_numpy(row_paths).long(),
         )

@@ -6,15 +6,15 @@ Relational KD realizes this idea by aligning teacher and student similarities, b
 
 We quantify this limitation through \emph{exposed teacher mass}: the probability mass that a global teacher target assigns to the relations observed during training. Our analysis shows that mini-batch coverage is governed by random co-occurrence rather than teacher relevance. Teacher-proportional selection instead adapts to how concentrated the teacher's relational signal is. This gap makes support selection a central design choice rather than a minor implementation detail.
 
-The limitation is therefore not mini-batch computation, but mini-batch relation selection. \textbf{RIPPLE} follows the opposite design principle: \emph{teacher geometry selects the relations; the mini-batch only computes them}. A cached teacher graph replaces random co-occurrence with teacher-selected support. Diffusion extends this support into multi-hop targets~\citep{coifman2006diffusionmaps}; mass-aware sampling keeps the target compact; and support-mass calibration aligns its probability against the unselected complement. Candidate pooling preserves the encoding reuse that makes mini-batches efficient.
+The limitation is therefore not mini-batch computation, but mini-batch relation selection. \textbf{RIPPLE} follows the opposite design principle: \emph{teacher geometry selects the relations; the mini-batch only computes them}. A cached teacher graph replaces random co-occurrence with teacher-selected support. Diffusion extends this support into multi-hop targets~\citep{coifman2006diffusionmaps}, while non-backtracking teacher walks select additional transition rows for supervision. Candidate pooling preserves the encoding reuse that makes mini-batches efficient.
 
-Across multiple datasets and teacher--student settings, RIPPLE consistently improves the mean compact-student result. The gains are strongest on semantic textual similarity, whereas pair-classification results are less uniform. We therefore complement the aggregate benchmark with matched-compute comparisons and diagnostics that separate corpus exposure, teacher-selected support, diffusion, mass calibration, and candidate efficiency.
+Across multiple datasets and teacher--student settings, RIPPLE consistently improves the mean compact-student result. The gains are strongest on semantic textual similarity, whereas pair-classification results are less uniform. We therefore complement the aggregate benchmark with matched-compute comparisons and diagnostics that separate corpus exposure, teacher-selected support, diffusion, row supervision, and candidate efficiency.
 
 Our contributions are:
 \begin{itemize}
     \item We formulate global relational transfer as a support-selection problem, characterize the target-agnostic exposure of mini-batches, and derive a finite-epoch bound connecting RIPPLE's selected support to global geometry distortion.
-    \item We introduce RIPPLE, which decouples teacher-driven relation selection from mini-batch computation using a cached teacher graph, multi-hop targets, mass-aware candidates, and support-mass calibration.
-    \item We evaluate RIPPLE across diverse embedding tasks and teacher--student settings, with controlled analyses of support selection, multi-hop targets, mass calibration, and candidate efficiency.
+    \item We introduce RIPPLE, which decouples teacher-driven relation selection from mini-batch computation using a cached teacher graph, multi-hop targets, and walk-selected transition-row supervision.
+    \item We evaluate RIPPLE across diverse embedding tasks and teacher--student settings, with controlled analyses of support selection, multi-hop targets, row supervision, and candidate efficiency.
 \end{itemize}
 
 \begin{figure}[t]

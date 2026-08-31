@@ -288,10 +288,14 @@ class KnowledgeDistiller:
                         diffusion_scales=config.diffusion_scales,
                         teacher_embeddings=self.teacher_cls_all[:, l_idx, :],
                         direct_temp=config.direct_temp,
-                        mass_weight=config.mass_weight,
-                        geo_weight=config.geo_weight,
-                        sym_weight=config.sym_weight,
+                        row_weight=config.row_weight,
                         row_temps=getattr(self, "heatgeo_artifact", {}).get("row_temps"),
+                        transition_neighbors=getattr(
+                            self, "heatgeo_artifact", {}
+                        ).get("transition_neighbors"),
+                        transition_probs=getattr(self, "heatgeo_artifact", {}).get(
+                            "transition_probs"
+                        ),
                     ).to(self.device_s)
                     self.heatgeo_criterions.append(criterion)
                 
@@ -319,10 +323,14 @@ class KnowledgeDistiller:
                     diffusion_scales=config.diffusion_scales,
                     teacher_embeddings=self.teacher_cls_all,
                     direct_temp=config.direct_temp,
-                    mass_weight=config.mass_weight,
-                    geo_weight=config.geo_weight,
-                    sym_weight=config.sym_weight,
+                    row_weight=config.row_weight,
                     row_temps=getattr(self, "heatgeo_artifact", {}).get("row_temps"),
+                    transition_neighbors=getattr(self, "heatgeo_artifact", {}).get(
+                        "transition_neighbors"
+                    ),
+                    transition_probs=getattr(self, "heatgeo_artifact", {}).get(
+                        "transition_probs"
+                    ),
                 ).to(self.device_s)
                 self.scheduler = self._build_scheduler()
                 print("HeatGeo criterion initialized (single layer)")
@@ -731,6 +739,8 @@ class KnowledgeDistiller:
                     random_neg_k=cfg.random_neg_k,
                     seed=cfg.seed,
                     deterministic_topm=cfg.deterministic_topm,
+                    num_walks=cfg.num_walks,
+                    walk_length=cfg.walk_length,
                 )
                 anchor_texts = df[self.heatgeo_anchor_column].astype(str).tolist()
                 self.train_ds = TextPairWithTeacherAndHeatGeo(
@@ -925,7 +935,7 @@ class KnowledgeDistiller:
                     "candidate_idx",
                     "candidate_inverse",
                     "teacher_probs",
-                    "ambient_importance",
+                    "row_paths",
                 }:
                     batch_s[k] = v.to(self.device_s, non_blocking=True)
 
@@ -997,9 +1007,9 @@ class KnowledgeDistiller:
                             anchor_embeddings=S_cls1,
                             candidate_embeddings=S_candidates,
                             teacher_probs=batch_s["teacher_probs"],
-                            ambient_importance=batch_s.get("ambient_importance"),
                             candidate_idx=batch_s.get("candidate_idx"),
                             anchor_idx=batch_s.get("idx"),
+                            row_paths=batch_s.get("row_paths"),
                         )
                         total_loss += heat_loss * getattr(cfg, "lambda_heatgeo", 1.0)
                         
@@ -1071,9 +1081,9 @@ class KnowledgeDistiller:
                         anchor_embeddings=S_cls1,
                         candidate_embeddings=S_candidates,
                         teacher_probs=batch_s["teacher_probs"],
-                        ambient_importance=batch_s.get("ambient_importance"),
                         candidate_idx=batch_s.get("candidate_idx"),
                         anchor_idx=batch_s.get("idx"),
+                        row_paths=batch_s.get("row_paths"),
                     )
                     loss = loss.float()
 
@@ -1761,19 +1771,9 @@ class KnowledgeDistiller:
             concise_metrics = (
                 ("rel", "loss_diff", True),
                 (
-                    "mass",
-                    "loss_mass_weighted",
-                    getattr(self.config, "mass_weight", 0.0) > 0,
-                ),
-                (
-                    "geo",
-                    "loss_geo_weighted",
-                    getattr(self.config, "geo_weight", 0.0) > 0,
-                ),
-                (
-                    "sym",
-                    "loss_sym_weighted",
-                    getattr(self.config, "sym_weight", 0.0) > 0,
+                    "row",
+                    "loss_row_weighted",
+                    getattr(self.config, "row_weight", 0.0) > 0,
                 ),
                 ("grad", "grad_norm", True),
             )
@@ -1809,8 +1809,8 @@ class KnowledgeDistiller:
         # have nothing to do with training. Print the example-weighted epoch means.
         if epoch_means:
             headline = [
-                "loss_diff", "loss_mass_weighted", "loss_geo_weighted",
-                "loss_sym_weighted", "js_floor", "loss_excess", "target_entropy",
+                "loss_diff", "loss_row_weighted", "row_count", "row_valid_ratio",
+                "row_node_hit_ratio", "js_floor", "loss_excess", "target_entropy",
                 "student_entropy", "student_entropy_ratio", "student_top1",
                 "target_top1", "candidates_per_anchor",
             ]
@@ -2219,6 +2219,22 @@ class KnowledgeDistiller:
 
             for epoch in range(cfg.epochs):
                 self.current_epoch = epoch
+
+                use_row = (
+                    cfg.distill_method == "heatgeo"
+                    and cfg.num_walks > 0
+                    and cfg.row_weight > 0
+                    and epoch + 1 >= cfg.row_start_epoch
+                )
+                if hasattr(self, "heatgeo_criterions"):
+                    for criterion in self.heatgeo_criterions:
+                        criterion.use_row_loss = use_row
+                elif self.criterion is not None and hasattr(
+                    self.criterion, "use_row_loss"
+                ):
+                    self.criterion.use_row_loss = use_row
+                if use_row:
+                    print(f"L_row is ENABLED for Epoch {epoch + 1}")
                 
                 avg_loss = self.train_epoch(epoch)
                 validation_results = None

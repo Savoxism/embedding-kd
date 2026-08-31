@@ -14,7 +14,7 @@ class HeatGeoConfig(BaseConfig):
 
     # ---- Objective -----------------------------------------------------------
     # No student temperature on the diffusion ladder is a free parameter. The
-    # criterion rejects scale_temps / broad_scale_temps /
+    # criterion rejects scale_temps / broad_scale_temps / row_temp /
     # direct_student_temp and derives all of them:
     #   tau_1(i) = tau_i     the r=1 target IS the transition row, so the student
     #                        reuses the per-row bandwidth stored in the graph;
@@ -24,6 +24,8 @@ class HeatGeoConfig(BaseConfig):
     #                        at 0.05 this is
     #                        (0.0707, 0.1000) for r = 2, 4 -- the values that were
     #                        previously written out by hand as (0.07, 0.10);
+    #   tau_row(j) = tau_j   row targets are transition rows, so each supervised
+    #                        row reuses its stored graph bandwidth;
     #   direct scale         one temperature (direct_temp) on both teacher and
     #                        student side (Hinton et al. 2015 convention).
     # direct_temp is the only student temperature left to choose. In-batch
@@ -51,20 +53,16 @@ class HeatGeoConfig(BaseConfig):
     diffusion_scales = (1, 2, 4)
     # omega_r = 1/r and omega_0 = omega_1 are derived centrally from these scales.
 
-    # ---- Support-Mass Calibration --------------------------------------------
-    # L_mass matches the teacher and student probability assigned to the selected
-    # support. Ambient hard/uniform samples estimate the student's full complement
-    # partition with inverse-inclusion weighting. This replaces row supervision;
-    # there are no walk paths, row-loss curriculum, or transition-row loss buffers.
-    mass_weight = 0.5
-
-    # ---- Selected-Support Geometry -------------------------------------------
-    # L_geo directly minimizes the theorem's teacher-mass-weighted bounded cosine
-    # distortion on each selected support. L_sym groups those directed relations
-    # into unordered edges and scores each shared cosine once. Both are opt-in so
-    # existing L_rel + L_mass runs remain exactly reproducible.
-    geo_weight = 0.0
-    sym_weight = 0.0
+    # ---- Row Supervision -----------------------------------------------------
+    # Non-backtracking teacher walks select non-anchor rows. L_row matches each
+    # selected node's complete available transition row rather than a sampled next
+    # step, so this is dense row-kernel supervision, not a trajectory likelihood.
+    num_walks = 4
+    walk_length = 4
+    row_weight = 0.5
+    # Human-facing, one-based epoch number. 2 reproduces the original curriculum:
+    # learn anchor geometry for one epoch, then enable non-anchor row matching.
+    row_start_epoch = 2
 
     # ---- Truncation ----------------------------------------------------------
     # Every capacity in the build is the same operation: keep a subset S of a
@@ -134,8 +132,8 @@ class HeatGeoConfig(BaseConfig):
     # kd_student_layers = [4, 8, 12, 12]
 
     # ---- Removed: auxiliary objectives ---------------------------------------
-    # The objective is L_rel + mass_weight * L_mass + geo_weight * L_geo
-    # + sym_weight * L_sym, all inside the HeatGeo criterion. lambda_heatgeo,
+    # The objective is L_rel + row_weight * L_row inside the HeatGeo criterion.
+    # lambda_heatgeo,
     # lambda_cosine, lambda_infonce,
     # lambda_simcse, simcse_temp, simcse_start_epoch and lambda_sim used to sit
     # here at 0. Every one of them is read only inside the multi-layer branch
@@ -156,14 +154,11 @@ class HeatGeoConfig(BaseConfig):
             )
         for k, v in kwargs.items():
             setattr(self, k, v)
-        if self.random_neg_k < 1:
-            raise ValueError(
-                "random_neg_k must be positive because L_mass estimates the "
-                "non-hard complement partition"
-            )
-        if self.mass_weight < 0:
-            raise ValueError("mass_weight must be non-negative")
-        if self.geo_weight < 0:
-            raise ValueError("geo_weight must be non-negative")
-        if self.sym_weight < 0:
-            raise ValueError("sym_weight must be non-negative")
+        if self.num_walks < 0:
+            raise ValueError("num_walks must be non-negative")
+        if self.walk_length < 1:
+            raise ValueError("walk_length must be positive")
+        if self.row_weight < 0:
+            raise ValueError("row_weight must be non-negative")
+        if self.row_start_epoch < 1:
+            raise ValueError("row_start_epoch must be at least 1")

@@ -120,22 +120,17 @@ class HeatGeoDistillation(nn.Module):
     term has been removed rather than left at weight 0: it also made the criterion
     carry trainable parameters, and a knob that cannot work is worse than no knob.
 
-    **Support-mass calibration.** Conditional KL on a selected support C_i does not
-    determine how much of the student's full-corpus probability belongs to C_i. For
-    every diffusion scale the sampler therefore retains
+    **Row supervision.** Diffusion KL supervises only rows indexed by batch anchors.
+    Non-backtracking teacher walks select additional nodes whose embeddings are
+    already present in the shared candidate pool. At every visited node j, L_row
+    matches the teacher's one-step transition row on the available teacher-neighbour
+    columns:
 
-        alpha_T = sum_{j in C_i} p_T(j)
+        L_row = E_{j ~ nu} KL(P^T_j|Omega_j || p^S_j|Omega_j).
 
-    before normalizing the conditional target. Hard and uniform ambient samples
-    carry inverse inclusion probabilities, giving a Horvitz--Thompson estimate of
-    the complement partition. With Z_C scored exactly and Z_bar estimated from the
-    ambient sample, alpha_S = Z_C / (Z_C + Z_bar) and
-
-        L_mass = sum_r omega_r KL(Bern(alpha_T,r) || Bern(alpha_S,r)).
-
-    This is the first term in the exact KL chain rule for the partition {C_i,
-    complement}; the conditional relational loss controls the within-support term,
-    while candidate selection makes the unresolved complement coefficient small.
+    Visit counts define the occupancy measure nu. The dense transition row is used
+    instead of a sampled successor, so this is row-kernel matching rather than a
+    trajectory likelihood. Each row uses its own stored graph bandwidth.
 
     **Temperature ties.** The temperatures are not free parameters and are
     therefore not constructor arguments:
@@ -187,10 +182,12 @@ class HeatGeoDistillation(nn.Module):
             "the whole ladder is derived: tau_1 is tied to graph_temp (or to the "
             "per-row bandwidth) and tau_r = sqrt(r) * tau_1"
         ),
-        "walk_temp": "row supervision was removed in favor of support-mass calibration",
-        "walk_weight": "use mass_weight; row supervision no longer exists",
-        "transition_neighbors": "transition rows are not consumed by the loss",
-        "transition_probs": "transition rows are not consumed by the loss",
+        "row_temp": "tied to the stored bandwidth of each supervised graph row",
+        "walk_temp": "use the derived per-row temperature; it is not configurable",
+        "walk_weight": "renamed to row_weight because the objective matches rows",
+        "mass_weight": "L_mass has been removed; use row_weight for L_row",
+        "geo_weight": "L_geo has been removed",
+        "sym_weight": "L_sym has been removed",
         "direct_student_temp": (
             "tied to direct_temp: the direct scale uses one temperature on both "
             "the teacher and the student side (Hinton et al., 2015)"
@@ -208,9 +205,9 @@ class HeatGeoDistillation(nn.Module):
         diffusion_scales: Sequence[int] | None = None,
         teacher_embeddings: torch.Tensor | None = None,
         direct_temp: float = 0.10,
-        mass_weight: float = 0.5,
-        geo_weight: float = 0.0,
-        sym_weight: float = 0.0,
+        transition_neighbors: torch.Tensor | None = None,
+        transition_probs: torch.Tensor | None = None,
+        row_weight: float = 0.5,
         row_temps: torch.Tensor | None = None,
         **kwargs,
     ):
@@ -241,15 +238,21 @@ class HeatGeoDistillation(nn.Module):
             self.row_temps = None
         self.eps_norm = EPS_NORM
         self.diag_topk = DIAG_TOPK
-        if mass_weight < 0.0:
-            raise ValueError("mass_weight must be non-negative")
-        if geo_weight < 0.0:
-            raise ValueError("geo_weight must be non-negative")
-        if sym_weight < 0.0:
-            raise ValueError("sym_weight must be non-negative")
-        self.mass_weight = float(mass_weight)
-        self.geo_weight = float(geo_weight)
-        self.sym_weight = float(sym_weight)
+        if row_weight < 0.0:
+            raise ValueError("row_weight must be non-negative")
+        self.row_weight = float(row_weight)
+        self.use_row_loss = False
+        if transition_neighbors is not None and transition_probs is not None:
+            self.register_buffer(
+                "row_neighbors", transition_neighbors.to(torch.int32), persistent=False
+            )
+            self.register_buffer(
+                "row_probs", transition_probs.to(torch.float32), persistent=False
+            )
+        else:
+            self.row_neighbors = None
+            self.row_probs = None
+        self._warned_row_needs_sharing = False
 
         self.use_direct = teacher_embeddings is not None
         if self.use_direct:
@@ -404,196 +407,119 @@ class HeatGeoDistillation(nn.Module):
         logits = logits.masked_fill(self_mask, float("-inf"))
         return F.softmax(logits, dim=-1)
 
-    def _support_mass_loss(
+    def _compute_row_loss(
         self,
-        similarity: torch.Tensor,
-        teacher_mass: torch.Tensor,
-        support_mask: torch.Tensor,
-        ambient_importance: torch.Tensor,
-        diffusion_temps: torch.Tensor,
+        row_paths: torch.Tensor,
+        pool_norm: torch.Tensor,
+        column_idx: torch.Tensor,
     ) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
-        """Bernoulli KL for mass on C, using a stratified complement estimate."""
-        logits = similarity.unsqueeze(1) / diffusion_temps.unsqueeze(-1)
-        support = support_mask.unsqueeze(1)
-        ambient = ambient_importance > 0
-
-        log_z_support = torch.logsumexp(
-            logits.masked_fill(~support, float("-inf")), dim=-1
-        )
-        log_weights = torch.where(
-            ambient,
-            ambient_importance.clamp_min(1e-12).log(),
-            torch.full_like(ambient_importance, float("-inf")),
-        )
-        log_z_complement = torch.logsumexp(
-            logits + log_weights.unsqueeze(1), dim=-1
-        )
-
-        valid = support_mask.any(dim=-1) & ambient.any(dim=-1)
-        mass_logit = torch.where(
-            valid.unsqueeze(1),
-            log_z_support - log_z_complement,
-            torch.zeros_like(log_z_support),
-        )
-        alpha_teacher = teacher_mass.clamp(0.0, 1.0)
-        zeros = torch.zeros_like(alpha_teacher)
-        teacher_entropy = -(
-            torch.where(
-                alpha_teacher > 0,
-                alpha_teacher * alpha_teacher.clamp_min(1e-12).log(),
-                zeros,
-            )
-            + torch.where(
-                alpha_teacher < 1,
-                (1 - alpha_teacher)
-                * (1 - alpha_teacher).clamp_min(1e-12).log(),
-                zeros,
-            )
-        )
-        mass_kl = F.binary_cross_entropy_with_logits(
-            mass_logit, alpha_teacher, reduction="none"
-        ) - teacher_entropy
-        mass_kl = mass_kl.clamp_min(0.0) * valid.unsqueeze(1)
-
-        weights = self._resolved(self.scale_weights, teacher_mass.size(1))
-        weights = weights / weights.sum().clamp_min(1e-12)
-        loss = (mass_kl * weights.view(1, -1)).sum(dim=-1).mean()
-        alpha_student = mass_logit.sigmoid()
-        valid_scale = valid.unsqueeze(1).expand_as(alpha_student)
-        valid_count = valid_scale.sum().clamp_min(1)
-        metrics = {
-            "teacher_support_mass": alpha_teacher.mean(),
-            "student_support_mass": (alpha_student * valid_scale).sum()
-            / valid_count,
-            "support_mass_abs_error": (
-                (alpha_teacher - alpha_student).abs() * valid_scale
-            ).sum()
-            / valid_count,
-            "mass_valid_ratio": valid.float().mean(),
+        """Match transition rows at non-anchor nodes selected by teacher walks."""
+        zero = pool_norm.new_zeros(())
+        empty_metrics = {
+            "row_teacher_entropy": zero,
+            "row_eff_denom": zero,
+            "row_count": zero,
+            "row_valid_ratio": zero,
+            "row_node_hit_ratio": zero,
         }
-        return loss, metrics
+        if self.row_neighbors is None or self.row_probs is None:
+            return zero, empty_metrics
 
-    def _selected_geometry_losses(
-        self,
-        similarity: torch.Tensor,
-        teacher_probs: torch.Tensor,
-        candidate_idx: torch.Tensor,
-        anchor_idx: torch.Tensor,
-    ) -> tuple[torch.Tensor, torch.Tensor, dict[str, torch.Tensor]]:
-        """Compute directed and unique-edge cosine geometry objectives.
+        visited = row_paths[..., 1:].reshape(-1)
+        total_visits = max(int(visited.numel()), 1)
+        visited = visited[visited >= 0]
+        if visited.numel() == 0:
+            return zero, empty_metrics
 
-        Diffusion scales are first merged with the canonical ``1/r`` weights.
-        ``L_geo`` is the theorem-aligned conditional expectation of bounded cosine
-        distortion on each anchor's selected support. ``L_sym`` groups the same
-        selected directed relations by unordered corpus edge, adds the two available
-        directional masses, and scores every unique edge once.
-        """
-        zero = similarity.new_zeros(())
-        if self.teacher_bank is None:
-            return zero, zero, {
-                "geo_relations": zero,
-                "sym_edges": zero,
-            }
+        source_nodes, source_counts = torch.unique(visited, return_counts=True)
+        pool_size = int(pool_norm.size(0))
+        source_positions = torch.searchsorted(column_idx, source_nodes).clamp_max(
+            pool_size - 1
+        )
+        in_pool = column_idx[source_positions] == source_nodes
+        source_nodes = source_nodes[in_pool]
+        source_positions = source_positions[in_pool]
+        source_counts = source_counts[in_pool]
+        if source_nodes.numel() == 0:
+            return zero, empty_metrics
+        visits_in_pool = source_counts.sum()
 
-        scale_weights = self._resolved(
-            self.scale_weights, teacher_probs.size(1)
-        ).to(teacher_probs.dtype)
-        scale_weights = scale_weights / scale_weights.sum().clamp_min(1e-12)
-        selected_mass = (
-            teacher_probs * scale_weights.view(1, -1, 1)
+        neighbors = self.row_neighbors.index_select(0, source_nodes).long()
+        teacher_probs = self.row_probs.index_select(0, source_nodes).float()
+        flat_neighbors = neighbors.reshape(-1)
+        neighbor_positions = torch.searchsorted(
+            column_idx, flat_neighbors.clamp_min(0)
+        ).clamp_max(pool_size - 1)
+        present = (flat_neighbors >= 0) & (
+            column_idx[neighbor_positions] == flat_neighbors
+        )
+        neighbor_positions = neighbor_positions.view_as(neighbors)
+        keep = present.view_as(neighbors) & (teacher_probs > 0)
+        keep &= neighbor_positions != source_positions.unsqueeze(1)
+
+        target = torch.zeros(source_nodes.numel(), pool_size, device=pool_norm.device)
+        target.scatter_add_(
+            1,
+            neighbor_positions,
+            torch.where(keep, teacher_probs, torch.zeros_like(teacher_probs)),
+        )
+        allowed = target > 0
+        live_columns = allowed.sum(dim=1)
+        usable = live_columns >= 2
+        if not bool(usable.any()):
+            empty_metrics["row_node_hit_ratio"] = (
+                visits_in_pool.float() / total_visits
+            )
+            return zero, empty_metrics
+
+        target = target[usable]
+        allowed = allowed[usable]
+        source_positions = source_positions[usable]
+        visit_weights = source_counts[usable].float()
+        target = target / target.sum(dim=1, keepdim=True).clamp_min(1e-12)
+
+        if self.row_temps is not None:
+            row_tau = self.row_temps.index_select(0, source_nodes[usable]).view(-1, 1)
+        else:
+            row_tau = self.graph_temp
+        logits = (pool_norm.index_select(0, source_positions) @ pool_norm.t()) / row_tau
+        logits = logits.masked_fill(~allowed, float("-inf"))
+        log_probs = F.log_softmax(logits, dim=-1)
+        log_target = torch.where(
+            target > 0, target.clamp_min(1e-12).log(), torch.zeros_like(target)
+        )
+        row_kl = torch.where(
+            target > 0,
+            target * (log_target - log_probs),
+            torch.zeros_like(target),
         ).sum(dim=1)
-        self_mask = candidate_idx == anchor_idx.view(-1, 1)
-        selected_mass = selected_mass.masked_fill(self_mask, 0.0)
-        selected_distribution = selected_mass / selected_mass.sum(
-            dim=-1, keepdim=True
-        ).clamp_min(1e-12)
-        selected = selected_mass > 0
+        visit_weights = visit_weights / visit_weights.sum().clamp_min(1e-12)
+        loss_row = (row_kl * visit_weights).sum()
 
-        teacher_anchor = self.teacher_bank.index_select(0, anchor_idx).float()
-        teacher_candidate = self.teacher_bank.index_select(
-            0, candidate_idx.reshape(-1)
-        ).float()
-        teacher_candidate = teacher_candidate.view(*candidate_idx.shape, -1)
-        teacher_similarity = torch.einsum(
-            "bd,bcd->bc", teacher_anchor, teacher_candidate
-        )
-        squared_error = (similarity - teacher_similarity).square()
-
-        # ell_ij = (cos_S(i,j) - cos_T(i,j))^2 / 4 lies in [0, 1].
-        loss_geo = zero
-        if self.geo_weight > 0.0:
-            loss_geo = (
-                selected_distribution * squared_error / 4.0
-            ).sum(dim=-1).mean()
-
-        # A geo-only run must not pay for unique-edge construction (or execute
-        # scatter kernels that cannot affect its objective).
-        if self.sym_weight <= 0.0:
-            return loss_geo, zero, {
-                "geo_relations": selected.float().sum(),
-                "sym_edges": zero,
-            }
-
-        flat_selected = selected.reshape(-1)
-        directed_anchor = anchor_idx.view(-1, 1).expand_as(candidate_idx).reshape(-1)
-        directed_candidate = candidate_idx.reshape(-1)
-        edge_left = torch.minimum(directed_anchor, directed_candidate)[flat_selected]
-        edge_right = torch.maximum(directed_anchor, directed_candidate)[flat_selected]
-        n_items = int(self.teacher_bank.size(0))
-        edge_key = edge_left * n_items + edge_right
-        unique_key, inverse = torch.unique(edge_key, sorted=False, return_inverse=True)
-        n_edges = unique_key.numel()
-
-        # Graph targets are cached in fp16, while student similarities (and thus
-        # the scatter destination) are normally fp32.  In-place scatter_add_
-        # requires an exact dtype match; accumulate edge masses in the similarity
-        # dtype both for compatibility and for more stable summation.
-        directed_weight = selected_distribution.reshape(-1)[flat_selected].to(
-            dtype=similarity.dtype
-        )
-        directed_similarity = similarity.reshape(-1)[flat_selected]
-        edge_weight = similarity.new_zeros(n_edges)
-        edge_similarity = similarity.new_zeros(n_edges)
-        edge_count = similarity.new_zeros(n_edges)
-        edge_weight.scatter_add_(0, inverse, directed_weight)
-        edge_similarity.scatter_add_(0, inverse, directed_similarity)
-        edge_count.scatter_add_(0, inverse, torch.ones_like(directed_similarity))
-        edge_similarity = edge_similarity / edge_count.clamp_min(1.0)
-
-        unique_left = torch.div(unique_key, n_items, rounding_mode="floor")
-        unique_right = unique_key.remainder(n_items)
-        teacher_edge_similarity = (
-            self.teacher_bank.index_select(0, unique_left).float()
-            * self.teacher_bank.index_select(0, unique_right).float()
-        ).sum(dim=-1)
-        # w_ij = 1/2 [p_i(j|C_i) + p_j(i|C_j)]. A direction absent from the
-        # current selected union contributes zero; reciprocal edges are merged.
-        edge_weight = 0.5 * edge_weight
-        loss_sym = (
-            edge_weight * (edge_similarity - teacher_edge_similarity).square()
-        ).sum() / max(1, n_edges)
-
-        return loss_geo, loss_sym, {
-            "geo_relations": selected.float().sum(),
-            "sym_edges": similarity.new_tensor(float(n_edges)),
+        row_entropy = -(target * log_target).sum(dim=1)
+        metrics = {
+            "row_teacher_entropy": (row_entropy * visit_weights).sum(),
+            "row_eff_denom": live_columns[usable].float().mean(),
+            "row_count": usable.sum().float(),
+            "row_valid_ratio": source_counts[usable].sum().float() / total_visits,
+            "row_node_hit_ratio": visits_in_pool.float() / total_visits,
         }
+        return loss_row, metrics
 
     def forward(
         self,
         anchor_embeddings: torch.Tensor,
         candidate_embeddings: torch.Tensor,
         teacher_probs: torch.Tensor,
-        ambient_importance: torch.Tensor | None = None,
         candidate_idx: torch.Tensor | None = None,
         anchor_idx: torch.Tensor | None = None,
+        row_paths: torch.Tensor | None = None,
     ) -> tuple[torch.Tensor, dict[str, float]]:
         named_tensors = [
             ("anchor_embeddings", anchor_embeddings),
             ("candidate_embeddings", candidate_embeddings),
             ("teacher_probs", teacher_probs),
         ]
-        if ambient_importance is not None:
-            named_tensors.append(("ambient_importance", ambient_importance))
         _assert_finite_tensors(named_tensors)
 
         batch_size = anchor_embeddings.size(0)
@@ -601,9 +527,6 @@ class HeatGeoDistillation(nn.Module):
         n_scales = teacher_probs.size(1)
 
         teacher_probs = teacher_probs.clamp_min(0.0)
-        absolute_teacher_probs = teacher_probs
-        teacher_support_mass = teacher_probs.sum(dim=-1)
-        support_mask = teacher_probs.sum(dim=1) > 0
         teacher_probs = teacher_probs / teacher_probs.sum(
             dim=-1, keepdim=True
         ).clamp_min(1e-12)
@@ -701,46 +624,6 @@ class HeatGeoDistillation(nn.Module):
         # ladder, so with per-row bandwidths every diffusion scale is per-row too.
         sqrt_r = self._resolved(self.scale_sqrt, n_scales - offset)
 
-        loss_mass = torch.zeros((), device=anchor_embeddings.device)
-        mass_metrics = {
-            "teacher_support_mass": loss_mass,
-            "student_support_mass": loss_mass,
-            "support_mass_abs_error": loss_mass,
-            "mass_valid_ratio": loss_mass,
-        }
-        if ambient_importance is not None:
-            if row_tau is not None:
-                diffusion_temps = row_tau * sqrt_r.view(1, -1)
-            else:
-                diffusion_temps = self._resolved(
-                    self.scale_temps, teacher_support_mass.size(1)
-                ).view(1, -1)
-            loss_mass, mass_metrics = self._support_mass_loss(
-                similarity=similarity_own,
-                teacher_mass=teacher_support_mass,
-                support_mask=support_mask,
-                ambient_importance=ambient_importance,
-                diffusion_temps=diffusion_temps,
-            )
-
-        loss_geo = torch.zeros((), device=anchor_embeddings.device)
-        loss_sym = torch.zeros((), device=anchor_embeddings.device)
-        geometry_metrics = {
-            "geo_relations": loss_geo,
-            "sym_edges": loss_sym,
-        }
-        if (
-            (self.geo_weight > 0.0 or self.sym_weight > 0.0)
-            and candidate_idx is not None
-            and anchor_idx is not None
-        ):
-            loss_geo, loss_sym, geometry_metrics = self._selected_geometry_losses(
-                similarity=similarity_own,
-                teacher_probs=absolute_teacher_probs,
-                candidate_idx=candidate_idx,
-                anchor_idx=anchor_idx,
-            )
-
         kl_per_scale = []
         log_probs_per_scale = []
         for scale_idx in range(n_scales):
@@ -763,18 +646,28 @@ class HeatGeoDistillation(nn.Module):
             kl_per_scale.append(contribution.sum(dim=-1))
         kl_per_scale = torch.stack(kl_per_scale, dim=1)
         loss_diff = (kl_per_scale * weights.view(1, -1)).sum(dim=-1).mean()
-        total_loss = (
-            loss_diff
-            + self.mass_weight * loss_mass
-            + self.geo_weight * loss_geo
-            + self.sym_weight * loss_sym
-        )
+
+        loss_row = anchor_embeddings.new_zeros(())
+        row_metrics: dict[str, torch.Tensor] = {}
+        if self.use_row_loss and row_paths is not None:
+            if share:
+                loss_row, row_metrics = self._compute_row_loss(
+                    row_paths=row_paths,
+                    pool_norm=pool_norm,
+                    column_idx=column_idx,
+                )
+            elif not self._warned_row_needs_sharing:
+                self._warned_row_needs_sharing = True
+                print(
+                    "HeatGeo: L_row requires corpus indices for in-batch sharing; "
+                    "term disabled."
+                )
+
+        total_loss = loss_diff + self.row_weight * loss_row
         _assert_finite_tensors(
             (
                 ("loss_diff", loss_diff),
-                ("loss_mass", loss_mass),
-                ("loss_geo", loss_geo),
-                ("loss_sym", loss_sym),
+                ("loss_row", loss_row),
                 ("total_loss", total_loss),
             )
         )
@@ -782,11 +675,8 @@ class HeatGeoDistillation(nn.Module):
         metrics = self._diagnostics(
             total_loss=total_loss,
             loss_diff=loss_diff,
-            loss_mass=loss_mass,
-            loss_geo=loss_geo,
-            loss_sym=loss_sym,
-            mass_metrics=mass_metrics,
-            geometry_metrics=geometry_metrics,
+            loss_row=loss_row,
+            row_metrics=row_metrics,
             kl_per_scale=kl_per_scale,
             log_probs_per_scale=log_probs_per_scale,
             target=target,
@@ -803,11 +693,8 @@ class HeatGeoDistillation(nn.Module):
         self,
         total_loss: torch.Tensor,
         loss_diff: torch.Tensor,
-        loss_mass: torch.Tensor,
-        loss_geo: torch.Tensor,
-        loss_sym: torch.Tensor,
-        mass_metrics: dict[str, torch.Tensor],
-        geometry_metrics: dict[str, torch.Tensor],
+        loss_row: torch.Tensor,
+        row_metrics: dict[str, torch.Tensor],
         kl_per_scale: torch.Tensor,
         log_probs_per_scale: list[torch.Tensor],
         target: torch.Tensor,
@@ -884,22 +771,18 @@ class HeatGeoDistillation(nn.Module):
         # Full-stack weighted entropy: loss_diff = CE - H holds over every scale that
         # is actually in the loss, direct included.
         weighted_entropy = (target_entropy * weights.view(1, -1)).sum(dim=-1)
+        row_zero = loss_row.new_zeros(())
 
         scalars = [
             total_loss.detach(),
             loss_diff.detach(),
-            loss_mass.detach(),
-            (self.mass_weight * loss_mass).detach(),
-            loss_geo.detach(),
-            (self.geo_weight * loss_geo).detach(),
-            loss_sym.detach(),
-            (self.sym_weight * loss_sym).detach(),
-            geometry_metrics["geo_relations"].detach(),
-            geometry_metrics["sym_edges"].detach(),
-            mass_metrics["teacher_support_mass"].detach(),
-            mass_metrics["student_support_mass"].detach(),
-            mass_metrics["support_mass_abs_error"].detach(),
-            mass_metrics["mass_valid_ratio"].detach(),
+            loss_row.detach(),
+            (self.row_weight * loss_row).detach(),
+            row_metrics.get("row_teacher_entropy", row_zero).detach(),
+            row_metrics.get("row_eff_denom", row_zero).detach(),
+            row_metrics.get("row_count", row_zero).detach(),
+            row_metrics.get("row_valid_ratio", row_zero).detach(),
+            row_metrics.get("row_node_hit_ratio", row_zero).detach(),
             js_floor.mean(),
             (loss_diff - js_floor.mean()).detach(),
             (loss_diff + weighted_entropy.mean()).detach(),
@@ -917,18 +800,13 @@ class HeatGeoDistillation(nn.Module):
         names = [
             "loss_total",
             "loss_diff",
-            "loss_mass",
-            "loss_mass_weighted",
-            "loss_geo",
-            "loss_geo_weighted",
-            "loss_sym",
-            "loss_sym_weighted",
-            "geo_relations",
-            "sym_edges",
-            "teacher_support_mass",
-            "student_support_mass",
-            "support_mass_abs_error",
-            "mass_valid_ratio",
+            "loss_row",
+            "loss_row_weighted",
+            "row_teacher_entropy",
+            "row_eff_denom",
+            "row_count",
+            "row_valid_ratio",
+            "row_node_hit_ratio",
             "js_floor",
             "loss_excess",
             "loss_cross_entropy",

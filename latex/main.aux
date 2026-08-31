@@ -41,17 +41,19 @@
 \newlabel{eq:diffusion-targets}{{3}{3}{Teacher-Selected Multi-Scale Targets}{equation.3.3}{}}
 \@writefile{toc}{\contentsline {subsection}{\numberline {3.3}Mass-Aware Relational Matching}{3}{subsection.3.3}\protected@file@percent }
 \newlabel{sec:candidates}{{3.3}{3}{Mass-Aware Relational Matching}{subsection.3.3}{}}
+\citation{zhang2025qwen3embedding}
+\citation{chen2024bgem3}
+\citation{dao2026talas}
 \newlabel{eq:relational-loss}{{4}{4}{Mass-Aware Relational Matching}{equation.3.4}{}}
 \@writefile{toc}{\contentsline {paragraph}{Finite-epoch geometry approximation.}{4}{section*.4}\protected@file@percent }
 \newlabel{prop:global-geometry}{{2}{4}{Finite-epoch global geometry approximation}{proposition.2}{}}
 \newlabel{eq:global-geometry-bound}{{5}{4}{Finite-epoch global geometry approximation}{equation.3.5}{}}
-\@writefile{toc}{\contentsline {subsection}{\numberline {3.4}Support-Mass Calibration and Training}{4}{subsection.3.4}\protected@file@percent }
-\newlabel{sec:mass-calibration}{{3.4}{4}{Support-Mass Calibration and Training}{subsection.3.4}{}}
-\newlabel{eq:support-kl-decomposition}{{7}{4}{Support-Mass Calibration and Training}{equation.3.7}{}}
-\newlabel{eq:mass-loss}{{8}{4}{Support-Mass Calibration and Training}{equation.3.8}{}}
-\citation{zhang2025qwen3embedding}
-\citation{chen2024bgem3}
-\citation{dao2026talas}
+\@writefile{toc}{\contentsline {subsection}{\numberline {3.4}Walk-Selected Row Supervision and Training}{4}{subsection.3.4}\protected@file@percent }
+\newlabel{sec:row-supervision}{{3.4}{4}{Walk-Selected Row Supervision and Training}{subsection.3.4}{}}
+\newlabel{eq:row-loss}{{7}{4}{Walk-Selected Row Supervision and Training}{equation.3.7}{}}
+\newlabel{eq:full-objective}{{8}{4}{Walk-Selected Row Supervision and Training}{equation.3.8}{}}
+\@writefile{toc}{\contentsline {section}{\numberline {4}Experiments}{4}{section.4}\protected@file@percent }
+\newlabel{sec:experiments}{{4}{4}{Experiments}{section.4}{}}
 \citation{gao2021simcse}
 \citation{chen2025cdm}
 \citation{zhang2024dskd}
@@ -61,9 +63,6 @@
 \citation{dao2026talas}
 \citation{dao2026talas}
 \citation{dao2026talas}
-\newlabel{eq:full-objective}{{10}{5}{Support-Mass Calibration and Training}{equation.3.10}{}}
-\@writefile{toc}{\contentsline {section}{\numberline {4}Experiments}{5}{section.4}\protected@file@percent }
-\newlabel{sec:experiments}{{4}{5}{Experiments}{section.4}{}}
 \@writefile{toc}{\contentsline {subsection}{\numberline {4.1}Experimental Setup}{5}{subsection.4.1}\protected@file@percent }
 \@writefile{toc}{\contentsline {paragraph}{Models and distillation data.}{5}{section*.5}\protected@file@percent }
 \@writefile{toc}{\contentsline {paragraph}{Evaluation.}{5}{section*.6}\protected@file@percent }
@@ -72,20 +71,20 @@
 \@writefile{toc}{\contentsline {section}{\numberline {5}Analysis}{5}{section.5}\protected@file@percent }
 \newlabel{sec:analysis}{{5}{5}{Analysis}{section.5}{}}
 \@writefile{toc}{\contentsline {subsection}{\numberline {5.1}Batch-Selected Teacher-Mass Exposure}{5}{subsection.5.1}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {5.2}Matched-Compute Support Selection}{5}{subsection.5.2}\protected@file@percent }
 \@writefile{lot}{\contentsline {table}{\numberline {1}{\ignorespaces Results across three teacher\,$\rightarrow $\,student settings on nine datasets. Emotion, WiC, and STS-B (marked with $\star $) are in-domain; the remaining datasets are out-of-domain. Bold and underlined values denote the best and second-best results within each setting, excluding the Teacher and Student base reference rows. TALAS and RIPPLE results are reported as mean $\pm $ standard deviation; the remaining baseline results are from TALAS~\citep  {dao2026talas}. For setting (c), the epoch checkpoint is selected on the validation average.}}{6}{table.1}\protected@file@percent }
 \newlabel{tab:main_results}{{1}{6}{Results across three teacher\,$\rightarrow $\,student settings on nine datasets. Emotion, WiC, and STS-B (marked with $\star $) are in-domain; the remaining datasets are out-of-domain. Bold and underlined values denote the best and second-best results within each setting, excluding the Teacher and Student base reference rows. TALAS and RIPPLE results are reported as mean $\pm $ standard deviation; the remaining baseline results are from TALAS~\citep {dao2026talas}. For setting (c), the epoch checkpoint is selected on the validation average}{table.1}{}}
-\@writefile{toc}{\contentsline {subsection}{\numberline {5.2}Matched-Compute Support Selection}{6}{subsection.5.2}\protected@file@percent }
-\@writefile{toc}{\contentsline {subsection}{\numberline {5.3}Multi-Hop Transfer and Mass Calibration}{6}{subsection.5.3}\protected@file@percent }
-\@writefile{toc}{\contentsline {subsection}{\numberline {5.4}Coverage, Calibration, and Efficiency}{6}{subsection.5.4}\protected@file@percent }
-\@writefile{lof}{\contentsline {figure}{\numberline {2}{\ignorespaces \textbf  {Matched-compute analysis of RIPPLE.} Random corpus support controls for broader exposure and the number of comparisons; one-step RIPPLE isolates teacher-selected adjacency; diffusion and mass-calibration variants test the remaining components; the random graph controls for generic graph regularization. Bars report mean $\pm $ standard deviation over seeds.}}{7}{figure.2}\protected@file@percent }
-\newlabel{fig:core-ablation}{{2}{7}{\textbf {Matched-compute analysis of RIPPLE.} Random corpus support controls for broader exposure and the number of comparisons; one-step RIPPLE isolates teacher-selected adjacency; diffusion and mass-calibration variants test the remaining components; the random graph controls for generic graph regularization. Bars report mean $\pm $ standard deviation over seeds}{figure.2}{}}
-\@writefile{lof}{\contentsline {figure}{\numberline {3}{\ignorespaces \textbf  {Coverage, calibration, and efficiency.} Left: graph width is evaluated on fixed teacher-rank bands to distinguish broader transfer from trivially increased support. Right: candidate budget is evaluated through target coverage, mass calibration, gradient fidelity, downstream quality, and computational cost.}}{7}{figure.3}\protected@file@percent }
-\newlabel{fig:mechanisms}{{3}{7}{\textbf {Coverage, calibration, and efficiency.} Left: graph width is evaluated on fixed teacher-rank bands to distinguish broader transfer from trivially increased support. Right: candidate budget is evaluated through target coverage, mass calibration, gradient fidelity, downstream quality, and computational cost}{figure.3}{}}
-\@writefile{toc}{\contentsline {section}{\numberline {6}Limitations and Conclusion}{7}{section.6}\protected@file@percent }
+\@writefile{lof}{\contentsline {figure}{\numberline {2}{\ignorespaces \textbf  {Matched-compute analysis of RIPPLE.} Random corpus support controls for broader exposure and the number of comparisons; one-step RIPPLE isolates teacher-selected adjacency; diffusion and row-supervision variants test the remaining components; the random graph controls for generic graph regularization. Bars report mean $\pm $ standard deviation over seeds.}}{6}{figure.2}\protected@file@percent }
+\newlabel{fig:core-ablation}{{2}{6}{\textbf {Matched-compute analysis of RIPPLE.} Random corpus support controls for broader exposure and the number of comparisons; one-step RIPPLE isolates teacher-selected adjacency; diffusion and row-supervision variants test the remaining components; the random graph controls for generic graph regularization. Bars report mean $\pm $ standard deviation over seeds}{figure.2}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {5.3}Multi-Hop Transfer and Row Supervision}{6}{subsection.5.3}\protected@file@percent }
 \bibdata{ripple}
 \bibcite{akram2026jinaembeddingsv5}{{1}{2026}{{Akram et~al.}}{{Akram, Sturua, Havriushenko, Herreros, G{\"u}nther, Werk, and Xiao}}}
 \bibcite{belkin2003laplacian}{{2}{2003}{{Belkin \& Niyogi}}{{Belkin and Niyogi}}}
 \bibcite{chen2024bgem3}{{3}{2024}{{Chen et~al.}}{{Chen, Xiao, Zhang, Luo, Lian, and Liu}}}
+\@writefile{lof}{\contentsline {figure}{\numberline {3}{\ignorespaces \textbf  {Coverage, row supervision, and efficiency.} Left: graph width is evaluated on fixed teacher-rank bands to distinguish broader transfer from trivially increased support. Right: candidate budget is evaluated through target coverage, usable transition rows, downstream quality, and computational cost.}}{7}{figure.3}\protected@file@percent }
+\newlabel{fig:mechanisms}{{3}{7}{\textbf {Coverage, row supervision, and efficiency.} Left: graph width is evaluated on fixed teacher-rank bands to distinguish broader transfer from trivially increased support. Right: candidate budget is evaluated through target coverage, usable transition rows, downstream quality, and computational cost}{figure.3}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {5.4}Coverage, Calibration, and Efficiency}{7}{subsection.5.4}\protected@file@percent }
+\@writefile{toc}{\contentsline {section}{\numberline {6}Limitations and Conclusion}{7}{section.6}\protected@file@percent }
 \bibcite{chen2025cdm}{{4}{2025}{{Chen et~al.}}{{Chen, Liu, Meng, Chen, Xu, and Zhou}}}
 \bibcite{coifman2006diffusionmaps}{{5}{2006}{{Coifman \& Lafon}}{{Coifman and Lafon}}}
 \bibcite{dao2026talas}{{6}{2026}{{Dao et~al.}}{{Dao, Nguyen, Pham, Ngo~Van, Nguyen, Nguyen, and Le}}}
@@ -121,18 +120,18 @@
 \@writefile{toc}{\contentsline {section}{\numberline {A}Proofs for Support Coverage and Geometry Approximation}{10}{appendix.A}\protected@file@percent }
 \newlabel{app:coverage-details}{{A}{10}{Proofs for Support Coverage and Geometry Approximation}{appendix.A}{}}
 \@writefile{toc}{\contentsline {subsection}{\numberline {A.1}Proof of Proposition~\ref {prop:batch-exposure}}{10}{subsection.A.1}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {A.2}Proof of Proposition~\ref {prop:global-geometry}}{10}{subsection.A.2}\protected@file@percent }
 \@writefile{lot}{\contentsline {table}{\numberline {2}{\ignorespaces Canonical RIPPLE configuration. Controlled comparisons vary only the named component.}}{11}{table.2}\protected@file@percent }
 \newlabel{tab:ripple-config}{{2}{11}{Canonical RIPPLE configuration. Controlled comparisons vary only the named component}{table.2}{}}
-\@writefile{toc}{\contentsline {subsection}{\numberline {A.2}Proof of Proposition~\ref {prop:global-geometry}}{11}{subsection.A.2}\protected@file@percent }
 \@writefile{toc}{\contentsline {section}{\numberline {B}Implementation and Evaluation Details}{11}{appendix.B}\protected@file@percent }
 \newlabel{app:hyper}{{B}{11}{Implementation and Evaluation Details}{appendix.B}{}}
 \@writefile{toc}{\contentsline {subsection}{\numberline {B.1}Canonical Configuration}{11}{subsection.B.1}\protected@file@percent }
 \@writefile{toc}{\contentsline {subsection}{\numberline {B.2}Graph, Candidates, and Complement Sampling}{11}{subsection.B.2}\protected@file@percent }
 \newlabel{app:entropic-bandwidth}{{B.2}{11}{Entropy-calibrated bandwidth}{section*.9}{}}
 \@writefile{toc}{\contentsline {paragraph}{Entropy-calibrated bandwidth.}{11}{section*.9}\protected@file@percent }
-\@writefile{toc}{\contentsline {subsection}{\numberline {B.3}Controlled Comparisons}{12}{subsection.B.3}\protected@file@percent }
-\newlabel{app:ablation-protocol}{{B.3}{12}{Core ablations}{section*.10}{}}
-\@writefile{toc}{\contentsline {paragraph}{Core ablations.}{12}{section*.10}\protected@file@percent }
-\newlabel{app:diagnostic-protocols}{{B.3}{12}{Mechanism and efficiency diagnostics}{section*.11}{}}
-\@writefile{toc}{\contentsline {paragraph}{Mechanism and efficiency diagnostics.}{12}{section*.11}\protected@file@percent }
-\gdef \@abspage@last{12}
+\@writefile{toc}{\contentsline {subsection}{\numberline {B.3}Controlled Comparisons}{11}{subsection.B.3}\protected@file@percent }
+\newlabel{app:ablation-protocol}{{B.3}{11}{Core ablations}{section*.10}{}}
+\@writefile{toc}{\contentsline {paragraph}{Core ablations.}{11}{section*.10}\protected@file@percent }
+\newlabel{app:diagnostic-protocols}{{B.3}{11}{Mechanism and efficiency diagnostics}{section*.11}{}}
+\@writefile{toc}{\contentsline {paragraph}{Mechanism and efficiency diagnostics.}{11}{section*.11}\protected@file@percent }
+\gdef \@abspage@last{11}

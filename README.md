@@ -1,6 +1,6 @@
 # HeatGeo: Heat-Diffusion Manifold Distillation for Text Embeddings
 
-This repository implements HeatGeo, a knowledge distillation method that transfers geometric structure from a large teacher embedding model to a compact student model using heat diffusion on a teacher-induced kNN graph and explicit support-mass calibration.
+This repository implements HeatGeo, a knowledge distillation method that transfers geometric structure from a large teacher embedding model to a compact student model using heat diffusion on a teacher-induced kNN graph and walk-selected row supervision.
 
 ## Supported Distillation Pairs
 
@@ -70,14 +70,14 @@ Each diffusion scale uses its own temperature $\tau_r$ to avoid the single-tempe
 
 ### 6. Loss Function
 
-The ambient and diffusion scales form one derived-weight relational objective:
+The ambient and diffusion scales form one derived-weight relational objective, augmented by transition-row supervision:
 
-$$\mathcal{L} = \mathcal{L}_{\text{rel}} + \lambda_{\text{mass}} \cdot \mathcal{L}_{\text{mass}}$$
+$$\mathcal{L} = \mathcal{L}_{\text{rel}} + \lambda_{\text{row}} \cdot \mathcal{L}_{\text{row}}$$
 
 where:
 
 - $\mathcal{L}_{\text{rel}} = \sum_{r\in\{0,1,2,4\}} \omega_r \, \text{KL}(q_{i,r} \| p_{i,r}^S)$, with $\omega_r=1/r$ for diffusion and $\omega_0=\omega_1$; scale 0 is the ambient teacher-similarity profile.
-- $\mathcal{L}_{\text{mass}}$ matches the teacher and student probability assigned to the selected support with a Bernoulli KL. Hard and uniform ambient samples estimate the student's complement partition using inverse inclusion probabilities.
+- $\mathcal{L}_{\text{row}}$ uses non-backtracking teacher walks to select non-anchor nodes, then matches each selected node's available teacher transition row with a dense KL. The walk chooses rows; it is not a trajectory likelihood.
 
 ### 7. Per-Epoch Candidate Sampling
 
@@ -87,7 +87,7 @@ Each epoch, every anchor draws a fresh candidate set composed of:
 - **Hard negatives** (high teacher similarity but outside the mutual kNN graph)
 - **Random negatives** from the remaining complement
 
-Hard and random negatives are sampled as disjoint strata. In-batch sharing deduplicates candidates and exposes each anchor to the full union of candidates in the batch.
+Walk-visited nodes replace random negatives when needed. In-batch sharing deduplicates candidates and exposes each anchor to the full union of candidates in the batch.
 
 ## Configuration
 
@@ -98,9 +98,8 @@ weights, capacities, and correctness policies are resolved internally:
 |:---|:---|:---|
 | Teacher Graph | `graph_k`, `perplexity`, `diffusion_scales`, `truncation_tolerance` | kNN construction, adaptive row bandwidths, and diffusion |
 | Candidate Sampling | `diffusion_quota`, `hard_neg_k`, `random_neg_k` | Per-anchor composition; total size is their sum |
-| Mass Calibration | `mass_weight` | Weight of selected-vs-complement Bernoulli KL |
-| Directed Geometry | `geo_weight` | Weight of teacher-mass-weighted selected-support cosine distortion |
-| Symmetric Geometry | `sym_weight` | Weight of unique unordered-edge cosine distortion |
+| Row Supervision | `row_weight`, `row_start_epoch` | Weight and curriculum start for transition-row KL |
+| Row Sampling | `num_walks`, `walk_length` | Non-backtracking walks used to select supervised rows |
 | Training | `batch_size`, `epochs`, `learning_rate`, `min_lr` | Standard training setup |
 | Ambient profile | `direct_temp` | Shared teacher/student temperature for scale 0 |
 
@@ -113,8 +112,8 @@ fixed-bandwidth baseline uses temperature `0.05`; none is a tunable method knob.
 
 ### HeatGeo on Colab
 
-Open [`notebooks/train_heatgeo_colab.ipynb`](notebooks/train_heatgeo_colab.ipynb),
-choose one of the three canonical teacher--student pairs, set `MASS_WEIGHT`, and
+Open [`notebooks/train_colab.ipynb`](notebooks/train_colab.ipynb),
+choose one of the three canonical teacher--student pairs, set `ROW_WEIGHT`, and
 run all cells. The notebook clones `nqd_mass_geom_loss` on its first run and
 fetches/resets/pulls the latest remote commit on every later run.
 
@@ -227,11 +226,11 @@ This repository also includes implementations of other distillation baselines fo
 │   └── ...                          # Other method configs
 ├── src/
 │   ├── criterions/
-│   │   ├── heatgeo_distillation.py  # HeatGeo loss (relational + support mass)
+│   │   ├── heatgeo_distillation.py  # HeatGeo loss (relational + row supervision)
 │   │   └── ...                      # Other method losses
 │   ├── heatgeo/
 │   │   ├── graph_builder.py         # kNN graph and diffusion pool construction
-│   │   └── candidate_sampler.py     # Support and ambient-stratum sampling
+│   │   └── candidate_sampler.py     # Candidate and teacher-walk row sampling
 │   ├── data_utils/                  # Dataset and collation
 │   ├── evaluation/                  # Benchmark evaluation
 │   ├── cache_teacher.py             # Teacher embedding caching

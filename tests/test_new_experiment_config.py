@@ -27,12 +27,14 @@ def test_heatgeo_cli_overrides(monkeypatch):
             "main.py",
             "--method",
             "heatgeo",
-            "--mass_weight",
+            "--row_weight",
             "0.8",
-            "--geo_weight",
-            "0.3",
-            "--sym_weight",
-            "0.4",
+            "--num_walks",
+            "3",
+            "--walk_length",
+            "5",
+            "--row_start_epoch",
+            "2",
             "--perplexity",
             "45",
             "--diffusion_quota",
@@ -56,9 +58,10 @@ def test_heatgeo_cli_overrides(monkeypatch):
     args = main.parse_args()
     config = main.get_config(args.method, args)
 
-    assert config.mass_weight == 0.8
-    assert config.geo_weight == 0.3
-    assert config.sym_weight == 0.4
+    assert config.row_weight == 0.8
+    assert config.num_walks == 3
+    assert config.walk_length == 5
+    assert config.row_start_epoch == 2
     assert config.eval_every == 0
     assert not hasattr(config, "walk_temp")
     assert config.perplexity == 45
@@ -184,11 +187,13 @@ def test_heatgeo_temperature_ties():
         "graph_temp",
         "scale_temps",
         "broad_scale_temps",
-        "walk_temp",
-        "walk_weight",
-        "transition_neighbors",
-        "transition_probs",
-        "direct_student_temp",
+            "walk_temp",
+            "walk_weight",
+            "row_temp",
+            "mass_weight",
+            "geo_weight",
+            "sym_weight",
+            "direct_student_temp",
     ):
         with pytest.raises(ValueError, match=removed):
             HeatGeoDistillation(
@@ -229,246 +234,77 @@ def test_heatgeo_tied_temperature_makes_teacher_row_attainable():
     assert loss.item() == pytest.approx(0.0, abs=1e-5)
 
 
-def test_sampler_preserves_support_mass_and_returns_exact_stratum_weights():
-    n_items = 8
-    artifact = {
+def _row_artifact() -> dict:
+    return {
         "pool_indices": torch.tensor(
-            [
-                [(i + 1) % n_items, (i + 2) % n_items, (i + 3) % n_items]
-                for i in range(n_items)
-            ],
-            dtype=torch.long,
+            [[1, 2], [0, 2], [1, 3], [2, 1]], dtype=torch.long
         ),
         "pool_probs": torch.tensor(
-            [[[0.6, 0.2, 0.2]] * n_items], dtype=torch.float32
+            [[[0.7, 0.3], [0.6, 0.4], [0.55, 0.45], [0.8, 0.2]]],
+            dtype=torch.float32,
         ),
-        "hard_neg_indices": torch.tensor([[4, 5]] * n_items, dtype=torch.long),
+        "hard_neg_indices": torch.full((4, 1), -1, dtype=torch.long),
+        "transition_neighbors": torch.tensor(
+            [[1, 2], [0, 2], [1, 3], [2, 1]], dtype=torch.long
+        ),
+        "transition_probs": torch.tensor(
+            [[0.7, 0.3], [0.6, 0.4], [0.55, 0.45], [0.8, 0.2]],
+            dtype=torch.float32,
+        ),
         "metadata": {"diffusion_scales": (1,)},
     }
+
+
+def test_sampler_returns_non_backtracking_row_paths():
     sampler = HeatGeoCandidateSampler(
-        artifact=artifact,
-        diffusion_quota=2,
-        hard_neg_k=1,
-        random_neg_k=1,
-        deterministic_topm=2,
+        artifact=_row_artifact(),
+        diffusion_quota=1,
+        hard_neg_k=0,
+        random_neg_k=2,
+        deterministic_topm=1,
         seed=42,
+        num_walks=3,
+        walk_length=3,
     )
 
-    candidates, teacher_probs, importance = sampler.sample(0)
+    candidates, teacher_probs, row_paths = sampler.sample_with_rows(0)
 
-    assert candidates.size == 4
-    assert teacher_probs.sum() == pytest.approx(0.8)
-    assert np.count_nonzero(teacher_probs) == 2
-    # H=2 hard nodes sampled once; U=8-{anchor, two support, two hard}=3.
-    np.testing.assert_allclose(np.sort(importance[importance > 0]), [2.0, 3.0])
-
-
-def test_support_mass_loss_matches_bernoulli_kl():
-    anchor = F.normalize(torch.tensor([[1.0, 0.2, -0.1]]), dim=-1)
-    candidates = F.normalize(
-        torch.tensor(
-            [
-                [
-                    [0.9, 0.1, 0.0],
-                    [0.7, 0.4, -0.2],
-                    [0.1, 0.8, 0.3],
-                    [-0.2, 0.4, 0.9],
-                ]
-            ]
-        ),
-        dim=-1,
-    )
-    teacher_probs = torch.tensor([[[0.6, 0.2, 0.0, 0.0]]])
-    importance = torch.tensor([[0.0, 0.0, 1.0, 2.0]])
-    criterion = HeatGeoDistillation(
-        student_dim=3, teacher_dim=3, mass_weight=0.7
-    )
-
-    total, metrics = criterion(
-        anchor_embeddings=anchor,
-        candidate_embeddings=candidates,
-        teacher_probs=teacher_probs,
-        ambient_importance=importance,
-    )
-
-    logits = torch.einsum("bd,bcd->bc", anchor, candidates) / FIXED_BANDWIDTH_TEMP
-    log_z_support = torch.logsumexp(logits[:, :2], dim=-1)
-    log_z_complement = torch.logsumexp(
-        torch.stack([logits[:, 2], logits[:, 3] + torch.tensor(2.0).log()], dim=-1),
-        dim=-1,
-    )
-    mass_logit = log_z_support - log_z_complement
-    alpha_s = mass_logit.sigmoid()
-    alpha_t = torch.tensor(0.8)
-    entropy_t = -(alpha_t * alpha_t.log() + (1 - alpha_t) * (1 - alpha_t).log())
-    expected = (
-        F.binary_cross_entropy_with_logits(
-            mass_logit, alpha_t.expand_as(mass_logit)
-        )
-        - entropy_t
-    )
-
-    assert metrics["loss_mass"] == pytest.approx(expected.item(), rel=1e-5)
-    assert metrics["teacher_support_mass"] == pytest.approx(0.8)
-    assert metrics["student_support_mass"] == pytest.approx(alpha_s.item(), rel=1e-5)
-    assert total.item() == pytest.approx(
-        metrics["loss_diff"] + 0.7 * expected.item(), rel=1e-5
-    )
+    assert candidates.shape == (3,)
+    assert teacher_probs.shape == (1, 3)
+    assert row_paths.shape == (3, 4)
+    assert np.all(row_paths[:, 0] == 0)
+    assert not (row_paths[:, 2:] == row_paths[:, :-2]).any()
 
 
-def _geometry_loss_inputs():
-    teacher_bank = F.normalize(
-        torch.tensor(
-            [
-                [1.0, 0.0, 0.0],
-                [0.8, 0.6, 0.0],
-                [0.0, 1.0, 0.0],
-            ]
-        ),
-        dim=-1,
-    )
-    anchor = F.normalize(
-        torch.tensor([[1.0, 0.2, 0.0], [0.7, 0.7, 0.0]]), dim=-1
-    )
-    candidates = F.normalize(
-        torch.tensor(
-            [
-                [[0.9, 0.4, 0.0], [0.1, 0.9, 0.0]],
-                [[0.9, 0.1, 0.0], [0.2, 0.8, 0.0]],
-            ]
-        ),
-        dim=-1,
-    )
-    teacher_probs = torch.tensor([[[0.75, 0.25]], [[0.20, 0.80]]])
-    candidate_idx = torch.tensor([[1, 2], [0, 2]], dtype=torch.long)
-    anchor_idx = torch.tensor([0, 1], dtype=torch.long)
-    return teacher_bank, anchor, candidates, teacher_probs, candidate_idx, anchor_idx
-
-
-def test_selected_geometry_loss_matches_mass_weighted_cosine_distortion():
-    teacher_bank, anchor, candidates, teacher_probs, candidate_idx, anchor_idx = (
-        _geometry_loss_inputs()
-    )
+def test_row_loss_matches_transition_kernel_and_backpropagates():
+    torch.manual_seed(0)
+    pool = F.normalize(torch.randn(4, 3), dim=-1).requires_grad_()
+    artifact = _row_artifact()
+    row_temps = torch.full((4,), 0.2)
     criterion = HeatGeoDistillation(
         student_dim=3,
         teacher_dim=3,
-        teacher_embeddings=teacher_bank,
-        mass_weight=0.0,
-        geo_weight=1.0,
-        sym_weight=0.0,
+        transition_neighbors=artifact["transition_neighbors"],
+        transition_probs=artifact["transition_probs"],
+        row_temps=row_temps,
+        row_weight=0.5,
     )
 
-    total, metrics = criterion(
-        anchor_embeddings=anchor,
-        candidate_embeddings=candidates,
-        teacher_probs=teacher_probs,
-        candidate_idx=candidate_idx,
-        anchor_idx=anchor_idx,
+    row_paths = torch.tensor([[[0, 1]]], dtype=torch.long)
+    loss_row, metrics = criterion._compute_row_loss(
+        row_paths=row_paths,
+        pool_norm=pool,
+        column_idx=torch.arange(4),
     )
 
-    student_similarity = torch.einsum("bd,bcd->bc", anchor, candidates)
-    stored_teacher_bank = criterion.teacher_bank.float()
-    teacher_similarity = torch.einsum(
-        "bd,bcd->bc",
-        stored_teacher_bank.index_select(0, anchor_idx),
-        stored_teacher_bank.index_select(0, candidate_idx.reshape(-1)).view(2, 2, -1),
-    )
-    expected = (
-        teacher_probs.squeeze(1)
-        * (student_similarity - teacher_similarity).square()
-        / 4.0
-    ).sum(dim=-1).mean()
-
-    assert metrics["loss_geo"] == pytest.approx(expected.item(), rel=1e-5)
-    assert metrics["geo_relations"] == 4.0
-    assert total.item() == pytest.approx(
-        metrics["loss_diff"] + expected.item(), rel=1e-5
-    )
-
-
-def test_symmetric_geometry_loss_scores_each_unordered_edge_once():
-    teacher_bank, anchor, candidates, teacher_probs, candidate_idx, anchor_idx = (
-        _geometry_loss_inputs()
-    )
-    anchor.requires_grad_()
-    candidates.requires_grad_()
-    criterion = HeatGeoDistillation(
-        student_dim=3,
-        teacher_dim=3,
-        teacher_embeddings=teacher_bank,
-        mass_weight=0.0,
-        geo_weight=0.0,
-        sym_weight=1.0,
-    )
-
-    total, metrics = criterion(
-        anchor_embeddings=anchor,
-        candidate_embeddings=candidates,
-        teacher_probs=teacher_probs,
-        candidate_idx=candidate_idx,
-        anchor_idx=anchor_idx,
-    )
-
-    directed_student = torch.einsum("bd,bcd->bc", anchor, candidates)
-    student_edges = torch.stack(
-        [
-            0.5 * (directed_student[0, 0] + directed_student[1, 0]),
-            directed_student[0, 1],
-            directed_student[1, 1],
-        ]
-    )
-    teacher_edges = torch.stack(
-        [
-            criterion.teacher_bank[0].float() @ criterion.teacher_bank[1].float(),
-            criterion.teacher_bank[0].float() @ criterion.teacher_bank[2].float(),
-            criterion.teacher_bank[1].float() @ criterion.teacher_bank[2].float(),
-        ]
-    )
-    edge_weights = torch.tensor(
-        [0.5 * (0.75 + 0.20), 0.5 * 0.25, 0.5 * 0.80]
-    )
-    expected = (
-        edge_weights * (student_edges - teacher_edges).square()
-    ).sum() / 3
-
-    assert metrics["loss_sym"] == pytest.approx(expected.item(), rel=1e-5)
-    assert metrics["sym_edges"] == 3.0
-    assert total.item() == pytest.approx(
-        metrics["loss_diff"] + expected.item(), rel=1e-5
-    )
-    total.backward()
-    assert anchor.grad is not None and torch.isfinite(anchor.grad).all()
-    assert candidates.grad is not None and torch.isfinite(candidates.grad).all()
-
-
-def test_symmetric_geometry_loss_accepts_half_precision_cached_targets():
-    teacher_bank, anchor, candidates, teacher_probs, candidate_idx, anchor_idx = (
-        _geometry_loss_inputs()
-    )
-    anchor.requires_grad_()
-    candidates.requires_grad_()
-    criterion = HeatGeoDistillation(
-        student_dim=3,
-        teacher_dim=3,
-        teacher_embeddings=teacher_bank,
-        mass_weight=0.0,
-        geo_weight=0.0,
-        sym_weight=0.5,
-    )
-
-    total, metrics = criterion(
-        anchor_embeddings=anchor,
-        candidate_embeddings=candidates,
-        teacher_probs=teacher_probs.half(),
-        candidate_idx=candidate_idx,
-        anchor_idx=anchor_idx,
-    )
-
-    assert torch.isfinite(total)
-    assert np.isfinite(metrics["loss_sym"])
-    total.backward()
-    assert anchor.grad is not None and torch.isfinite(anchor.grad).all()
-    assert candidates.grad is not None and torch.isfinite(candidates.grad).all()
+    teacher = torch.tensor([0.6, 0.4])
+    student_logits = torch.stack([pool[1] @ pool[0], pool[1] @ pool[2]]) / 0.2
+    expected = (teacher * (teacher.log() - student_logits.log_softmax(dim=0))).sum()
+    assert loss_row.item() == pytest.approx(expected.item(), rel=1e-5)
+    assert metrics["row_count"].item() == 1.0
+    assert metrics["row_eff_denom"].item() == 2.0
+    loss_row.backward()
+    assert pool.grad is not None and torch.isfinite(pool.grad).all()
 
 
 def test_entropic_affinity_hits_the_requested_perplexity():
@@ -599,9 +435,10 @@ def test_criterion_uses_the_row_temperature_of_each_anchor():
         "--candidate_size",
         "--walk_non_backtracking",
         "--walk_weight",
-        "--num_walks",
-        "--walk_length",
         "--walk_start_epoch",
+        "--mass_weight",
+        "--geo_weight",
+        "--sym_weight",
     ),
 )
 def test_removed_heatgeo_cli_knobs_are_rejected(monkeypatch, removed_flag):
