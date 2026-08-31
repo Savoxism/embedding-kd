@@ -14,7 +14,7 @@ class HeatGeoConfig(BaseConfig):
 
     # ---- Objective -----------------------------------------------------------
     # No student temperature on the diffusion ladder is a free parameter. The
-    # criterion rejects scale_temps / broad_scale_temps / walk_temp /
+    # criterion rejects scale_temps / broad_scale_temps /
     # direct_student_temp and derives all of them:
     #   tau_1(i) = tau_i     the r=1 target IS the transition row, so the student
     #                        reuses the per-row bandwidth stored in the graph;
@@ -24,7 +24,6 @@ class HeatGeoConfig(BaseConfig):
     #                        at 0.05 this is
     #                        (0.0707, 0.1000) for r = 2, 4 -- the values that were
     #                        previously written out by hand as (0.07, 0.10);
-    #   tau_w(i) = tau_i     walk targets are transition rows, same argument;
     #   direct scale         one temperature (direct_temp) on both teacher and
     #                        student side (Hinton et al. 2015 convention).
     # direct_temp is the only student temperature left to choose. In-batch
@@ -52,17 +51,12 @@ class HeatGeoConfig(BaseConfig):
     diffusion_scales = (1, 2, 4)
     # omega_r = 1/r and omega_0 = omega_1 are derived centrally from these scales.
 
-    # ---- Random Walk Kernel Matching -----------------------------------------
-    # L_walk is a KL against the teacher's own transition row, so it shares the
-    # scale of L_diff and walk_weight is a genuine trade-off rather than a units
-    # conversion. 0 walks disables the term and reproduces the diffusion-only run.
-    num_walks = 4
-    walk_length = 4
-    walk_weight = 0.5
-    # Walk temperatures are the stored per-row graph bandwidths.
-    walk_start_epoch = 1
-    # Walks are always non-backtracking (except at degree-one nodes). This is a
-    # canonical sampling rule, not an experiment knob.
+    # ---- Support-Mass Calibration --------------------------------------------
+    # L_mass matches the teacher and student probability assigned to the selected
+    # support. Ambient hard/uniform samples estimate the student's full complement
+    # partition with inverse-inclusion weighting. This replaces row supervision;
+    # there are no walk paths, row-loss curriculum, or transition-row loss buffers.
+    mass_weight = 0.5
 
     # ---- Truncation ----------------------------------------------------------
     # Every capacity in the build is the same operation: keep a subset S of a
@@ -129,7 +123,7 @@ class HeatGeoConfig(BaseConfig):
     # kd_student_layers = [4, 8, 12, 12]
 
     # ---- Removed: auxiliary objectives ---------------------------------------
-    # The objective is exactly two terms, L = L_diff + walk_weight * L_walk, both
+    # The objective is exactly two terms, L = L_rel + mass_weight * L_mass, both
     # inside the HeatGeo criterion. lambda_heatgeo, lambda_cosine, lambda_infonce,
     # lambda_simcse, simcse_temp, simcse_start_epoch and lambda_sim used to sit
     # here at 0. Every one of them is read only inside the multi-layer branch
@@ -150,3 +144,10 @@ class HeatGeoConfig(BaseConfig):
             )
         for k, v in kwargs.items():
             setattr(self, k, v)
+        if self.random_neg_k < 1:
+            raise ValueError(
+                "random_neg_k must be positive because L_mass estimates the "
+                "non-hard complement partition"
+            )
+        if self.mass_weight < 0:
+            raise ValueError("mass_weight must be non-negative")

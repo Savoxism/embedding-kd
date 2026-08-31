@@ -17,9 +17,9 @@ from .policy import (
 )
 
 # 7: the lazy-walk truncation holds the anchor's own column out of the tolerance
-#    budget, so the discarded mass of every target is `truncation_tolerance`
-#    rather than tolerance/(1 - self_mass) -- 2x it at r=1. Targets changed;
-#    caches built at 6 must not be reused.
+#    budget, so the discarded mass of every target is `truncation_tolerance`.
+#    Row supervision has since been removed, but its padded transition arrays were
+#    auxiliary only: existing v7 diffusion targets remain valid and are reusable.
 ARTIFACT_VERSION = 7
 
 # Anchors diffused per sparse matrix product. The intermediate X @ P holds up to
@@ -922,25 +922,11 @@ def build_or_load_heatgeo_artifact(
         _target_sharpness_stats(pool_indices, pool_probs, scales, weights)
     )
 
-    # Store the transition data (neighbor lists and probabilities) so that
-    # downstream components (e.g. HeatGeoCandidateSampler) can sample random
-    # walk trajectories without rebuilding the graph.  The storage cost is
-    # modest: for N=15k, graph_k=200 the two arrays are ~24 MB total, well
-    # below the diffusion pools themselves.
-    max_degree = max(len(nb) for nb in row_neighbors)
-    transition_neighbors = np.full((n_items, max_degree), -1, dtype=np.int64)
-    transition_probs_arr = np.zeros((n_items, max_degree), dtype=np.float32)
-    for i, (nb, pr) in enumerate(zip(row_neighbors, row_probs)):
-        transition_neighbors[i, : len(nb)] = nb
-        transition_probs_arr[i, : len(nb)] = pr
-
     artifact = {
         "pool_indices": torch.from_numpy(pool_indices).long(),
         "pool_probs": torch.from_numpy(pool_probs).float(),
         "hard_neg_indices": torch.from_numpy(hard_neg_indices).long(),
         "source_ids": torch.from_numpy(source_array).long(),
-        "transition_neighbors": torch.from_numpy(transition_neighbors).long(),
-        "transition_probs": torch.from_numpy(transition_probs_arr).float(),
         # The temperature each transition row was built at. The criterion matches
         # row i at row_temps[i]: the tie is per row, and the shift family that
         # makes zero loss attainable does not depend on the value.

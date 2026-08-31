@@ -226,14 +226,8 @@ class KnowledgeDistiller:
                         diffusion_scales=config.diffusion_scales,
                         teacher_embeddings=self.teacher_cls_all[:, l_idx, :],
                         direct_temp=config.direct_temp,
-                        walk_weight=config.walk_weight,
+                        mass_weight=config.mass_weight,
                         row_temps=getattr(self, "heatgeo_artifact", {}).get("row_temps"),
-                        transition_neighbors=getattr(self, "heatgeo_artifact", {}).get("transition_neighbors")
-                        if config.num_walks > 0
-                        else None,
-                        transition_probs=getattr(self, "heatgeo_artifact", {}).get("transition_probs")
-                        if config.num_walks > 0
-                        else None,
                     ).to(self.device_s)
                     self.heatgeo_criterions.append(criterion)
                 
@@ -261,14 +255,8 @@ class KnowledgeDistiller:
                     diffusion_scales=config.diffusion_scales,
                     teacher_embeddings=self.teacher_cls_all,
                     direct_temp=config.direct_temp,
-                    walk_weight=config.walk_weight,
+                    mass_weight=config.mass_weight,
                     row_temps=getattr(self, "heatgeo_artifact", {}).get("row_temps"),
-                    transition_neighbors=getattr(self, "heatgeo_artifact", {}).get("transition_neighbors")
-                    if config.num_walks > 0
-                    else None,
-                    transition_probs=getattr(self, "heatgeo_artifact", {}).get("transition_probs")
-                    if config.num_walks > 0
-                    else None,
                 ).to(self.device_s)
                 self.scheduler = self._build_scheduler()
                 print("HeatGeo criterion initialized (single layer)")
@@ -677,8 +665,6 @@ class KnowledgeDistiller:
                     random_neg_k=cfg.random_neg_k,
                     seed=cfg.seed,
                     deterministic_topm=cfg.deterministic_topm,
-                    num_walks=cfg.num_walks,
-                    walk_length=cfg.walk_length,
                 )
                 anchor_texts = df[self.heatgeo_anchor_column].astype(str).tolist()
                 self.train_ds = TextPairWithTeacherAndHeatGeo(
@@ -873,7 +859,7 @@ class KnowledgeDistiller:
                     "candidate_idx",
                     "candidate_inverse",
                     "teacher_probs",
-                    "walk_paths",
+                    "ambient_importance",
                 }:
                     batch_s[k] = v.to(self.device_s, non_blocking=True)
 
@@ -945,9 +931,9 @@ class KnowledgeDistiller:
                             anchor_embeddings=S_cls1,
                             candidate_embeddings=S_candidates,
                             teacher_probs=batch_s["teacher_probs"],
+                            ambient_importance=batch_s.get("ambient_importance"),
                             candidate_idx=batch_s.get("candidate_idx"),
                             anchor_idx=batch_s.get("idx"),
-                            walk_paths=batch_s.get("walk_paths"),
                         )
                         total_loss += heat_loss * getattr(cfg, "lambda_heatgeo", 1.0)
                         
@@ -1019,9 +1005,9 @@ class KnowledgeDistiller:
                         anchor_embeddings=S_cls1,
                         candidate_embeddings=S_candidates,
                         teacher_probs=batch_s["teacher_probs"],
+                        ambient_importance=batch_s.get("ambient_importance"),
                         candidate_idx=batch_s.get("candidate_idx"),
                         anchor_idx=batch_s.get("idx"),
-                        walk_paths=batch_s.get("walk_paths"),
                     )
                     loss = loss.float()
 
@@ -2142,21 +2128,6 @@ class KnowledgeDistiller:
             for epoch in range(cfg.epochs):
                 self.current_epoch = epoch
                 
-                # ---- Walk Curriculum ----
-                use_walk = (
-                    cfg.distill_method == "heatgeo"
-                    and cfg.num_walks > 0
-                    and epoch >= cfg.walk_start_epoch
-                )
-                if hasattr(self, "heatgeo_criterions"):
-                    for crit in self.heatgeo_criterions:
-                        crit.use_walk_loss = use_walk
-                elif self.criterion is not None and hasattr(self.criterion, "use_walk_loss"):
-                    self.criterion.use_walk_loss = use_walk
-                if use_walk:
-                    print(f"Walk kernel-matching loss is ENABLED for Epoch {epoch + 1}")
-                # ------------------------------------
-
                 avg_loss = self.train_epoch(epoch)
                 validation_results = None
 

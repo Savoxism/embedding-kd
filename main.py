@@ -71,11 +71,7 @@ def parse_args():
         help="Target transition-row perplexity; 0 uses the fixed-bandwidth baseline",
     )
     parser.add_argument("--truncation_tolerance", type=float, default=None)
-    parser.add_argument("--num_walks", type=int, default=None)
-    parser.add_argument("--walk_length", type=int, default=None)
-    parser.add_argument("--walk_weight", type=float, default=None)
-    # Walk temperatures are tied to the stored graph row temperatures.
-    parser.add_argument("--walk_start_epoch", type=int, default=None)
+    parser.add_argument("--mass_weight", type=float, default=None)
     parser.add_argument("--direct_temp", type=float, default=None)
     parser.add_argument("--diffusion_quota", type=int, default=None)
     parser.add_argument("--hard_neg_k", type=int, default=None)
@@ -206,10 +202,7 @@ def get_config(method: str, args):
     heatgeo_overrides = (
         "graph_k",
         "truncation_tolerance",
-        "num_walks",
-        "walk_length",
-        "walk_weight",
-        "walk_start_epoch",
+        "mass_weight",
         "direct_temp",
         "diffusion_quota",
         "hard_neg_k",

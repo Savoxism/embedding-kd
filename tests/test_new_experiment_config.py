@@ -27,7 +27,7 @@ def test_heatgeo_cli_overrides(monkeypatch):
             "main.py",
             "--method",
             "heatgeo",
-            "--walk_weight",
+            "--mass_weight",
             "0.8",
             "--perplexity",
             "45",
@@ -52,7 +52,7 @@ def test_heatgeo_cli_overrides(monkeypatch):
     args = main.parse_args()
     config = main.get_config(args.method, args)
 
-    assert config.walk_weight == 0.8
+    assert config.mass_weight == 0.8
     assert not hasattr(config, "walk_temp")
     assert config.perplexity == 45
     assert (
@@ -124,7 +124,6 @@ def test_heatgeo_temperature_ties():
         diffusion_scales=(1, 2, 4),
     )
     # The scalar baseline is fixed; omega_r and tau_r are derived from the scales.
-    assert criterion.walk_temp == pytest.approx(FIXED_BANDWIDTH_TEMP)
     assert criterion.scale_temps.tolist() == pytest.approx(
         [
             FIXED_BANDWIDTH_TEMP,
@@ -143,6 +142,9 @@ def test_heatgeo_temperature_ties():
         "scale_temps",
         "broad_scale_temps",
         "walk_temp",
+        "walk_weight",
+        "transition_neighbors",
+        "transition_probs",
         "direct_student_temp",
     ):
         with pytest.raises(ValueError, match=removed):
@@ -184,40 +186,91 @@ def test_heatgeo_tied_temperature_makes_teacher_row_attainable():
     assert loss.item() == pytest.approx(0.0, abs=1e-5)
 
 
-def test_sampler_reads_transition_rows_untruncated():
-    # walk_topk is gone: the build-time tolerance is the only truncation, so the
-    # sampler walks the rows exactly as the artifact stores them.
+def test_sampler_preserves_support_mass_and_returns_exact_stratum_weights():
+    n_items = 8
     artifact = {
         "pool_indices": torch.tensor(
-            [[[1, 2, 3]], [[0, 2, 3]]], dtype=torch.long
-        ).squeeze(1),
+            [
+                [(i + 1) % n_items, (i + 2) % n_items, (i + 3) % n_items]
+                for i in range(n_items)
+            ],
+            dtype=torch.long,
+        ),
         "pool_probs": torch.tensor(
-            [[[0.6, 0.3, 0.1], [0.5, 0.3, 0.2]]], dtype=torch.float32
+            [[[0.6, 0.2, 0.2]] * n_items], dtype=torch.float32
         ),
-        "hard_neg_indices": torch.tensor([[3], [3]], dtype=torch.long),
-        "transition_neighbors": torch.tensor(
-            [[1, 2, 3, -1], [0, 2, 3, -1]], dtype=torch.long
-        ),
-        "transition_probs": torch.tensor(
-            [[0.1, 0.6, 0.3, 0.0], [0.5, 0.2, 0.3, 0.0]],
-            dtype=torch.float32,
-        ),
+        "hard_neg_indices": torch.tensor([[4, 5]] * n_items, dtype=torch.long),
         "metadata": {"diffusion_scales": (1,)},
     }
-
     sampler = HeatGeoCandidateSampler(
         artifact=artifact,
-        diffusion_quota=1,
-        hard_neg_k=0,
+        diffusion_quota=2,
+        hard_neg_k=1,
         random_neg_k=1,
+        deterministic_topm=2,
         seed=42,
-        num_walks=1,
-        walk_length=1,
     )
 
-    assert sampler.trans_neighbors.shape == (2, 4)
-    assert sampler.trans_neighbors[0].tolist() == [1, 2, 3, -1]
-    np.testing.assert_allclose(sampler.trans_probs.sum(axis=1), 1.0)
+    candidates, teacher_probs, importance = sampler.sample(0)
+
+    assert candidates.size == 4
+    assert teacher_probs.sum() == pytest.approx(0.8)
+    assert np.count_nonzero(teacher_probs) == 2
+    # H=2 hard nodes sampled once; U=8-{anchor, two support, two hard}=3.
+    np.testing.assert_allclose(np.sort(importance[importance > 0]), [2.0, 3.0])
+
+
+def test_support_mass_loss_matches_bernoulli_kl():
+    anchor = F.normalize(torch.tensor([[1.0, 0.2, -0.1]]), dim=-1)
+    candidates = F.normalize(
+        torch.tensor(
+            [
+                [
+                    [0.9, 0.1, 0.0],
+                    [0.7, 0.4, -0.2],
+                    [0.1, 0.8, 0.3],
+                    [-0.2, 0.4, 0.9],
+                ]
+            ]
+        ),
+        dim=-1,
+    )
+    teacher_probs = torch.tensor([[[0.6, 0.2, 0.0, 0.0]]])
+    importance = torch.tensor([[0.0, 0.0, 1.0, 2.0]])
+    criterion = HeatGeoDistillation(
+        student_dim=3, teacher_dim=3, mass_weight=0.7
+    )
+
+    total, metrics = criterion(
+        anchor_embeddings=anchor,
+        candidate_embeddings=candidates,
+        teacher_probs=teacher_probs,
+        ambient_importance=importance,
+    )
+
+    logits = torch.einsum("bd,bcd->bc", anchor, candidates) / FIXED_BANDWIDTH_TEMP
+    log_z_support = torch.logsumexp(logits[:, :2], dim=-1)
+    log_z_complement = torch.logsumexp(
+        torch.stack([logits[:, 2], logits[:, 3] + torch.tensor(2.0).log()], dim=-1),
+        dim=-1,
+    )
+    mass_logit = log_z_support - log_z_complement
+    alpha_s = mass_logit.sigmoid()
+    alpha_t = torch.tensor(0.8)
+    entropy_t = -(alpha_t * alpha_t.log() + (1 - alpha_t) * (1 - alpha_t).log())
+    expected = (
+        F.binary_cross_entropy_with_logits(
+            mass_logit, alpha_t.expand_as(mass_logit)
+        )
+        - entropy_t
+    )
+
+    assert metrics["loss_mass"] == pytest.approx(expected.item(), rel=1e-5)
+    assert metrics["teacher_support_mass"] == pytest.approx(0.8)
+    assert metrics["student_support_mass"] == pytest.approx(alpha_s.item(), rel=1e-5)
+    assert total.item() == pytest.approx(
+        metrics["loss_diff"] + 0.7 * expected.item(), rel=1e-5
+    )
 
 
 def test_entropic_affinity_hits_the_requested_perplexity():
@@ -340,82 +393,18 @@ def test_criterion_uses_the_row_temperature_of_each_anchor():
     assert entropies[0] < entropies[1]
 
 
-def _walk_sampler(
-    neighbors: list[list[int]],
-    probs: list[list[float]],
-    *,
-    walk_length: int,
-    num_walks: int = 8,
-    seed: int = 0,
-) -> HeatGeoCandidateSampler:
-    """Sampler over a hand-built transition matrix, with the diffusion side inert.
-
-    Only `_sample_walks` is under test here, so the pools are filled with whatever
-    keeps the quota check happy; the walk path never reads them.
-    """
-    n_items = len(neighbors)
-    pool = torch.tensor([[(i + 1) % n_items] for i in range(n_items)], dtype=torch.long)
-    artifact = {
-        "pool_indices": pool,
-        "pool_probs": torch.ones((1, n_items, 1), dtype=torch.float32),
-        "hard_neg_indices": torch.full((n_items, 1), -1, dtype=torch.long),
-        "transition_neighbors": torch.tensor(neighbors, dtype=torch.long),
-        "transition_probs": torch.tensor(probs, dtype=torch.float32),
-        "metadata": {"diffusion_scales": (1,)},
-    }
-    return HeatGeoCandidateSampler(
-        artifact=artifact,
-        diffusion_quota=1,
-        hard_neg_k=0,
-        random_neg_k=1,
-        seed=seed,
-        num_walks=num_walks,
-        walk_length=walk_length,
-    )
-
-
-# 4-cycle: every node has exactly two neighbours, so a non-backtracking walk has
-# exactly one legal continuation at each step and must keep going round.
-_CYCLE_NEIGHBORS = [[1, 3], [0, 2], [1, 3], [0, 2]]
-_CYCLE_PROBS = [[0.5, 0.5]] * 4
-
-
-def test_non_backtracking_walk_never_returns_to_the_previous_node():
-    sampler = _walk_sampler(_CYCLE_NEIGHBORS, _CYCLE_PROBS, walk_length=3)
-    walks, _ = sampler._sample_walks(0, sampler._rng(0))
-
-    assert not (walks[:, 2:] == walks[:, :-2]).any()
-    # One legal continuation per step on this graph, so the walk sweeps the cycle:
-    # 4 steps, 4 distinct nodes, every row of the teacher operator supervised once.
-    for path in walks:
-        assert len(set(path.tolist())) == path.size
-
-
-def test_non_backtracking_backtracks_out_of_a_degree_one_node():
-    # Path graph 0 -- 1 -- 2: node 2 has a single edge, so the walk that arrives
-    # there has to retreat rather than stall on a self-loop.
-    neighbors = [[1, -1], [0, 2], [1, -1]]
-    probs = [[1.0, 0.0], [0.5, 0.5], [1.0, 0.0]]
-    sampler = _walk_sampler(neighbors, probs, walk_length=3, num_walks=4)
-    walks, _ = sampler._sample_walks(0, sampler._rng(0))
-
-    # 0 -> 1 -> 2 -> 1 is the only path of this length, and step 3 is a backtrack.
-    for path in walks:
-        assert path.tolist() == [0, 1, 2, 1]
-
-
-def test_walk_paths_are_reproducible_under_the_same_seed():
-    first = _walk_sampler(_CYCLE_NEIGHBORS, _CYCLE_PROBS, walk_length=4)
-    second = _walk_sampler(_CYCLE_NEIGHBORS, _CYCLE_PROBS, walk_length=4)
-    walks_first, _ = first._sample_walks(2, first._rng(2))
-    walks_second, _ = second._sample_walks(2, second._rng(2))
-
-    np.testing.assert_array_equal(walks_first, walks_second)
-
-
 @pytest.mark.parametrize(
     "removed_flag",
-    ("--graph_temp", "--direct_weight", "--candidate_size", "--walk_non_backtracking"),
+    (
+        "--graph_temp",
+        "--direct_weight",
+        "--candidate_size",
+        "--walk_non_backtracking",
+        "--walk_weight",
+        "--num_walks",
+        "--walk_length",
+        "--walk_start_epoch",
+    ),
 )
 def test_removed_heatgeo_cli_knobs_are_rejected(monkeypatch, removed_flag):
     monkeypatch.setattr(

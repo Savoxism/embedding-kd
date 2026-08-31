@@ -116,12 +116,14 @@ class TextPairWithTeacherAndHeatGeo(Dataset):
         # *texts* here shipped candidate_size strings per item through shared
         # memory and re-tokenized every one of them; HeatGeoCollate holds the
         # corpus tokenized once and looks them up by index instead.
-        candidate_idx, teacher_probs, walk_paths = self.sampler.sample_torch(idx)
+        candidate_idx, teacher_probs, ambient_importance = self.sampler.sample_torch(
+            idx
+        )
         item = {
             "idx": idx,
             "candidate_idx": candidate_idx,
             "teacher_probs": teacher_probs,
-            "walk_paths": walk_paths,
+            "ambient_importance": ambient_importance,
         }
         if self.labels is not None:
             item["label"] = int(self.labels[idx])
@@ -206,6 +208,9 @@ class HeatGeoCollate:
         teacher_probs = torch.stack(
             [item["teacher_probs"] for item in batch], dim=0
         ).float()
+        ambient_importance = torch.stack(
+            [item["ambient_importance"] for item in batch], dim=0
+        ).float()
         ys = [item["label"] for item in batch] if "label" in batch[0] else None
 
         unique_idx, inverse = torch.unique(candidate_idx.reshape(-1), return_inverse=True)
@@ -229,12 +234,6 @@ class HeatGeoCollate:
 
         anchor_ids, anchor_mask = self._pad(idx.tolist())
 
-        # Walk trajectories: [B, M, L+1] where M = num_walks, L = walk_length.
-        # -1 entries mark disabled walks (num_walks=0).
-        walk_paths = torch.stack(
-            [item["walk_paths"] for item in batch], dim=0
-        ).long()
-
         out = {
             "idx": idx,
             "candidate_idx": candidate_idx,
@@ -243,7 +242,7 @@ class HeatGeoCollate:
             "candidate_chunks": candidate_chunks,
             "candidate_inverse": candidate_inverse,
             "teacher_probs": teacher_probs,
-            "walk_paths": walk_paths,
+            "ambient_importance": ambient_importance,
         }
         if ys is not None:
             out["labels"] = torch.tensor(ys, dtype=torch.long)

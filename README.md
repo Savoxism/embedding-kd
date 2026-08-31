@@ -1,6 +1,6 @@
 # HeatGeo: Heat-Diffusion Manifold Distillation for Text Embeddings
 
-This repository implements HeatGeo, a knowledge distillation method that transfers geometric structure from a large teacher embedding model to a compact student model using heat-diffusion on a teacher-induced kNN graph, augmented with random walk trajectory distillation.
+This repository implements HeatGeo, a knowledge distillation method that transfers geometric structure from a large teacher embedding model to a compact student model using heat diffusion on a teacher-induced kNN graph and explicit support-mass calibration.
 
 ## Supported Distillation Pairs
 
@@ -72,12 +72,12 @@ Each diffusion scale uses its own temperature $\tau_r$ to avoid the single-tempe
 
 The ambient and diffusion scales form one derived-weight relational objective:
 
-$$\mathcal{L} = \mathcal{L}_{\text{rel}} + \lambda_{\text{walk}} \cdot \mathcal{L}_{\text{walk}}$$
+$$\mathcal{L} = \mathcal{L}_{\text{rel}} + \lambda_{\text{mass}} \cdot \mathcal{L}_{\text{mass}}$$
 
 where:
 
 - $\mathcal{L}_{\text{rel}} = \sum_{r\in\{0,1,2,4\}} \omega_r \, \text{KL}(q_{i,r} \| p_{i,r}^S)$, with $\omega_r=1/r$ for diffusion and $\omega_0=\omega_1$; scale 0 is the ambient teacher-similarity profile.
-- $\mathcal{L}_{\text{walk}}$ matches the full one-step teacher kernel at walk-selected rows; the path selects rows but is not itself a trajectory target.
+- $\mathcal{L}_{\text{mass}}$ matches the teacher and student probability assigned to the selected support with a Bernoulli KL. Hard and uniform ambient samples estimate the student's complement partition using inverse inclusion probabilities.
 
 ### 7. Per-Epoch Candidate Sampling
 
@@ -85,9 +85,9 @@ Each epoch, every anchor draws a fresh candidate set composed of:
 
 - **Diffusion neighbors** from the graph's diffusion pools
 - **Hard negatives** (high teacher similarity but outside the mutual kNN graph)
-- **Random negatives** (replaced by walk nodes when walk distillation is active)
+- **Random negatives** from the remaining complement
 
-In-batch sharing deduplicates candidates and exposes each anchor to the full union of candidates in the batch.
+Hard and random negatives are sampled as disjoint strata. In-batch sharing deduplicates candidates and exposes each anchor to the full union of candidates in the batch.
 
 ## Configuration
 
@@ -98,12 +98,12 @@ weights, capacities, and correctness policies are resolved internally:
 |:---|:---|:---|
 | Teacher Graph | `graph_k`, `perplexity`, `diffusion_scales`, `truncation_tolerance` | kNN construction, adaptive row bandwidths, and diffusion |
 | Candidate Sampling | `diffusion_quota`, `hard_neg_k`, `random_neg_k` | Per-anchor composition; total size is their sum |
-| Walk Distillation | `num_walks`, `walk_length`, `walk_weight`, `walk_start_epoch` | Walk-selected row matching; each row reuses its stored bandwidth |
+| Mass Calibration | `mass_weight` | Weight of selected-vs-complement Bernoulli KL |
 | Training | `batch_size`, `epochs`, `learning_rate`, `min_lr` | Standard training setup |
 | Ambient profile | `direct_temp` | Shared teacher/student temperature for scale 0 |
 
-RIPPLE always uses in-batch sharing, per-epoch stochastic resampling, corpus
-deduplication, and non-backtracking walks. Scale weights are `1/r`, the ambient
+RIPPLE always uses in-batch sharing, per-epoch stochastic resampling, and corpus
+deduplication. Scale weights are `1/r`, the ambient
 weight equals the `r=1` weight, hard-negative storage equals `graph_k`, and the
 fixed-bandwidth baseline uses temperature `0.05`; none is a tunable method knob.
 
@@ -218,11 +218,11 @@ This repository also includes implementations of other distillation baselines fo
 │   └── ...                          # Other method configs
 ├── src/
 │   ├── criterions/
-│   │   ├── heatgeo_distillation.py  # HeatGeo loss (diffusion + direct + walk)
+│   │   ├── heatgeo_distillation.py  # HeatGeo loss (relational + support mass)
 │   │   └── ...                      # Other method losses
 │   ├── heatgeo/
 │   │   ├── graph_builder.py         # kNN graph and diffusion pool construction
-│   │   └── candidate_sampler.py     # Per-epoch candidate and walk sampling
+│   │   └── candidate_sampler.py     # Support and ambient-stratum sampling
 │   ├── data_utils/                  # Dataset and collation
 │   ├── evaluation/                  # Benchmark evaluation
 │   ├── cache_teacher.py             # Teacher embedding caching
@@ -231,5 +231,4 @@ This repository also includes implementations of other distillation baselines fo
 ├── scripts/                         # Training shell scripts
 ├── data/                            # Train/val/test CSV datasets
 ├── docs/                            # Reference papers
-└── WALK_DISTILLATION_GUIDE.md       # Walk distillation documentation
 ```

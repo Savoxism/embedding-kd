@@ -1,7 +1,7 @@
 \section{RIPPLE: Teacher-Selected Global Relational Transfer}
 \label{sec:method}
 
-RIPPLE uses the teacher's global geometry to select informative corpus-level relations, rather than letting random mini-batch co-occurrence determine the supervision support. A cached teacher graph selects corpus relations and defines multi-hop targets. During training, each anchor receives a compact candidate set drawn from those targets; candidates are pooled across the mini-batch for encoding reuse. An additional row loss connects overlapping anchor neighborhoods. Figure~\ref{fig:motivation} summarizes the distinction from batch-selected relational KD.
+RIPPLE uses the teacher's global geometry to select informative corpus-level relations, rather than letting random mini-batch co-occurrence determine the supervision support. A cached teacher graph selects corpus relations and defines multi-hop targets. During training, each anchor receives a compact candidate set drawn from those targets; candidates are pooled across the mini-batch for encoding reuse. A support-mass loss calibrates how much student probability lies inside the selected support. Figure~\ref{fig:motivation} summarizes the distinction from batch-selected relational KD.
 
 \subsection{Why Relation Selection Matters}
 \label{sec:relation-selection}
@@ -81,25 +81,46 @@ provided RIPPLE includes at least $m$ teacher-proportional draws per anchor and 
 
 Proposition~\ref{prop:global-geometry} separates optimization error from support error. When teacher mass is concentrated on $h$ relations and relational compute is matched, the RIPPLE residual decays on the scale of $h$, whereas Proposition~\ref{prop:batch-exposure} gives corpus-size dependence for mini-batch support. RIPPLE therefore has the tighter finite-epoch upper bound whenever its selected-support optimization error does not exceed the resulting coverage advantage.
 
-\subsection{Cross-Anchor Supervision and Training}
-\label{sec:walk}
+\subsection{Support-Mass Calibration and Training}
+\label{sec:mass-calibration}
 
-Candidate selection determines which columns are observed, but row-wise softmax matching still treats anchors independently. RIPPLE therefore samples additional rows with short non-backtracking walks over $P^T$. For every visited row $u$, it reuses candidates in the pooled batch that overlap with $u$'s teacher neighborhood. If $\Omega_u^w$ is this overlap and $\nu_B(u)$ its normalized visit frequency, the row loss is
+Conditional matching inside $C_i$ does not determine the total student probability assigned to that support. For scale $r$, define
 \begin{equation}
-\mathcal L_{\mathrm{row}}
-=\sum_u\nu_B(u)
-D_{\mathrm{KL}}\!\left(
-P_u^T|_{\Omega_u^w}\middle\|
-\operatorname{softmax}_{v\in\Omega_u^w}(c^S_{uv}/\tau_u)
-\right).
-\label{eq:row-loss}
+\alpha^T_{i,r}=g^T_{i,r}(C_i),
+\qquad
+\alpha^S_{i,r}=g^S_{i,r}(C_i).
 \end{equation}
-The walks select rows, not trajectory targets. Reciprocal overlaps reuse the same student cosine scores across anchor objectives, while most visited rows reuse already-pooled encodings.
+The KL chain rule for the partition $\{C_i,\bar C_i\}$ gives the exact decomposition
+\begin{equation}
+\begin{aligned}
+D_{\mathrm{KL}}(g^T_{i,r}\|g^S_{i,r})
+={}&D_{\mathrm{KL}}\!\left(\operatorname{Bern}(\alpha^T_{i,r})\middle\|\operatorname{Bern}(\alpha^S_{i,r})\right)\\
+&+\alpha^T_{i,r}D_{\mathrm{KL}}(g^T_{i,r}(\cdot|C_i)\|g^S_{i,r}(\cdot|C_i))\\
+&+(1-\alpha^T_{i,r})D_{\mathrm{KL}}(g^T_{i,r}(\cdot|\bar C_i)\|g^S_{i,r}(\cdot|\bar C_i)).
+\end{aligned}
+\label{eq:support-kl-decomposition}
+\end{equation}
+RIPPLE directly controls the first term with
+\begin{equation}
+\mathcal L_{\mathrm{mass}}
+=\frac1{|B|}\sum_{i\in B}\sum_{r\in\mathcal R}\omega_r
+D_{\mathrm{KL}}\!\left(\operatorname{Bern}(\alpha^T_{i,r})\middle\|\operatorname{Bern}(\widehat\alpha^S_{i,r})\right).
+\label{eq:mass-loss}
+\end{equation}
+Full-corpus student normalization is avoided with stratified ambient sampling. Hard negatives and the remaining corpus form disjoint strata. If $\pi_i(j)$ is an ambient item's marginal inclusion probability, then
+\begin{equation}
+\widehat Z^S_{i,\bar C,r}
+=\sum_{j\in A_i}\frac{\exp(c^S_{ij}/\tau_{i,r})}{\pi_i(j)},
+\qquad
+\widehat\alpha^S_{i,r}
+=\frac{Z^S_{i,C,r}}{Z^S_{i,C,r}+\widehat Z^S_{i,\bar C,r}}.
+\end{equation}
+The complement partition estimator is Horvitz--Thompson; the selected-support partition is scored exactly.
 
 The complete training objective is
 \begin{equation}
 \mathcal L_{\mathrm{RIPPLE}}
-=\mathcal L_{\mathrm{rel}}+\lambda\mathcal L_{\mathrm{row}}.
+=\mathcal L_{\mathrm{rel}}+\lambda_{\mathrm{mass}}\mathcal L_{\mathrm{mass}}.
 \label{eq:full-objective}
 \end{equation}
 Graph construction is offline and stores only sparse neighborhoods. Each update encodes the anchor batch and its deduplicated candidate pool. At inference, deployment uses only the distilled student encoder.

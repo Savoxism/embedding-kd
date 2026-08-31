@@ -120,43 +120,24 @@ class HeatGeoDistillation(nn.Module):
     term has been removed rather than left at weight 0: it also made the criterion
     carry trainable parameters, and a knob that cannot work is worse than no knob.
 
-    **The walk term, and what it actually supervises.** The diffusion scales only
-    ever condition on an *anchor*: every row of the teacher operator they match is a
-    row indexed by a batch anchor. The rows at every other node are never seen, even
-    though those nodes are already encoded as candidates. The walk term samples such
-    nodes -- by running a random walk on the teacher transition matrix P, so the
-    sampling measure is the walk's occupancy around the anchor rather than uniform --
-    and matches the teacher's one-step kernel there:
+    **Support-mass calibration.** Conditional KL on a selected support C_i does not
+    determine how much of the student's full-corpus probability belongs to C_i. For
+    every diffusion scale the sampler therefore retains
 
-        L_walk = E_{j ~ nu} KL( Ptilde(.|j) || p^S(.|j) ),
-        Ptilde(.|j) = P(.|j) restricted to pool ∩ supp P(.|j), renormalized.
+        alpha_T = sum_{j in C_i} p_T(j)
 
-    Three properties are deliberate. *The target is dense, not a sampled successor.*
-    A first-order walk scored with teacher forcing factorizes into independent
-    one-step terms, so a sampled destination is an unbiased but high-variance
-    estimate of exactly this KL -- the transition row is already stored, so there is
-    no reason to pay the variance. It also means the term is not a trajectory
-    objective and is not described as one: nothing in it couples two consecutive
-    steps.
+    before normalizing the conditional target. Hard and uniform ambient samples
+    carry inverse inclusion probabilities, giving a Horvitz--Thompson estimate of
+    the complement partition. With Z_C scored exactly and Z_bar estimated from the
+    ambient sample, alpha_S = Z_C / (Z_C + Z_bar) and
 
-    *The denominator is the teacher's own support, not the shared pool.* Softmaxing a
-    walk step over the whole pool would recreate the false-zero gradient the column
-    domains above exist to remove, and would do it on the worst possible columns: a
-    hard negative is by construction top-200 by teacher cosine and excluded from the
-    mutual-kNN graph, so it can never appear in supp P(.|j) and would be pushed down
-    with nothing pulling it back. Restricted to pool ∩ supp P(.|j), every column in
-    the denominator carries real teacher mass, and the term has a floor of 0 -- which
-    also puts it on the same scale as L_diff, so walk_weight means something.
+        L_mass = sum_r omega_r KL(Bern(alpha_T,r) || Bern(alpha_S,r)).
 
-    *The walk's first node is dropped.* Step 0 is the anchor, and the lazy walk at
-    r=1 is (e_i + P_i)/2, which after dropping the self-mass is P_i exactly. Scoring
-    it again would distil the r=1 target twice, once densely and once by sampling.
+    This is the first term in the exact KL chain rule for the partition {C_i,
+    complement}; the conditional relational loss controls the within-support term,
+    while candidate selection makes the unresolved complement coefficient small.
 
-    The three column domains are therefore disjoint in what they claim: diffusion
-    ranks within the anchor's own draw, the direct scale calibrates across the batch,
-    and the walk term ranks within a *non-anchor* node's teacher neighbourhood.
-
-    **Temperature ties.** Three temperatures are not free parameters and are
+    **Temperature ties.** The temperatures are not free parameters and are
     therefore not constructor arguments:
 
     * ``tau_1 = graph_temp``: the r=1 target after dropping self-mass IS the
@@ -172,10 +153,7 @@ class HeatGeoDistillation(nn.Module):
       tie is read row by row: row i's target was built at tau_i, so row i is
       matched at tau_i. Nothing in the argument above depends on the *value* of
       the temperature, only on the two sides sharing it, and the attainable set is
-      the same shift family; so the proposition holds per row, and the gauge
-      argument that chains it along walk edges is untouched.
-    * ``walk_temp = graph_temp``: the walk targets are transition rows too --
-      the same argument verbatim, and the tie the gauge-reduction proof assumes.
+      the same shift family; so the proposition holds per row.
     * ``direct student temp = direct_temp``: the classic same-temperature
       convention of distillation (Hinton et al., 2015). Unequal temperatures
       make the direct target attainable only as a rescaling of teacher cosines,
@@ -209,10 +187,10 @@ class HeatGeoDistillation(nn.Module):
             "the whole ladder is derived: tau_1 is tied to graph_temp (or to the "
             "per-row bandwidth) and tau_r = sqrt(r) * tau_1"
         ),
-        "walk_temp": (
-            "tied to graph_temp: the walk target is a transition row, i.e. a "
-            "softmax of teacher cosines at graph_temp"
-        ),
+        "walk_temp": "row supervision was removed in favor of support-mass calibration",
+        "walk_weight": "use mass_weight; row supervision no longer exists",
+        "transition_neighbors": "transition rows are not consumed by the loss",
+        "transition_probs": "transition rows are not consumed by the loss",
         "direct_student_temp": (
             "tied to direct_temp: the direct scale uses one temperature on both "
             "the teacher and the student side (Hinton et al., 2015)"
@@ -230,9 +208,7 @@ class HeatGeoDistillation(nn.Module):
         diffusion_scales: Sequence[int] | None = None,
         teacher_embeddings: torch.Tensor | None = None,
         direct_temp: float = 0.10,
-        transition_neighbors: torch.Tensor | None = None,
-        transition_probs: torch.Tensor | None = None,
-        walk_weight: float = 0.5,
+        mass_weight: float = 0.5,
         row_temps: torch.Tensor | None = None,
         **kwargs,
     ):
@@ -246,12 +222,12 @@ class HeatGeoDistillation(nn.Module):
         self.teacher_dim = teacher_dim
         self.graph_temp = FIXED_BANDWIDTH_TEMP
 
-        # Per-row temperatures (entropic affinities). The tie tau_1 = tau_w =
+        # Per-row temperatures (entropic affinities). The tie tau_1 =
         # "the temperature this row's target was built at" is unchanged; it is
         # simply no longer the same number for every row. Zero loss is still
         # attainable exactly on the shift family cos_S(i,.) = cos_T(i,.) + a_i,
-        # which is independent of tau_i, so the proposition and the gauge argument
-        # that chains it along walk edges both carry over row by row.
+        # which is independent of tau_i, so the attainability result carries over
+        # row by row.
         if row_temps is not None:
             temps_row = row_temps.detach().to(torch.float32).reshape(-1)
             if not bool(torch.isfinite(temps_row).all()) or bool(
@@ -263,30 +239,9 @@ class HeatGeoDistillation(nn.Module):
             self.row_temps = None
         self.eps_norm = EPS_NORM
         self.diag_topk = DIAG_TOPK
-
-        # ---- Random walk kernel matching ----------------------------------------
-        # Enabled by the curriculum, not by construction: the walk term ranks inside
-        # a neighbourhood, which is only meaningful once the student has one.
-        self.use_walk_loss = False
-        self.walk_weight = float(walk_weight)
-        # Tied, not tuned: the walk target is a transition row = softmax of teacher
-        # cosines at graph_temp (see "Temperature ties" in the class docstring).
-        self.walk_temp = self.graph_temp
-        if transition_neighbors is not None and transition_probs is not None:
-            # The teacher's transition rows, padded with -1. Held as int32/float32
-            # rather than the artifact's int64: at corpus scale this is the second
-            # largest buffer the criterion owns and every use gathers a few hundred
-            # rows out of it.
-            self.register_buffer(
-                "walk_neighbors", transition_neighbors.to(torch.int32), persistent=False
-            )
-            self.register_buffer(
-                "walk_probs", transition_probs.to(torch.float32), persistent=False
-            )
-        else:
-            self.walk_neighbors = None
-            self.walk_probs = None
-        self._warned_walk_needs_sharing = False
+        if mass_weight < 0.0:
+            raise ValueError("mass_weight must be non-negative")
+        self.mass_weight = float(mass_weight)
 
         self.use_direct = teacher_embeddings is not None
         if self.use_direct:
@@ -441,164 +396,112 @@ class HeatGeoDistillation(nn.Module):
         logits = logits.masked_fill(self_mask, float("-inf"))
         return F.softmax(logits, dim=-1)
 
-    def _compute_walk_loss(
+    def _support_mass_loss(
         self,
-        walk_paths: torch.Tensor,
-        pool_norm: torch.Tensor,
-        column_idx: torch.Tensor,
-    ) -> tuple[torch.Tensor, dict[str, float]]:
-        """Teacher one-step kernel matched at the nodes a walk visits.
+        similarity: torch.Tensor,
+        teacher_mass: torch.Tensor,
+        support_mask: torch.Tensor,
+        ambient_importance: torch.Tensor,
+        diffusion_temps: torch.Tensor,
+    ) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
+        """Bernoulli KL for mass on C, using a stratified complement estimate."""
+        logits = similarity.unsqueeze(1) / diffusion_temps.unsqueeze(-1)
+        support = support_mask.unsqueeze(1)
+        ambient = ambient_importance > 0
 
-        Args:
-            walk_paths: [B, M, L+1] corpus indices; column 0 is the anchor and is
-                dropped, -1 marks a disabled or truncated walk.
-            pool_norm: [pool_size, D] L2-normalized shared pool embeddings.
-            column_idx: [pool_size] corpus indices of the pool columns, sorted.
-
-        Returns:
-            walk_kl: scalar, occupancy-weighted mean KL per supervised node.
-            metrics: diagnostics, including the ones that say whether the term has
-                anything to work with at all.
-        """
-        device = pool_norm.device
-        empty = torch.zeros((), device=device)
-        if self.walk_neighbors is None:
-            return empty, {}
-
-        pool_size = pool_norm.size(0)
-
-        # Sources: every node visited after the start. Step 0 is the anchor, whose
-        # teacher row is already the r=1 diffusion target.
-        visited = walk_paths[..., 1:].reshape(-1)
-        total_visits = max(int(visited.numel()), 1)
-        visited = visited[visited >= 0]
-        if visited.numel() == 0:
-            return empty, {}
-
-        # A node visited k times is supervised with weight k: that is what makes the
-        # sampling measure the walk's occupancy rather than its support.
-        src_nodes, src_counts = torch.unique(visited, return_counts=True)
-
-        # column_idx comes out of torch.unique and is therefore sorted, so the
-        # corpus -> pool lookup is a binary search on device. The previous version
-        # rebuilt a Python dict over the whole pool and walked B*M*(L+1) indices in
-        # interpreter code, with two host syncs, on every step.
-        src_pos = torch.searchsorted(column_idx, src_nodes).clamp_max(pool_size - 1)
-        in_pool = column_idx[src_pos] == src_nodes
-        src_nodes = src_nodes[in_pool]
-        src_pos = src_pos[in_pool]
-        src_counts = src_counts[in_pool]
-        if src_nodes.numel() == 0:
-            return empty, {"walk_valid_ratio": 0.0, "walk_rows": 0.0}
-        visits_in_pool = src_counts.sum()
-
-        # Teacher transition row per source, restricted to columns the pool holds.
-        neighbors = self.walk_neighbors.index_select(0, src_nodes).long()
-        probs = self.walk_probs.index_select(0, src_nodes).float()
-        flat = neighbors.reshape(-1)
-        nb_pos = torch.searchsorted(column_idx, flat.clamp_min(0)).clamp_max(
-            pool_size - 1
+        log_z_support = torch.logsumexp(
+            logits.masked_fill(~support, float("-inf")), dim=-1
         )
-        present = (flat >= 0) & (column_idx[nb_pos] == flat)
-        nb_pos = nb_pos.view_as(neighbors)
-        keep = present.view_as(neighbors) & (probs > 0)
-        # P carries no self-loops, but nothing downstream would survive one.
-        keep = keep & (nb_pos != src_pos.unsqueeze(1))
-
-        target = torch.zeros(src_nodes.numel(), pool_size, device=device)
-        target.scatter_add_(
-            1, nb_pos, torch.where(keep, probs, torch.zeros_like(probs))
+        log_weights = torch.where(
+            ambient,
+            ambient_importance.clamp_min(1e-12).log(),
+            torch.full_like(ambient_importance, float("-inf")),
         )
-        allowed = target > 0
-
-        # Two live columns is the smallest denominator on which a softmax has any
-        # freedom; a one-column row contributes exactly 0 and would only dilute the
-        # mean. Dropping it here is what keeps walk_eff_denom honest.
-        live = allowed.sum(dim=1)
-        usable = live >= 2
-        if not bool(usable.any()):
-            return empty, {
-                "walk_valid_ratio": 0.0,
-                "walk_rows": 0.0,
-                "walk_node_hit_ratio": float(visits_in_pool.item()) / total_visits,
-            }
-        target = target[usable]
-        allowed = allowed[usable]
-        src_pos = src_pos[usable]
-        weight = src_counts[usable].float()
-        target = target / target.sum(dim=1, keepdim=True).clamp_min(1e-12)
-
-        # One temperature per supervised row: the walk target at node j is j's own
-        # transition row, so it is matched at the temperature that row was built at.
-        if self.row_temps is not None:
-            walk_tau = self.row_temps.index_select(0, src_nodes[usable]).view(-1, 1)
-        else:
-            walk_tau = self.walk_temp
-        logits = (pool_norm.index_select(0, src_pos) @ pool_norm.t()) / walk_tau
-        logits = logits.masked_fill(~allowed, float("-inf"))
-        log_probs = F.log_softmax(logits, dim=-1)
-
-        zeros = torch.zeros_like(target)
-        log_target = torch.where(target > 0, target.clamp_min(1e-12).log(), zeros)
-        kl_rows = torch.where(target > 0, target * (log_target - log_probs), zeros).sum(
-            dim=1
+        log_z_complement = torch.logsumexp(
+            logits + log_weights.unsqueeze(1), dim=-1
         )
-        weight = weight / weight.sum().clamp_min(1e-12)
-        walk_kl = (kl_rows * weight).sum()
 
-        row_entropy = -(target * log_target).sum(dim=1)
-        stats = torch.stack(
-            [
-                walk_kl.detach(),
-                (row_entropy * weight).sum(),
-                live[usable].float().mean(),
-                usable.sum().float(),
-                src_counts[usable].sum().float() / total_visits,
-                visits_in_pool.float() / total_visits,
-            ]
-        ).tolist()
-        metrics = dict(
-            zip(
-                [
-                    "walk_kl",
-                    "walk_teacher_entropy",
-                    "walk_eff_denom",
-                    "walk_rows",
-                    "walk_valid_ratio",
-                    "walk_node_hit_ratio",
-                ],
-                stats,
+        valid = support_mask.any(dim=-1) & ambient.any(dim=-1)
+        mass_logit = torch.where(
+            valid.unsqueeze(1),
+            log_z_support - log_z_complement,
+            torch.zeros_like(log_z_support),
+        )
+        alpha_teacher = teacher_mass.clamp(0.0, 1.0)
+        zeros = torch.zeros_like(alpha_teacher)
+        teacher_entropy = -(
+            torch.where(
+                alpha_teacher > 0,
+                alpha_teacher * alpha_teacher.clamp_min(1e-12).log(),
+                zeros,
+            )
+            + torch.where(
+                alpha_teacher < 1,
+                (1 - alpha_teacher)
+                * (1 - alpha_teacher).clamp_min(1e-12).log(),
+                zeros,
             )
         )
-        return walk_kl, metrics
+        mass_kl = F.binary_cross_entropy_with_logits(
+            mass_logit, alpha_teacher, reduction="none"
+        ) - teacher_entropy
+        mass_kl = mass_kl.clamp_min(0.0) * valid.unsqueeze(1)
+
+        weights = self._resolved(self.scale_weights, teacher_mass.size(1))
+        weights = weights / weights.sum().clamp_min(1e-12)
+        loss = (mass_kl * weights.view(1, -1)).sum(dim=-1).mean()
+        alpha_student = mass_logit.sigmoid()
+        valid_scale = valid.unsqueeze(1).expand_as(alpha_student)
+        valid_count = valid_scale.sum().clamp_min(1)
+        metrics = {
+            "teacher_support_mass": alpha_teacher.mean(),
+            "student_support_mass": (alpha_student * valid_scale).sum()
+            / valid_count,
+            "support_mass_abs_error": (
+                (alpha_teacher - alpha_student).abs() * valid_scale
+            ).sum()
+            / valid_count,
+            "mass_valid_ratio": valid.float().mean(),
+        }
+        return loss, metrics
 
     def forward(
         self,
         anchor_embeddings: torch.Tensor,
         candidate_embeddings: torch.Tensor,
         teacher_probs: torch.Tensor,
+        ambient_importance: torch.Tensor | None = None,
         candidate_idx: torch.Tensor | None = None,
         anchor_idx: torch.Tensor | None = None,
-        walk_paths: torch.Tensor | None = None,
     ) -> tuple[torch.Tensor, dict[str, float]]:
-        _assert_finite_tensors(
-            (
-                ("anchor_embeddings", anchor_embeddings),
-                ("candidate_embeddings", candidate_embeddings),
-                ("teacher_probs", teacher_probs),
-            )
-        )
+        named_tensors = [
+            ("anchor_embeddings", anchor_embeddings),
+            ("candidate_embeddings", candidate_embeddings),
+            ("teacher_probs", teacher_probs),
+        ]
+        if ambient_importance is not None:
+            named_tensors.append(("ambient_importance", ambient_importance))
+        _assert_finite_tensors(named_tensors)
 
         batch_size = anchor_embeddings.size(0)
         candidate_size = teacher_probs.size(-1)
         n_scales = teacher_probs.size(1)
 
         teacher_probs = teacher_probs.clamp_min(0.0)
+        teacher_support_mass = teacher_probs.sum(dim=-1)
+        support_mask = teacher_probs.sum(dim=1) > 0
         teacher_probs = teacher_probs / teacher_probs.sum(
             dim=-1, keepdim=True
         ).clamp_min(1e-12)
 
         anchor_norm = F.normalize(anchor_embeddings, p=2, dim=-1, eps=self.eps_norm)
+        candidate_embeddings = candidate_embeddings.reshape(
+            batch_size, candidate_size, -1
+        )
+        candidate_norm_own = F.normalize(
+            candidate_embeddings, p=2, dim=-1, eps=self.eps_norm
+        )
+        similarity_own = torch.einsum("bd,bcd->bc", anchor_norm, candidate_norm_own)
         candidate_embeddings = candidate_embeddings.reshape(
             batch_size * candidate_size, -1
         )
@@ -619,13 +522,7 @@ class HeatGeoDistillation(nn.Module):
             target = target.masked_fill(self_mask.unsqueeze(1), 0.0)
             target = target / target.sum(dim=-1, keepdim=True).clamp_min(1e-12)
         else:
-            candidate_norm = F.normalize(
-                candidate_embeddings.view(batch_size, candidate_size, -1),
-                p=2,
-                dim=-1,
-                eps=self.eps_norm,
-            )
-            similarity = torch.einsum("bd,bcd->bc", anchor_norm, candidate_norm)
+            similarity = similarity_own
             target = teacher_probs
             column_idx = candidate_idx
             # Without sharing every column already belongs to this anchor, so the
@@ -690,6 +587,28 @@ class HeatGeoDistillation(nn.Module):
         # ladder, so with per-row bandwidths every diffusion scale is per-row too.
         sqrt_r = self._resolved(self.scale_sqrt, n_scales - offset)
 
+        loss_mass = torch.zeros((), device=anchor_embeddings.device)
+        mass_metrics = {
+            "teacher_support_mass": loss_mass,
+            "student_support_mass": loss_mass,
+            "support_mass_abs_error": loss_mass,
+            "mass_valid_ratio": loss_mass,
+        }
+        if ambient_importance is not None:
+            if row_tau is not None:
+                diffusion_temps = row_tau * sqrt_r.view(1, -1)
+            else:
+                diffusion_temps = self._resolved(
+                    self.scale_temps, teacher_support_mass.size(1)
+                ).view(1, -1)
+            loss_mass, mass_metrics = self._support_mass_loss(
+                similarity=similarity_own,
+                teacher_mass=teacher_support_mass,
+                support_mask=support_mask,
+                ambient_importance=ambient_importance,
+                diffusion_temps=diffusion_temps,
+            )
+
         kl_per_scale = []
         log_probs_per_scale = []
         for scale_idx in range(n_scales):
@@ -712,34 +631,20 @@ class HeatGeoDistillation(nn.Module):
             kl_per_scale.append(contribution.sum(dim=-1))
         kl_per_scale = torch.stack(kl_per_scale, dim=1)
         loss_diff = (kl_per_scale * weights.view(1, -1)).sum(dim=-1).mean()
-        _assert_finite_tensors((("loss_diff", loss_diff),))
-
-        # ---- Walk term: teacher kernel at non-anchor nodes ----------------------
-        # Needs in-batch sharing: without it there is no cross-anchor pool to hold a
-        # walk node's neighbours, so every row would fall below the two-column
-        # minimum and the term would be silently zero.
-        loss_walk = torch.zeros((), device=anchor_embeddings.device)
-        walk_metrics: dict[str, float] = {}
-        if self.use_walk_loss and walk_paths is not None:
-            if share:
-                loss_walk, walk_metrics = self._compute_walk_loss(
-                    walk_paths=walk_paths,
-                    pool_norm=pool_norm,
-                    column_idx=column_idx,
-                )
-            elif not self._warned_walk_needs_sharing:
-                self._warned_walk_needs_sharing = True
-                print(
-                    "HeatGeo: walk loss requires corpus indices for in-batch sharing; "
-                    "term disabled."
-                )
-
-        total_loss = loss_diff + self.walk_weight * loss_walk
+        total_loss = loss_diff + self.mass_weight * loss_mass
+        _assert_finite_tensors(
+            (
+                ("loss_diff", loss_diff),
+                ("loss_mass", loss_mass),
+                ("total_loss", total_loss),
+            )
+        )
 
         metrics = self._diagnostics(
             total_loss=total_loss,
             loss_diff=loss_diff,
-            walk_metrics=walk_metrics,
+            loss_mass=loss_mass,
+            mass_metrics=mass_metrics,
             kl_per_scale=kl_per_scale,
             log_probs_per_scale=log_probs_per_scale,
             target=target,
@@ -756,7 +661,8 @@ class HeatGeoDistillation(nn.Module):
         self,
         total_loss: torch.Tensor,
         loss_diff: torch.Tensor,
-        walk_metrics: dict[str, float],
+        loss_mass: torch.Tensor,
+        mass_metrics: dict[str, torch.Tensor],
         kl_per_scale: torch.Tensor,
         log_probs_per_scale: list[torch.Tensor],
         target: torch.Tensor,
@@ -837,6 +743,12 @@ class HeatGeoDistillation(nn.Module):
         scalars = [
             total_loss.detach(),
             loss_diff.detach(),
+            loss_mass.detach(),
+            (self.mass_weight * loss_mass).detach(),
+            mass_metrics["teacher_support_mass"].detach(),
+            mass_metrics["student_support_mass"].detach(),
+            mass_metrics["support_mass_abs_error"].detach(),
+            mass_metrics["mass_valid_ratio"].detach(),
             js_floor.mean(),
             (loss_diff - js_floor.mean()).detach(),
             (loss_diff + weighted_entropy.mean()).detach(),
@@ -854,6 +766,12 @@ class HeatGeoDistillation(nn.Module):
         names = [
             "loss_total",
             "loss_diff",
+            "loss_mass",
+            "loss_mass_weighted",
+            "teacher_support_mass",
+            "student_support_mass",
+            "support_mass_abs_error",
+            "mass_valid_ratio",
             "js_floor",
             "loss_excess",
             "loss_cross_entropy",
@@ -889,10 +807,6 @@ class HeatGeoDistillation(nn.Module):
             [value.float().reshape(()) for value in scalars + per_scale]
         ).tolist()
         metrics = dict(zip(names, values[: len(names)]))
-
-        if walk_metrics:
-            metrics.update(walk_metrics)
-            metrics["loss_walk"] = self.walk_weight * walk_metrics["walk_kl"]
 
         per_scale_values = values[len(names) :]
         if offset:
