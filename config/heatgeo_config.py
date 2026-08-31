@@ -99,7 +99,7 @@ class HeatGeoConfig(BaseConfig):
     # tolerance requires and the arrays are allocated at the width the widest anchor
     # needed. The only remaining sizes are DIFFUSION_ROW_CAP / POOL_ROW_CAP in
     # graph_builder, which are memory guards -- the build reports
-    # pool_capped_rows / walk_capped_rows if either ever binds before the tolerance
+    # pool_capped_rows / diffusion_capped_rows if either binds before the tolerance
     # is met, and then the guarantee does not hold.
     truncation_tolerance = 0.01
 
@@ -141,10 +141,6 @@ class HeatGeoConfig(BaseConfig):
 
     save_dir = "models/heatgeo/qwen3_4b_to_bert_base"
     final_weights_only = False
-    use_wandb = True
-    wandb_project = "iclr-mdd-heatgeo"
-    wandb_run_name = "heatgeo_qwen3_4b_to_bert_base"
-    wandb_mode = "online"
 
     # ---- Multi-Layer Spec ----------------------------------------------------
     # Defining both of these switches the distiller to its multi-layer HeatGeo

@@ -163,8 +163,6 @@ def test_rkd_cli_uses_paper_defaults_and_accepts_overrides(monkeypatch):
 
 def test_heatgeo_temperature_ties():
     criterion = HeatGeoDistillation(
-        student_dim=4,
-        teacher_dim=4,
         diffusion_scales=(1, 2, 4),
         row_weight=0.0,  # L_rel only: no graph passed, so L_row must be off
     )
@@ -186,18 +184,16 @@ def test_heatgeo_temperature_ties():
         "graph_temp",
         "scale_temps",
         "broad_scale_temps",
-            "walk_temp",
-            "walk_weight",
-            "row_temp",
-            "mass_weight",
-            "geo_weight",
-            "sym_weight",
-            "direct_student_temp",
+        "walk_temp",
+        "walk_weight",
+        "row_temp",
+        "mass_weight",
+        "geo_weight",
+        "sym_weight",
+        "direct_student_temp",
     ):
         with pytest.raises(ValueError, match=removed):
             HeatGeoDistillation(
-                student_dim=4,
-                teacher_dim=4,
                 row_weight=0.0,
                 **{removed: 0.07},
             )
@@ -223,8 +219,6 @@ def test_heatgeo_relational_loss_reports_semantic_decomposition():
     teacher_probs = torch.rand(2, 3, 3)
 
     criterion = HeatGeoDistillation(
-        student_dim=4,
-        teacher_dim=4,
         diffusion_scales=(1, 2, 4),
         teacher_embeddings=teacher_bank,
         row_weight=0.0,
@@ -241,10 +235,9 @@ def test_heatgeo_relational_loss_reports_semantic_decomposition():
     # multi-hop group (2/3 at r=2 and 1/3 at r=4).
     assert metrics["loss_amb"] == pytest.approx(metrics["kl_amb"], rel=1e-6)
     assert metrics["loss_nbr"] == pytest.approx(metrics["kl_nbr"], rel=1e-6)
-    expected_diff = (
-        (2.0 / 3.0) * metrics["kl_diff_r2"]
-        + (1.0 / 3.0) * metrics["kl_diff_r4"]
-    )
+    expected_diff = (2.0 / 3.0) * metrics["kl_diff_r2"] + (1.0 / 3.0) * metrics[
+        "kl_diff_r4"
+    ]
     assert metrics["loss_diff"] == pytest.approx(expected_diff, rel=1e-6)
 
     # The original raw weights [1, 1, 1/2, 1/4] normalize to the grouped
@@ -270,8 +263,6 @@ def test_heatgeo_tied_temperature_makes_teacher_row_attainable():
     teacher_probs = torch.softmax(cosines / graph_temp, dim=-1).unsqueeze(1)
 
     criterion = HeatGeoDistillation(
-        student_dim=4,
-        teacher_dim=4,
         row_weight=0.0,
     )
     loss, _ = criterion(
@@ -353,8 +344,6 @@ def _closure_graph() -> dict:
 def _closure_criterion(**kwargs) -> HeatGeoDistillation:
     graph = _closure_graph()
     return HeatGeoDistillation(
-        student_dim=3,
-        teacher_dim=3,
         transition_neighbors=graph["transition_neighbors"],
         transition_probs=graph["transition_probs"],
         row_temps=torch.full((5,), 0.2),
@@ -446,9 +435,9 @@ def test_row_loss_forward_takes_no_walk_input_and_backpropagates():
 
 def test_row_loss_without_a_graph_is_an_error_not_a_silent_zero():
     with pytest.raises(ValueError, match="transition arrays"):
-        HeatGeoDistillation(student_dim=3, teacher_dim=3, row_weight=1.0)
+        HeatGeoDistillation(row_weight=1.0)
     # row_weight=0 is the honest way to run without L_row.
-    HeatGeoDistillation(student_dim=3, teacher_dim=3, row_weight=0.0)
+    HeatGeoDistillation(row_weight=0.0)
 
 
 def test_row_selection_knobs_are_gone():
@@ -461,7 +450,7 @@ def test_row_selection_knobs_are_gone():
         with pytest.raises(AttributeError):
             HeatGeoConfig(**{removed: 1})
         with pytest.raises(ValueError, match=removed):
-            HeatGeoDistillation(student_dim=3, teacher_dim=3, **{removed: 1})
+            HeatGeoDistillation(**{removed: 1})
 
     assert config.row_weight == 1.0
     assert config.row_start_epoch == 1
@@ -556,8 +545,6 @@ def test_criterion_uses_the_row_temperature_of_each_anchor():
     torch.manual_seed(0)
     # Anchor 0 is matched at tau = 0.02, anchor 1 at tau = 0.50.
     criterion = HeatGeoDistillation(
-        student_dim=4,
-        teacher_dim=4,
         row_temps=torch.tensor([0.02, 0.50, 0.10, 0.10, 0.10, 0.10]),
         row_weight=0.0,
     )
@@ -600,6 +587,18 @@ def test_criterion_uses_the_row_temperature_of_each_anchor():
         "--mass_weight",
         "--geo_weight",
         "--sym_weight",
+        # Removed with walk-based row selection and its weighting variants.
+        "--num_walks",
+        "--walk_length",
+        "--row_mode",
+        "--row_ambient",
+        # Removed with the W&B surface, which was disabled at import.
+        "--no_wandb",
+        "--wandb_project",
+        "--wandb_run_name",
+        "--wandb_mode",
+        # Removed: never read.
+        "--eval_data",
     ),
 )
 def test_removed_heatgeo_cli_knobs_are_rejected(monkeypatch, removed_flag):
@@ -608,6 +607,96 @@ def test_removed_heatgeo_cli_knobs_are_rejected(monkeypatch, removed_flag):
     )
     with pytest.raises(SystemExit):
         main.parse_args()
+
+
+class _TinyHeatGeoStudent(torch.nn.Module):
+    """Minimal stand-in for the student encoder used by the heatgeo train_step."""
+
+    def __init__(self, vocab: int = 64, dim: int = 8):
+        super().__init__()
+        self.embedding = torch.nn.Embedding(vocab, dim)
+
+    def forward(
+        self, input_ids, attention_mask, return_dict=True, output_hidden_states=False
+    ):
+        return SimpleNamespace(last_hidden_state=self.embedding(input_ids))
+
+
+def test_heatgeo_train_step_updates_the_student(monkeypatch):
+    """End-to-end cover for the active path: the candidate_chunks/candidate_inverse
+    gather, the criterion call, and the optimizer/scheduler step."""
+    from torch.amp import GradScaler
+
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: False)
+    torch.manual_seed(0)
+
+    corpus, dim, batch_size, n_candidates = 40, 8, 4, 5
+    graph_k = 4
+    neighbors = torch.stack([torch.randperm(corpus)[:graph_k] for _ in range(corpus)])
+    probs = F.normalize(torch.rand(corpus, graph_k), p=1, dim=1)
+
+    distiller = KnowledgeDistiller.__new__(KnowledgeDistiller)
+    distiller.config = SimpleNamespace(distill_method="heatgeo", w_task=0.0)
+    distiller.device_s = torch.device("cpu")
+    distiller.model_student = _TinyHeatGeoStudent(vocab=corpus, dim=dim)
+    distiller.criterion = HeatGeoDistillation(
+        diffusion_scales=(1,),
+        teacher_embeddings=F.normalize(torch.randn(corpus, dim), dim=-1),
+        transition_neighbors=neighbors,
+        transition_probs=probs,
+        row_temps=torch.full((corpus,), 0.15),
+        row_weight=1.0,
+    )
+    distiller.criterion.use_row_loss = True
+    distiller.optimizer = torch.optim.Adam(
+        distiller.model_student.parameters(), lr=1e-2
+    )
+    distiller.scheduler = torch.optim.lr_scheduler.LambdaLR(
+        distiller.optimizer, lambda _: 1.0
+    )
+    distiller.scaler = GradScaler("cuda", enabled=False)
+    distiller.current_epoch = 0
+    distiller.current_step = 0
+
+    anchor_idx = torch.arange(batch_size)
+    candidate_idx = torch.stack(
+        [
+            torch.randperm(corpus - batch_size)[:n_candidates] + batch_size
+            for _ in range(batch_size)
+        ]
+    )
+    teacher_probs = torch.rand(batch_size, 1, n_candidates)
+    # Only the first half of each draw is diffusion support; the rest are negatives,
+    # which is what lets the criterion recover the promoted row set.
+    teacher_probs[:, :, n_candidates // 2 :] = 0.0
+
+    # The collate hands the student one chunk per length bucket plus the inverse
+    # index that scatters encoded rows back to [batch * candidates].
+    unique_idx, inverse = torch.unique(candidate_idx.reshape(-1), return_inverse=True)
+    batch = {
+        "idx": anchor_idx,
+        "input_ids1_stu": anchor_idx.view(-1, 1),
+        "attention_mask1_stu": torch.ones(batch_size, 1, dtype=torch.long),
+        "candidate_idx": candidate_idx,
+        "candidate_inverse": inverse,
+        "teacher_probs": teacher_probs,
+        "candidate_chunks": [
+            {
+                "input_ids": unique_idx.view(-1, 1),
+                "attention_mask": torch.ones(unique_idx.numel(), 1, dtype=torch.long),
+            }
+        ],
+    }
+    before = distiller.model_student.embedding.weight.detach().clone()
+
+    loss, metrics = distiller.train_step(batch)
+
+    assert torch.isfinite(loss)
+    assert metrics["loss_rel"] > 0
+    # L_row must actually be active, not silently zero.
+    assert metrics["row_count"] > 0
+    assert metrics["loss_row"] > 0
+    assert not torch.equal(before, distiller.model_student.embedding.weight.detach())
 
 
 def test_final_student_weights_are_idempotent(tmp_path):

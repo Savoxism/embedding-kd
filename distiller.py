@@ -21,13 +21,6 @@ from transformers import AutoModel, AutoTokenizer, get_scheduler
 from transformers import __version__ as transformers_version
 
 try:
-    # import wandb
-    wandb = None
-    WANDB_AVAILABLE = False
-except ImportError:
-    wandb = None
-    WANDB_AVAILABLE = False
-try:
     from pytorch_optimizer import SAM
 
     SAM_AVAILABLE = True
@@ -59,8 +52,6 @@ from src.data_utils.dataset_cache import (
     TextPairWithTeacher,
     TextPairWithTeacherAndHeatGeo,
 )
-
-# Use evaluation_automodel for AutoModel (not evaluation_model_define which is for Stella)
 from src.evaluation.evaluation_automodel import (
     eval_classification_task,
     eval_cls_tasks,
@@ -73,7 +64,7 @@ from src.evaluation.evaluation_automodel import (
     test_sts_tasks,
 )
 from src.heatgeo import HeatGeoCandidateSampler, build_or_load_heatgeo_artifact
-from src.loss import info_nce, pair_inbatch_similarity_loss
+from src.loss import info_nce
 from src.pooling import last_token_pool
 
 # Global gradient-norm ceiling, applied after `scaler.unscale_`. Not configuration:
@@ -203,7 +194,6 @@ def grads_are_finite(optim) -> bool:
 class KnowledgeDistiller:
     def __init__(self, config):
         self.config = config
-        self.wandb_run = None
         self.global_step = 0
         self.current_epoch = 0
         self.current_step = 0
@@ -213,9 +203,8 @@ class KnowledgeDistiller:
         self.setup_devices()
         self.setup_models()
         self.setup_data()
-        self.setup_training()
-        self.setup_wandb()
         self.proj_s2t = None
+        self.setup_training()
 
         # Initialize criterion based on method
         if config.distill_method == "cdm":
@@ -228,6 +217,22 @@ class KnowledgeDistiller:
                 alpha_dtw=config.alpha_dtw,
                 debug_align=config.debug_align,
             )
+            # Built here, not lazily on the first batch. `add_param_group` after the
+            # scheduler exists leaves LambdaLR with one lr_lambda for two param
+            # groups; torch >= 2.6 zips them with strict=True, so the first
+            # `scheduler.step()` raises. Every other method that adds a group does
+            # so here and rebuilds the scheduler -- CDM was the one that did not.
+            d_s = self.model_student.config.hidden_size
+            d_t = self.model_teacher.config.hidden_size
+            self.proj_s2t = nn.Linear(d_s, d_t, bias=False).to(self.device_s)
+            self.optimizer.add_param_group(
+                {
+                    "params": self.proj_s2t.parameters(),
+                    "lr": config.learning_rate * 2,
+                }
+            )
+            self.scheduler = self._build_scheduler()
+            print(f"Initialized CDM projection layer: {d_s} -> {d_t}")
         elif config.distill_method == "dskd":
             self.criterion = DualSpaceKD(
                 student_dim=self.model_student.config.hidden_size,
@@ -272,77 +277,22 @@ class KnowledgeDistiller:
                 f"angle={config.rkd_angle_weight}, task={config.w_task}"
             )
         elif config.distill_method == "heatgeo":
-            # Multi-layer HeatGeo logic
-            if hasattr(config, "kd_teacher_layers") and hasattr(
-                config, "kd_student_layers"
-            ):
-                self.kd_student_layers = config.kd_student_layers
-                self.kd_teacher_layers = config.kd_teacher_layers
-
-                # We expect the last layer pair to use Cosine Loss, and the rest to use HeatGeo.
-                self.num_heatgeo_layers = len(self.kd_student_layers) - 1
-                self.heatgeo_criterions = nn.ModuleList()
-
-                print(
-                    f"Multi-layer HeatGeo: Using {self.num_heatgeo_layers} middle layers for HeatGeo, 1 final layer for Cosine."
-                )
-
-                for l_idx in range(self.num_heatgeo_layers):
-                    # For each middle layer, initialize a HeatGeoDistillation
-                    criterion = HeatGeoDistillation(
-                        student_dim=self.model_student.config.hidden_size,
-                        teacher_dim=self.teacher_cls_all.shape[-1],
-                        diffusion_scales=config.diffusion_scales,
-                        teacher_embeddings=self.teacher_cls_all[:, l_idx, :],
-                        direct_temp=config.direct_temp,
-                        row_weight=config.row_weight,
-                        row_temps=getattr(self, "heatgeo_artifact", {}).get(
-                            "row_temps"
-                        ),
-                        transition_neighbors=getattr(self, "heatgeo_artifact", {}).get(
-                            "transition_neighbors"
-                        ),
-                        transition_probs=getattr(self, "heatgeo_artifact", {}).get(
-                            "transition_probs"
-                        ),
-                    ).to(self.device_s)
-                    self.heatgeo_criterions.append(criterion)
-
-                self.cosine_criterion = nn.CosineEmbeddingLoss().to(self.device_s)
-                self.criterion = None  # Managed separately
-
-                # Setup projection layer if needed before building scheduler
-                d_s = self.model_student.config.hidden_size
-                d_t = self.teacher_cls_all.shape[-1]
-                if d_s != d_t:
-                    self.proj_s2t = nn.Linear(d_s, d_t, bias=False).to(self.device_s)
-                    self.optimizer.add_param_group(
-                        {
-                            "params": self.proj_s2t.parameters(),
-                            "lr": config.learning_rate * 2,
-                        }
-                    )
-                    print(f"Initialized HeatGeo projection layer: {d_s} -> {d_t}")
-
-                self.scheduler = self._build_scheduler()
-            else:
-                self.criterion = HeatGeoDistillation(
-                    student_dim=self.model_student.config.hidden_size,
-                    teacher_dim=self.teacher_cls_all.shape[-1],
-                    diffusion_scales=config.diffusion_scales,
-                    teacher_embeddings=self.teacher_cls_all,
-                    direct_temp=config.direct_temp,
-                    row_weight=config.row_weight,
-                    row_temps=getattr(self, "heatgeo_artifact", {}).get("row_temps"),
-                    transition_neighbors=getattr(self, "heatgeo_artifact", {}).get(
-                        "transition_neighbors"
-                    ),
-                    transition_probs=getattr(self, "heatgeo_artifact", {}).get(
-                        "transition_probs"
-                    ),
-                ).to(self.device_s)
-                self.scheduler = self._build_scheduler()
-                print("HeatGeo criterion initialized (single layer)")
+            # `self.heatgeo_artifact` is set unconditionally in the data path before
+            # this runs, so indexing it directly is right: a `.get()` fallback would
+            # hand the criterion `None` and make it blame the graph artifact for what
+            # is really a setup-ordering bug.
+            artifact = self.heatgeo_artifact
+            self.criterion = HeatGeoDistillation(
+                diffusion_scales=config.diffusion_scales,
+                teacher_embeddings=self.teacher_cls_all,
+                direct_temp=config.direct_temp,
+                row_weight=config.row_weight,
+                row_temps=artifact["row_temps"],
+                transition_neighbors=artifact["transition_neighbors"],
+                transition_probs=artifact["transition_probs"],
+            ).to(self.device_s)
+            self.scheduler = self._build_scheduler()
+            print("HeatGeo criterion initialized")
         else:
             self.criterion = None
 
@@ -378,58 +328,6 @@ class KnowledgeDistiller:
             self.device_s = self.device_t = torch.device("cpu")
             print("[WARN] No GPU -> CPU training")
         print("Done setup_devices")
-
-    def setup_wandb(self):
-        cfg = self.config
-        self.use_wandb = bool(getattr(cfg, "use_wandb", False))
-        if not self.use_wandb:
-            return
-        if not WANDB_AVAILABLE:
-            print(
-                "Warning: wandb is not installed. Install requirements in the project venv to enable W&B logging."
-            )
-            self.use_wandb = False
-            return
-        mode = os.environ.get("WANDB_MODE", getattr(cfg, "wandb_mode", "online"))
-        project = os.environ.get(
-            "WANDB_PROJECT", getattr(cfg, "wandb_project", "iclr-mdd")
-        )
-        run_name = os.environ.get(
-            "WANDB_RUN_NAME", getattr(cfg, "wandb_run_name", None)
-        )
-        self.wandb_run = wandb.init(
-            project=project,
-            name=run_name,
-            mode=mode,
-            config=cfg.to_dict() if hasattr(cfg, "to_dict") else vars(cfg),
-        )
-        print(f"W&B logging enabled: project={project}, run={run_name}, mode={mode}")
-        if cfg.distill_method == "heatgeo" and hasattr(self, "heatgeo_artifact"):
-            graph_stats = self.heatgeo_artifact.get("graph_stats", {})
-            if graph_stats:
-                wandb.log(
-                    {
-                        f"heatgeo_graph/{k}": v
-                        for k, v in graph_stats.items()
-                        if isinstance(v, (int, float))
-                    }
-                )
-            graph_log_path = self.heatgeo_artifact.get("graph_log_path")
-            if graph_log_path and os.path.exists(graph_log_path):
-                artifact = wandb.Artifact("heatgeo-knn-graph-log", type="dataset")
-                artifact.add_file(graph_log_path)
-                self.wandb_run.log_artifact(artifact)
-
-    @staticmethod
-    def _flatten_metrics(prefix: str, values: dict[str, Any]) -> dict[str, float]:
-        flat = {}
-        for key, value in values.items():
-            name = f"{prefix}/{key}"
-            if isinstance(value, (int, float)):
-                flat[name] = float(value)
-            elif isinstance(value, dict):
-                flat.update(KnowledgeDistiller._flatten_metrics(name, value))
-        return flat
 
     def setup_models(self):
         cfg = self.config
@@ -682,7 +580,7 @@ class KnowledgeDistiller:
                     if cfg.cache_dtype == "float32"
                     else torch.float16,
                     cache_path=str(cache_path),
-                    kd_teacher_layers=getattr(cfg, "kd_teacher_layers", None),
+                    teacher_model_name=cfg.teacher_model_name,
                 )
                 print(
                     f"Cached {len(teacher_cls_list)} teacher embeddings to {cache_path}"
@@ -711,25 +609,22 @@ class KnowledgeDistiller:
                     f"rows but training data has {len(df)} rows. Remove or regenerate {cache_path}."
                 )
 
+            # Every cached-teacher method now stores one pooled vector per row; the
+            # multi-layer producer that could emit [N, L, D] is gone, so a 3-D cache
+            # is a stale artifact and should be rejected loudly rather than silently
+            # reduced to its last layer.
             validate_cached_embeddings(
                 teacher_cls_list,
                 len(df),
                 cache_path=str(cache_path),
-                require_single_layer=cfg.distill_method in ("talas", "rkd"),
+                require_single_layer=True,
             )
 
             self.teacher_cls_all = teacher_cls_list
 
             if cfg.distill_method == "heatgeo":
-                # If teacher_cls_list is 3D [N, Num_Layers, Dim], use the final layer for the graph
-                teacher_embeddings_for_graph = (
-                    teacher_cls_list[:, -1, :]
-                    if teacher_cls_list.ndim == 3
-                    else teacher_cls_list
-                )
-
                 self.heatgeo_artifact = build_or_load_heatgeo_artifact(
-                    teacher_embeddings=teacher_embeddings_for_graph,
+                    teacher_embeddings=teacher_cls_list,
                     cache_path=cfg.heatgeo_cache_path,
                     log_dir=cfg.heatgeo_log_dir,
                     graph_k=cfg.graph_k,
@@ -932,6 +827,29 @@ class KnowledgeDistiller:
         loss, _ = info_nce(student_cls1, student_cls2, temperature=cfg.temperature)
         return loss, {}
 
+    def _sam_restore_without_update(self) -> int:
+        """Undo ``SAM.first_step`` when the second pass is abandoned.
+
+        ``first_step`` moves the weights to ``w + eps(w)`` and stashes ``w`` in the
+        optimizer state; only ``second_step`` puts them back, and it also applies the
+        wrapped update. A pass-2 skip must restore *without* updating -- otherwise
+        training silently continues from adversarially perturbed weights for the
+        remainder of the run.
+        """
+        restored = 0
+        for group in self.optimizer.param_groups:
+            for p in group["params"]:
+                old = self.optimizer.state.get(p, {}).get("old_p")
+                if old is not None:
+                    p.data.copy_(old)
+                    restored += 1
+        if restored == 0:
+            print(
+                "Warning: SAM skip restored no weights (no 'old_p' in optimizer "
+                "state); training may continue from perturbed weights."
+            )
+        return restored
+
     def train_step(self, batch: dict) -> tuple[torch.Tensor, dict]:
         cfg = self.config
         method = cfg.distill_method
@@ -957,9 +875,7 @@ class KnowledgeDistiller:
                     input_ids=batch_s["input_ids1_stu"],
                     attention_mask=batch_s["attention_mask1_stu"],
                     return_dict=True,
-                    output_hidden_states=True
-                    if hasattr(self, "kd_student_layers")
-                    else False,
+                    output_hidden_states=False,
                 )
 
                 # Check curriculum for SimCSE
@@ -973,9 +889,7 @@ class KnowledgeDistiller:
                         input_ids=batch_s["input_ids1_stu"],
                         attention_mask=batch_s["attention_mask1_stu"],
                         return_dict=True,
-                        output_hidden_states=True
-                        if hasattr(self, "kd_student_layers")
-                        else False,
+                        output_hidden_states=False,
                     )
 
                 # Candidates arrive deduplicated and grouped by length, so each chunk
@@ -984,10 +898,7 @@ class KnowledgeDistiller:
                 # the criterion expects; the gather is differentiable, so a candidate
                 # shared by several anchors accumulates all of their gradient.
 
-                if hasattr(self, "kd_student_layers"):
-                    chunk_embeddings_list = [[] for _ in range(self.num_heatgeo_layers)]
-                else:
-                    chunk_embeddings_single = []
+                chunk_embeddings_single = []
 
                 for chunk in batch["candidate_chunks"]:
                     chunk_out = self.model_student(
@@ -998,146 +909,24 @@ class KnowledgeDistiller:
                             self.device_s, non_blocking=True
                         ),
                         return_dict=True,
-                        output_hidden_states=True
-                        if hasattr(self, "kd_student_layers")
-                        else False,
+                        output_hidden_states=False,
                     )
 
-                    if hasattr(self, "kd_student_layers"):
-                        for l_idx in range(self.num_heatgeo_layers):
-                            s_layer = self.kd_student_layers[l_idx]
-                            idx = (
-                                s_layer
-                                if s_layer < len(chunk_out.hidden_states)
-                                else len(chunk_out.hidden_states) - 1
-                            )
-                            idx = idx if idx >= -len(chunk_out.hidden_states) else 0
-                            chunk_embeddings_list[l_idx].append(
-                                chunk_out.hidden_states[idx][:, 0, :]
-                            )
-                    else:
-                        chunk_embeddings_single.append(
-                            chunk_out.last_hidden_state[:, 0, :]
-                        )
+                    chunk_embeddings_single.append(chunk_out.last_hidden_state[:, 0, :])
 
-                if hasattr(self, "kd_student_layers"):
-                    total_loss = 0.0
-                    for l_idx, criterion in enumerate(self.heatgeo_criterions):
-                        s_layer = self.kd_student_layers[l_idx]
-                        idx = (
-                            s_layer
-                            if s_layer < len(s_out1.hidden_states)
-                            else len(s_out1.hidden_states) - 1
-                        )
-                        idx = idx if idx >= -len(s_out1.hidden_states) else 0
-                        S_cls1 = s_out1.hidden_states[idx][:, 0, :]
-                        S_candidates = torch.cat(
-                            chunk_embeddings_list[l_idx], dim=0
-                        ).index_select(0, batch_s["candidate_inverse"])
+                S_cls1 = s_out1.last_hidden_state[:, 0, :]
+                S_candidates = torch.cat(chunk_embeddings_single, dim=0).index_select(
+                    0, batch_s["candidate_inverse"]
+                )
 
-                        heat_loss, metrics = criterion(
-                            anchor_embeddings=S_cls1,
-                            candidate_embeddings=S_candidates,
-                            teacher_probs=batch_s["teacher_probs"],
-                            candidate_idx=batch_s.get("candidate_idx"),
-                            anchor_idx=batch_s.get("idx"),
-                        )
-                        total_loss += heat_loss * getattr(cfg, "lambda_heatgeo", 1.0)
-
-                    # Cosine loss for final layer
-                    s_layer_final = self.kd_student_layers[-1]
-                    # Get teacher embeddings from the cached tensor using the batch indices (must be on CPU)
-                    T_cls1_final = self.teacher_cls_all[batch["idx"], -1, :].to(
-                        self.device_s, non_blocking=True
-                    )
-                    idx = (
-                        s_layer_final
-                        if s_layer_final < len(s_out1.hidden_states)
-                        else len(s_out1.hidden_states) - 1
-                    )
-                    idx = idx if idx >= -len(s_out1.hidden_states) else 0
-                    S_cls1_final = s_out1.hidden_states[idx][:, 0, :]
-
-                    if getattr(cfg, "lambda_cosine", 0) > 0:
-                        if self.proj_s2t is not None:
-                            S_cls1_final_proj = self.proj_s2t(S_cls1_final)
-                        else:
-                            S_cls1_final_proj = S_cls1_final
-                        target = torch.ones(
-                            S_cls1_final_proj.size(0), device=self.device_s
-                        )
-                        cosine_loss = self.cosine_criterion(
-                            S_cls1_final_proj, T_cls1_final, target
-                        )
-                        total_loss += cosine_loss * cfg.lambda_cosine
-                        metrics["loss_cosine"] = cosine_loss.item()
-
-                    if run_simcse:
-                        idx = (
-                            s_layer_final
-                            if s_layer_final < len(s_out2.hidden_states)
-                            else len(s_out2.hidden_states) - 1
-                        )
-                        idx = idx if idx >= -len(s_out2.hidden_states) else 0
-                        S_cls2_final = s_out2.hidden_states[idx][:, 0, :]
-
-                        if self.proj_s2t is not None:
-                            S_cls2_final_proj = self.proj_s2t(S_cls2_final)
-                            # SimCSE needs S_cls1_final_proj as well
-                            S_cls1_final_proj = self.proj_s2t(S_cls1_final)
-                        else:
-                            S_cls2_final_proj = S_cls2_final
-                            S_cls1_final_proj = S_cls1_final
-
-                        # SimCSE InfoNCE
-                        S1 = F.normalize(S_cls1_final_proj, p=2, dim=-1)
-                        S2 = F.normalize(S_cls2_final_proj, p=2, dim=-1)
-
-                        sim_matrix = torch.matmul(S1, S2.t()) / getattr(
-                            cfg, "simcse_temp", 0.05
-                        )
-                        labels = torch.arange(S1.size(0), device=S1.device)
-                        simcse_loss = F.cross_entropy(sim_matrix, labels)
-
-                        total_loss += simcse_loss * cfg.lambda_simcse
-                        metrics["loss_simcse"] = simcse_loss.item()
-
-                    if getattr(cfg, "lambda_infonce", 0) > 0:
-                        if self.proj_s2t is not None:
-                            S_cls1_final_proj = self.proj_s2t(S_cls1_final)
-                        else:
-                            S_cls1_final_proj = S_cls1_final
-                        infonce_loss, _ = info_nce(
-                            S_cls1_final_proj,
-                            T_cls1_final,
-                            temperature=getattr(cfg, "student_temp", 0.07),
-                        )
-                        total_loss += infonce_loss * cfg.lambda_infonce
-                        metrics["loss_infonce"] = infonce_loss.item()
-
-                    if getattr(cfg, "lambda_sim", 0) > 0:
-                        # Similarity loss doesn't need projection since it compares inner (BxB) similarity matrices!
-                        sim_loss = pair_inbatch_similarity_loss(
-                            S_cls1_final, T_cls1_final
-                        )
-                        total_loss += sim_loss * cfg.lambda_sim
-                        metrics["loss_sim"] = sim_loss.item()
-
-                    loss = total_loss.float()
-                else:
-                    S_cls1 = s_out1.last_hidden_state[:, 0, :]
-                    S_candidates = torch.cat(
-                        chunk_embeddings_single, dim=0
-                    ).index_select(0, batch_s["candidate_inverse"])
-
-                    loss, metrics = self.criterion(
-                        anchor_embeddings=S_cls1,
-                        candidate_embeddings=S_candidates,
-                        teacher_probs=batch_s["teacher_probs"],
-                        candidate_idx=batch_s.get("candidate_idx"),
-                        anchor_idx=batch_s.get("idx"),
-                    )
-                    loss = loss.float()
+                loss, metrics = self.criterion(
+                    anchor_embeddings=S_cls1,
+                    candidate_embeddings=S_candidates,
+                    teacher_probs=batch_s["teacher_probs"],
+                    candidate_idx=batch_s.get("candidate_idx"),
+                    anchor_idx=batch_s.get("idx"),
+                )
+                loss = loss.float()
 
             if not is_finite(loss):
                 raise RuntimeError(
@@ -1359,6 +1148,7 @@ class KnowledgeDistiller:
             if not grads_are_finite(self.optimizer):
                 self.optimizer.zero_grad(set_to_none=True)
                 self.scaler.update()
+                self.scheduler.step()
                 return loss, {**metrics, "skip": "grad_inf_p1"}
 
             # SAM first step
@@ -1401,11 +1191,6 @@ class KnowledgeDistiller:
 
                 loss_2 = loss_2.float()
 
-            # Check loss_2 is finite
-            if not is_finite(loss_2):
-                raise RuntimeError("loss_2 NaN/Inf")
-
-            # Check loss_2 finite before backward
             if not is_finite(loss_2):
                 raise RuntimeError(
                     f"loss_2 NaN/Inf at epoch={self.current_epoch} step={self.current_step}"
@@ -1416,8 +1201,15 @@ class KnowledgeDistiller:
 
             # Check gradients again
             if not grads_are_finite(self.optimizer):
+                # first_step() already perturbed the weights; put them back before
+                # abandoning the step.
+                self._sam_restore_without_update()
                 self.optimizer.zero_grad(set_to_none=True)
                 self.scaler.update()
+                # Same policy as the heatgeo skip path: the schedule was sized for
+                # len(train_loader) * epochs steps, so a skipped update must still
+                # advance it or the LR runs permanently behind its own curve.
+                self.scheduler.step()
                 return loss, {**metrics, "skip": "grad_inf_p2"}
 
             # SAM second step
@@ -1543,17 +1335,6 @@ class KnowledgeDistiller:
 
             # ========== Method-specific KD loss ==========
             if method == "cdm":
-                if self.proj_s2t is None:
-                    d_s, d_t = S_cls1.size(-1), T_cls1.size(-1)
-                    self.proj_s2t = nn.Linear(d_s, d_t, bias=False).to(self.device_s)
-                    self.optimizer.add_param_group(
-                        {
-                            "params": self.proj_s2t.parameters(),
-                            "lr": cfg.learning_rate * 2,
-                        }
-                    )
-                    print(f"Initialized projection layer: {d_s} -> {d_t}")
-
                 keep_s1 = batch_s["attention_mask1_stu"].bool() & (
                     ~batch_s["special_tokens_mask1_stu"].bool()
                 )
@@ -1761,15 +1542,6 @@ class KnowledgeDistiller:
             dt = time.perf_counter() - t0
             epoch_step_times.append(dt)
             self.global_step += 1
-            if getattr(self, "use_wandb", False) and WANDB_AVAILABLE:
-                log_payload = {
-                    "train/epoch": epoch + 1,
-                    "train/global_step": self.global_step,
-                    "train/step_seconds": dt,
-                }
-                log_payload.update(self._flatten_metrics("train", metrics))
-                wandb.log(log_payload, step=self.global_step)
-
             bs = batch["input_ids1_stu"].size(0)
             loss_value = loss.item()
             total_loss += loss_value * bs
@@ -2224,14 +1996,6 @@ class KnowledgeDistiller:
                 print("=" * 60)
 
                 try:
-                    # from src.evaluation.evaluation_model_define import (
-                    #     eval_classification_task,
-                    #     eval_pair_task,
-                    #     eval_sts_task,
-                    #     test_cls_tasks,
-                    #     test_pair_tasks,
-                    #     test_sts_tasks
-                    # )
                     validation_results = self.evaluate("validation")
                 except Exception as e:
                     print(f"Warning: Evaluation failed with error: {e}")
@@ -2256,15 +2020,6 @@ class KnowledgeDistiller:
             self.save_checkpoint(cfg.epochs_stage2 - 1, {"loss": avg_loss})
             try:
                 test_results = self.evaluate("test")
-                if (
-                    getattr(self, "use_wandb", False)
-                    and WANDB_AVAILABLE
-                    and test_results is not None
-                ):
-                    wandb.log(
-                        self._flatten_metrics("test", test_results),
-                        step=self.global_step,
-                    )
                 self.log_experiment_record({"stage": 2, "test": test_results})
             except Exception as e:
                 print(f"Warning: Final test evaluation failed with error: {e}")
@@ -2293,10 +2048,7 @@ class KnowledgeDistiller:
                     and cfg.row_weight > 0
                     and epoch + 1 >= cfg.row_start_epoch
                 )
-                if hasattr(self, "heatgeo_criterions"):
-                    for criterion in self.heatgeo_criterions:
-                        criterion.use_row_loss = use_row
-                elif self.criterion is not None and hasattr(
+                if self.criterion is not None and hasattr(
                     self.criterion, "use_row_loss"
                 ):
                     self.criterion.use_row_loss = use_row
@@ -2313,15 +2065,6 @@ class KnowledgeDistiller:
                     print("=" * 60)
                     try:
                         validation_results = self.evaluate("validation")
-                        if (
-                            getattr(self, "use_wandb", False)
-                            and WANDB_AVAILABLE
-                            and validation_results is not None
-                        ):
-                            wandb.log(
-                                self._flatten_metrics("validation", validation_results),
-                                step=self.global_step,
-                            )
                     except Exception as e:
                         print(f"Warning: Validation failed with error: {e}")
                         print("Continuing training...")
@@ -2371,15 +2114,6 @@ class KnowledgeDistiller:
                 self.save_checkpoint(cfg.epochs - 1, {"loss": avg_loss})
             try:
                 test_results = self.evaluate("test")
-                if (
-                    getattr(self, "use_wandb", False)
-                    and WANDB_AVAILABLE
-                    and test_results is not None
-                ):
-                    wandb.log(
-                        self._flatten_metrics("test", test_results),
-                        step=self.global_step,
-                    )
                 self.log_experiment_record({"test": test_results})
             except Exception as e:
                 print(f"Warning: Final test evaluation failed with error: {e}")

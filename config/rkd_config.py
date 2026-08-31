@@ -34,7 +34,6 @@ class RKDConfig(BaseConfig):
 
     save_dir = "checkpoints/rkd/qwen3_0_6b_to_minilmv2_h384"
     final_weights_only = False
-    use_wandb = False
 
     def __init__(self, **kwargs):
         unknown = sorted(key for key in kwargs if not hasattr(self, key))

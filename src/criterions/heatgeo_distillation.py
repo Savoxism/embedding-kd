@@ -216,6 +216,13 @@ class HeatGeoDistillation(nn.Module):
     """
 
     _TIED_KNOBS = {
+        "student_dim": (
+            "unused: the criterion carries no trainable parameters, so it never "
+            "needed the student width"
+        ),
+        "teacher_dim": (
+            "unused, as student_dim: the teacher width comes from teacher_embeddings"
+        ),
         "row_mode": (
             "L_row has one mechanism: the teacher-selected pool columns, weighted "
             "uniformly. Walk selection, exposed-mass weighting and inverse-inclusion "
@@ -256,8 +263,6 @@ class HeatGeoDistillation(nn.Module):
 
     def __init__(
         self,
-        student_dim: int,
-        teacher_dim: int,
         diffusion_scales: Sequence[int] | None = None,
         teacher_embeddings: torch.Tensor | None = None,
         direct_temp: float = 0.10,
@@ -273,8 +278,6 @@ class HeatGeoDistillation(nn.Module):
                 raise ValueError(
                     f"HeatGeoDistillation no longer accepts {name!r}: {why}"
                 )
-        self.student_dim = student_dim
-        self.teacher_dim = teacher_dim
         self.graph_temp = FIXED_BANDWIDTH_TEMP
 
         # Per-row temperatures (entropic affinities). The tie tau_1 =

@@ -59,7 +59,6 @@ class TALASConfig(BaseConfig):
     learning_rate = 2e-5
     min_lr = 2e-6
 
-    cache_teacher = True
     cache_path = f"cache/talas/{paper_pair}/teacher_train.pt"
     pooling_method = TALAS_PAPER_PAIRS[paper_pair]["pooling_method"]
     normalize_cache = True

@@ -1,6 +1,7 @@
 import torch
 import torch.nn.functional as F
-from typing import List, Tuple, Optional
+
+
 def info_nce(q, k, temperature=0.1, neg_valid_mask=None):
     q = F.normalize(q, dim=-1)
     k = F.normalize(k, dim=-1)
@@ -60,7 +61,7 @@ def get_score_diff(
     score_diff = score_diff[torch.triu(torch.ones_like(score_diff), diagonal=1).bool()]
     return score_diff
 
-def compute_variance(domain_loss_list: List[torch.Tensor]) -> torch.Tensor:
+def compute_variance(domain_loss_list: list[torch.Tensor]) -> torch.Tensor:
     loss_variance = 0.0
     for i, loss_i in enumerate(domain_loss_list):
         for j, loss_j in enumerate(domain_loss_list):

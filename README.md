@@ -1,6 +1,7 @@
 # HeatGeo: Heat-Diffusion Manifold Distillation for Text Embeddings
 
-This repository implements HeatGeo, a knowledge distillation method that transfers geometric structure from a large teacher embedding model to a compact student model using heat diffusion on a teacher-induced kNN graph and walk-selected row supervision.
+This repository implements HeatGeo, a knowledge distillation method that transfers geometric structure from a large teacher embedding model to a compact student model using heat diffusion on a teacher-induced kNN graph and auxiliary supervision of the
+teacher-selected candidate rows.
 
 ## Supported Distillation Pairs
 
@@ -77,7 +78,7 @@ $$\mathcal{L} = \mathcal{L}_{\text{rel}} + \lambda_{\text{row}} \cdot \mathcal{L
 where:
 
 - $\mathcal{L}_{\text{rel}} = \sum_{r\in\{0,1,2,4\}}\omega_r\,\mathrm{KL}(q_{i,r}\|p^S_{i,r})$, with the single fixed rule $\omega_r\propto1/\max(1,r)$, normalized over the scales. Here $r=0$ is ambient, $r=1$ is direct-neighbor matching, and $r>1$ is multi-hop diffusion; these are diagnostic names rather than separately weighted auxiliary losses.
-- $\mathcal{L}_{\text{row}}$ uses non-backtracking teacher walks to select non-anchor nodes, then matches each selected node's available teacher transition row with a dense KL. The walk chooses rows; it is not a trajectory likelihood.
+- $\mathcal{L}_{\text{row}}$ promotes every pool column the teacher selected (the diffusion support, excluding hard and uniform negatives) to an auxiliary row and matches its available teacher transition row with a dense KL, weighted uniformly. Batch anchors are excluded, since $\mathcal{L}_{\text{rel}}$ already matches their transition row at $r=1$. The row set is a deterministic function of the candidate pool, so this term carries no selection hyperparameter.
 
 ### 7. Per-Epoch Candidate Sampling
 
@@ -87,7 +88,7 @@ Each epoch, every anchor draws a fresh candidate set composed of:
 - **Hard negatives** (high teacher similarity but outside the mutual kNN graph)
 - **Random negatives** from the remaining complement
 
-Walk-visited nodes replace random negatives when needed. In-batch sharing deduplicates candidates and exposes each anchor to the full union of candidates in the batch.
+In-batch sharing deduplicates candidates and exposes each anchor to the full union of candidates in the batch.
 
 ## Configuration
 
@@ -98,8 +99,7 @@ weights, capacities, and correctness policies are resolved internally:
 |:---|:---|:---|
 | Teacher Graph | `graph_k`, `perplexity`, `diffusion_scales`, `truncation_tolerance` | kNN construction, adaptive row bandwidths, and diffusion |
 | Candidate Sampling | `diffusion_quota`, `hard_neg_k`, `random_neg_k` | Per-anchor composition; total size is their sum |
-| Row Supervision | `row_weight`, `row_start_epoch` | Weight and curriculum start for transition-row KL |
-| Row Sampling | `num_walks`, `walk_length` | Non-backtracking walks used to select supervised rows |
+| Row Supervision | `row_weight` | Weight of the auxiliary transition-row KL (`row_start_epoch` defaults to 1, i.e. always on) |
 | Training | `batch_size`, `epochs`, `learning_rate`, `min_lr` | Standard training setup |
 | Ambient profile | `direct_temp` | Shared teacher/student temperature for scale 0 |
 
@@ -230,7 +230,7 @@ This repository also includes implementations of other distillation baselines fo
 │   │   └── ...                      # Other method losses
 │   ├── heatgeo/
 │   │   ├── graph_builder.py         # kNN graph and diffusion pool construction
-│   │   └── candidate_sampler.py     # Candidate and teacher-walk row sampling
+│   │   └── candidate_sampler.py     # Per-epoch candidate sampling
 │   ├── data_utils/                  # Dataset and collation
 │   ├── evaluation/                  # Benchmark evaluation
 │   ├── cache_teacher.py             # Teacher embedding caching

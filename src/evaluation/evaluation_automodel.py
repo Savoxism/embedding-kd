@@ -1,17 +1,25 @@
 import os
 import warnings
-import torch
-import numpy as np
-import pandas as pd
-from torch.utils.data import Dataset, DataLoader
-from tqdm import tqdm
-import torch.nn.functional as F
-from scipy.stats import pearsonr, spearmanr
-from sklearn.metrics import accuracy_score, f1_score, precision_score, recall_score, average_precision_score
-from sklearn.linear_model import LogisticRegression
 from pathlib import Path
 
+import numpy as np
+import pandas as pd
+import torch
+import torch.nn.functional as F
+from scipy.stats import spearmanr
+from sklearn.linear_model import LogisticRegression
+from sklearn.metrics import (
+    accuracy_score,
+    average_precision_score,
+    f1_score,
+    precision_score,
+    recall_score,
+)
+from torch.utils.data import DataLoader, Dataset
+from tqdm import tqdm
+
 BASE_DIR = Path(__file__).resolve().parent.parent.parent
+
 
 class STSDataset(Dataset):
     def __init__(self, file_path):
@@ -20,16 +28,17 @@ class STSDataset(Dataset):
 
     def __len__(self):
         return len(self.dataset)
-    
+
     def __getitem__(self, idx):
         # instruction = "Given a text, Retrieve semantically similar text: "
-        instruction=""
+        instruction = ""
         return {
-            "sentence1": instruction + self.dataset.iloc[idx]['sentence1'],
-            "sentence2": instruction + self.dataset.iloc[idx]['sentence2'],
-            "label": torch.tensor(self.dataset.iloc[idx]['score'], dtype=torch.float),
+            "sentence1": instruction + self.dataset.iloc[idx]["sentence1"],
+            "sentence2": instruction + self.dataset.iloc[idx]["sentence2"],
+            "label": torch.tensor(self.dataset.iloc[idx]["score"], dtype=torch.float),
         }
-        
+
+
 def collate_fn(batch, tokenizer, max_len=128):
     s1_list = [item["sentence1"] for item in batch]
     s2_list = [item["sentence2"] for item in batch]
@@ -38,16 +47,12 @@ def collate_fn(batch, tokenizer, max_len=128):
     enc1 = tokenizer(
         s1_list,
         truncation=True,
-        padding=True,       # chỉ pad theo câu dài nhất trong batch
+        padding=True,  # chỉ pad theo câu dài nhất trong batch
         max_length=max_len,
-        return_tensors="pt"
+        return_tensors="pt",
     )
     enc2 = tokenizer(
-        s2_list,
-        truncation=True,
-        padding=True,
-        max_length=max_len,
-        return_tensors="pt"
+        s2_list, truncation=True, padding=True, max_length=max_len, return_tensors="pt"
     )
 
     return {
@@ -58,38 +63,50 @@ def collate_fn(batch, tokenizer, max_len=128):
         "labels": labels,
     }
 
+
 def eval_sts(model, eval_loader):
     preds, labels = [], []
     device = model.device
-    
-    with torch.amp.autocast('cuda', dtype=torch.float16, enabled=torch.cuda.is_available()):
-        with torch.no_grad():
-            for batch in tqdm(eval_loader):
-                input_ids1 = batch["input_ids1"].to(device)
-                attn1 = batch["attention_mask1"].to(device)
-                input_ids2 = batch["input_ids2"].to(device)
-                attn2 = batch["attention_mask2"].to(device)
-                label = batch["labels"]
 
+    with (
+        torch.amp.autocast(
+            "cuda", dtype=torch.float16, enabled=torch.cuda.is_available()
+        ),
+        torch.no_grad(),
+    ):
+        for batch in tqdm(eval_loader):
+            input_ids1 = batch["input_ids1"].to(device)
+            attn1 = batch["attention_mask1"].to(device)
+            input_ids2 = batch["input_ids2"].to(device)
+            attn2 = batch["attention_mask2"].to(device)
+            label = batch["labels"]
 
-                out1 = model(input_ids=input_ids1, attention_mask=attn1)
-                out2 = model(input_ids=input_ids2, attention_mask=attn2)
+            out1 = model(input_ids=input_ids1, attention_mask=attn1)
+            out2 = model(input_ids=input_ids2, attention_mask=attn2)
 
-                # Support both StellaModel (dict) and AutoModel (object)
-                if isinstance(out1, dict) and 'pooled' in out1:
-                    emb1 = out1['pooled']
-                    emb2 = out2['pooled']
-                else:
-                    emb1 = out1.last_hidden_state[:, 0, :] if hasattr(out1, 'last_hidden_state') else out1['last_hidden_state'][:, 0, :]
-                    emb2 = out2.last_hidden_state[:, 0, :] if hasattr(out2, 'last_hidden_state') else out2['last_hidden_state'][:, 0, :]
-        
-                # cosine similarity
-                sim = F.cosine_similarity(emb1, emb2)
-                score = (sim + 1) * 2.5  # scale [-1,1] -> [0,5]
-        
-                preds.extend(score.cpu().numpy())
-                labels.extend(label.numpy())
-    
+            # Support both StellaModel (dict) and AutoModel (object)
+            if isinstance(out1, dict) and "pooled" in out1:
+                emb1 = out1["pooled"]
+                emb2 = out2["pooled"]
+            else:
+                emb1 = (
+                    out1.last_hidden_state[:, 0, :]
+                    if hasattr(out1, "last_hidden_state")
+                    else out1["last_hidden_state"][:, 0, :]
+                )
+                emb2 = (
+                    out2.last_hidden_state[:, 0, :]
+                    if hasattr(out2, "last_hidden_state")
+                    else out2["last_hidden_state"][:, 0, :]
+                )
+
+            # cosine similarity
+            sim = F.cosine_similarity(emb1, emb2)
+            score = (sim + 1) * 2.5  # scale [-1,1] -> [0,5]
+
+            preds.extend(score.cpu().numpy())
+            labels.extend(label.numpy())
+
     spearman_corr, _ = spearmanr(preds, labels)
     print(f"Spearman: {spearman_corr:.4f}")
 
@@ -98,7 +115,7 @@ def eval_sts(model, eval_loader):
 
 def eval_sts_task(model, path_list, tokenizer):
     model.eval()
-    print(' eval_sts_task')
+    print(" eval_sts_task")
     results = {}
     for path in path_list:
         print(path)
@@ -107,23 +124,20 @@ def eval_sts_task(model, path_list, tokenizer):
             eval_dataset,
             batch_size=64,
             shuffle=False,
-            collate_fn=lambda x: collate_fn(x, tokenizer)
+            collate_fn=lambda x: collate_fn(x, tokenizer),
         )
         results[path] = eval_sts(model, eval_loader)
     model.train()
     return results
 
-from sklearn.metrics import accuracy_score, f1_score
-from sklearn.linear_model import LogisticRegression
-import datasets
-import numpy as np
-import torch
 
 def eval_cls(model, eval_loader):
     preds, labels = [], []
     device = model.device
-    
-    with torch.amp.autocast('cuda', dtype=torch.float16, enabled=torch.cuda.is_available()):
+
+    with torch.amp.autocast(
+        "cuda", dtype=torch.float16, enabled=torch.cuda.is_available()
+    ):
         with torch.no_grad():
             for batch in tqdm(eval_loader):
                 input_ids1 = batch["input_ids1"].to(device)
@@ -131,17 +145,22 @@ def eval_cls(model, eval_loader):
                 label = batch["labels"]
 
                 out1 = model(input_ids=input_ids1, attention_mask=attn1)
-                
+
                 # Support both StellaModel (dict with 'pooled') and AutoModel (object/dict with last_hidden_state)
-                if isinstance(out1, dict) and 'pooled' in out1:
-                    emb1 = out1['pooled']
+                if isinstance(out1, dict) and "pooled" in out1:
+                    emb1 = out1["pooled"]
                 else:
-                    emb1 = out1.last_hidden_state[:, 0, :] if hasattr(out1, 'last_hidden_state') else out1['last_hidden_state'][:, 0, :]
-        
+                    emb1 = (
+                        out1.last_hidden_state[:, 0, :]
+                        if hasattr(out1, "last_hidden_state")
+                        else out1["last_hidden_state"][:, 0, :]
+                    )
+
                 preds.extend(emb1.cpu().numpy())
                 labels.extend(label.numpy())
-    
+
     return preds, labels
+
 
 class ClasssifyDataset(Dataset):
     def __init__(self, file_path):
@@ -150,19 +169,16 @@ class ClasssifyDataset(Dataset):
 
     def __len__(self):
         return len(self.dataset)
-    
+
     def __getitem__(self, idx):
         return {
-            "text": self.dataset.iloc[idx]['text'],
-            "label": torch.tensor(self.dataset.iloc[idx]['label'], dtype=torch.long),
+            "text": self.dataset.iloc[idx]["text"],
+            "label": torch.tensor(self.dataset.iloc[idx]["label"], dtype=torch.long),
         }
 
 
 def _normalized_text_keys(dataset):
-    return {
-        " ".join(str(text).strip().casefold().split())
-        for text in dataset["text"]
-    }
+    return {" ".join(str(text).strip().casefold().split()) for text in dataset["text"]}
 
 
 def _validate_classification_pair(train_path, eval_path):
@@ -181,16 +197,13 @@ def _validate_classification_pair(train_path, eval_path):
         return
 
     dataset_name = eval_file.stem.removesuffix("_test")
-    validation_file = BASE_DIR / "data" / "val_set" / (
-        f"{dataset_name}_validation.csv"
-    )
+    validation_file = BASE_DIR / "data" / "val_set" / (f"{dataset_name}_validation.csv")
     validation_overlap = set()
     if validation_file.is_file():
         validation_frame = pd.read_csv(validation_file)
-        validation_overlap = (
-            _normalized_text_keys(validation_frame)
-            & _normalized_text_keys(eval_frame)
-        )
+        validation_overlap = _normalized_text_keys(
+            validation_frame
+        ) & _normalized_text_keys(eval_frame)
 
     if overlap or validation_overlap:
         warnings.warn(
@@ -200,6 +213,7 @@ def _validate_classification_pair(train_path, eval_path):
             stacklevel=2,
         )
 
+
 def clf_collate_fn(batch, tokenizer, max_len=512):
     s1_list = [item["text"] for item in batch]
     labels = torch.stack([item["label"] for item in batch])
@@ -207,9 +221,9 @@ def clf_collate_fn(batch, tokenizer, max_len=512):
     enc1 = tokenizer(
         s1_list,
         truncation=True,
-        padding=True,       # chỉ pad theo câu dài nhất trong batch
+        padding=True,  # chỉ pad theo câu dài nhất trong batch
         max_length=max_len,
-        return_tensors="pt"
+        return_tensors="pt",
     )
 
     return {
@@ -221,7 +235,7 @@ def clf_collate_fn(batch, tokenizer, max_len=512):
 
 def eval_classification_task(model, path_list, tokenizer):
     model.eval()
-    print(' eval classifier')
+    print(" eval classifier")
 
     results = {}
     for train_path, dev_path in path_list:
@@ -232,15 +246,15 @@ def eval_classification_task(model, path_list, tokenizer):
             eval_dataset,
             batch_size=64,
             shuffle=False,
-            collate_fn=lambda x: clf_collate_fn(x, tokenizer)
+            collate_fn=lambda x: clf_collate_fn(x, tokenizer),
         )
-        
+
         train_dataset = ClasssifyDataset(train_path)
         train_loader = DataLoader(
             train_dataset,
             batch_size=64,
             shuffle=False,
-            collate_fn=lambda x: clf_collate_fn(x, tokenizer)
+            collate_fn=lambda x: clf_collate_fn(x, tokenizer),
         )
 
         X_train, y_train = eval_cls(model, train_loader)
@@ -261,7 +275,7 @@ def eval_classification_task(model, path_list, tokenizer):
         scores["f1"] = f1
         print(scores)
         results[dev_path] = scores
-        
+
     model.train()
     return results
 
@@ -273,22 +287,24 @@ class PairDataset(Dataset):
 
     def __len__(self):
         return len(self.dataset)
-    
+
     def __getitem__(self, idx):
         # instruction = "Given a text, Retrieve semantically similar text: "
-        instruction=""
+        instruction = ""
         return {
-            "sentence1": instruction + self.dataset.iloc[idx]['sentence1'],
-            "sentence2": instruction + self.dataset.iloc[idx]['sentence2'],
-            "label": torch.tensor(self.dataset.iloc[idx]['label'], dtype=torch.float),
+            "sentence1": instruction + self.dataset.iloc[idx]["sentence1"],
+            "sentence2": instruction + self.dataset.iloc[idx]["sentence2"],
+            "label": torch.tensor(self.dataset.iloc[idx]["label"], dtype=torch.float),
         }
-        
+
 
 def eval_pair(model, eval_loader, threshold=None):
     preds, labels = [], []
     device = model.device
-    
-    with torch.amp.autocast('cuda', dtype=torch.float16, enabled=torch.cuda.is_available()):
+
+    with torch.amp.autocast(
+        "cuda", dtype=torch.float16, enabled=torch.cuda.is_available()
+    ):
         with torch.no_grad():
             for batch in tqdm(eval_loader):
                 input_ids1 = batch["input_ids1"].to(device)
@@ -297,29 +313,37 @@ def eval_pair(model, eval_loader, threshold=None):
                 attn2 = batch["attention_mask2"].to(device)
                 label = batch["labels"]
 
-
                 out1 = model(input_ids=input_ids1, attention_mask=attn1)
                 out2 = model(input_ids=input_ids2, attention_mask=attn2)
 
                 # Support both StellaModel (dict with 'pooled') and AutoModel (object/dict with last_hidden_state)
-                if isinstance(out1, dict) and 'pooled' in out1:
-                    emb1 = out1['pooled']
-                    emb2 = out2['pooled']
+                if isinstance(out1, dict) and "pooled" in out1:
+                    emb1 = out1["pooled"]
+                    emb2 = out2["pooled"]
                 else:
-                    emb1 = out1.last_hidden_state[:, 0, :] if hasattr(out1, 'last_hidden_state') else out1['last_hidden_state'][:, 0, :]
-                    emb2 = out2.last_hidden_state[:, 0, :] if hasattr(out2, 'last_hidden_state') else out2['last_hidden_state'][:, 0, :]
-        
+                    emb1 = (
+                        out1.last_hidden_state[:, 0, :]
+                        if hasattr(out1, "last_hidden_state")
+                        else out1["last_hidden_state"][:, 0, :]
+                    )
+                    emb2 = (
+                        out2.last_hidden_state[:, 0, :]
+                        if hasattr(out2, "last_hidden_state")
+                        else out2["last_hidden_state"][:, 0, :]
+                    )
+
                 # cosine similarity
                 sim = F.cosine_similarity(emb1, emb2)
                 score = (sim + 1) / 2
-        
+
                 preds.extend(score.cpu().numpy())
                 labels.extend(label.numpy())
-    
+
     metric = get_metric_pair_classification(preds, labels, threshold=threshold)
     print(metric)
 
     return metric
+
 
 def get_metric_pair_classification(scores, labels, threshold=None):
     scores = np.asarray(scores)
@@ -341,13 +365,13 @@ def get_metric_pair_classification(scores, labels, threshold=None):
         "f1": f1_score(labels, preds, average="macro"),
         "precision": precision_score(labels, preds, average="macro"),
         "recall": recall_score(labels, preds, average="macro"),
-        "average_precision": average_precision_score(labels, scores)
+        "average_precision": average_precision_score(labels, scores),
     }
 
 
 def eval_pair_task(model, path_list, tokenizer, thresholds=None):
     model.eval()
-    print(' eval_pair_task')
+    print(" eval_pair_task")
     results = {}
     selected_thresholds = {}
     for index, path in enumerate(path_list):
@@ -357,7 +381,7 @@ def eval_pair_task(model, path_list, tokenizer, thresholds=None):
             eval_dataset,
             batch_size=64,
             shuffle=False,
-            collate_fn=lambda x: collate_fn(x, tokenizer)
+            collate_fn=lambda x: collate_fn(x, tokenizer),
         )
         threshold = None if thresholds is None else thresholds[index]
         metric = eval_pair(model, eval_loader, threshold=threshold)
@@ -366,57 +390,58 @@ def eval_pair_task(model, path_list, tokenizer, thresholds=None):
     model.train()
     return results, selected_thresholds
 
+
 # Evaluation datasets grouped by physical split.
 eval_cls_tasks = [
     (
-        'data/train_set/banking77_train.csv',
-        'data/val_set/banking77_validation.csv',
+        "data/train_set/banking77_train.csv",
+        "data/val_set/banking77_validation.csv",
     ),
     (
-        'data/train_set/emotion_train.csv',
-        'data/val_set/emotion_validation.csv',
+        "data/train_set/emotion_train.csv",
+        "data/val_set/emotion_validation.csv",
     ),
     (
-        'data/train_set/tweet_train.csv',
-        'data/val_set/tweet_validation.csv',
+        "data/train_set/tweet_train.csv",
+        "data/val_set/tweet_validation.csv",
     ),
 ]
 
 eval_sts_tasks = [
-    'data/val_set/sick_validation.csv',
-    'data/val_set/sts12_validation.csv',
-    'data/val_set/stsb_validation.csv',
+    "data/val_set/sick_validation.csv",
+    "data/val_set/sts12_validation.csv",
+    "data/val_set/stsb_validation.csv",
 ]
 
 eval_pair_tasks = [
-    'data/val_set/mrpc_validation.csv',
-    'data/val_set/scitail_validation.csv',
-    'data/val_set/wic_validation.csv',
+    "data/val_set/mrpc_validation.csv",
+    "data/val_set/scitail_validation.csv",
+    "data/val_set/wic_validation.csv",
 ]
 
 test_cls_tasks = [
     (
-        'data/train_set/banking77_train.csv',
-        'data/test_set/banking77_test.csv',
+        "data/train_set/banking77_train.csv",
+        "data/test_set/banking77_test.csv",
     ),
     (
-        'data/train_set/emotion_train.csv',
-        'data/test_set/emotion_test.csv',
+        "data/train_set/emotion_train.csv",
+        "data/test_set/emotion_test.csv",
     ),
     (
-        'data/train_set/tweet_train.csv',
-        'data/test_set/tweet_test.csv',
+        "data/train_set/tweet_train.csv",
+        "data/test_set/tweet_test.csv",
     ),
 ]
 
 test_sts_tasks = [
-    'data/test_set/sick_test.csv',
-    'data/test_set/sts12_test.csv',
-    'data/test_set/stsb_test.csv',
+    "data/test_set/sick_test.csv",
+    "data/test_set/sts12_test.csv",
+    "data/test_set/stsb_test.csv",
 ]
 
 test_pair_tasks = [
-    'data/test_set/mrpc_test.csv',
-    'data/test_set/scitail_test.csv',
-    'data/test_set/wic_test.csv',
+    "data/test_set/mrpc_test.csv",
+    "data/test_set/scitail_test.csv",
+    "data/test_set/wic_test.csv",
 ]

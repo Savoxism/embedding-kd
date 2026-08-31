@@ -32,9 +32,6 @@ def parse_args():
     parser.add_argument(
         "--train_data", type=str, default=None, help="Path to training data CSV file"
     )
-    parser.add_argument(
-        "--eval_data", type=str, default=None, help="Path to evaluation data CSV file"
-    )
 
     parser.add_argument(
         "--student_model", type=str, default=None, help="Student model name or path"
@@ -134,22 +131,6 @@ def parse_args():
     parser.add_argument(
         "--num_workers", type=int, default=None, help="Number of dataloader workers"
     )
-    parser.add_argument(
-        "--no_wandb", action="store_true", help="Disable Weights & Biases logging"
-    )
-    parser.add_argument(
-        "--wandb_project", type=str, default=None, help="Weights & Biases project name"
-    )
-    parser.add_argument(
-        "--wandb_run_name", type=str, default=None, help="Weights & Biases run name"
-    )
-    parser.add_argument(
-        "--wandb_mode",
-        type=str,
-        default=None,
-        choices=["online", "offline", "disabled"],
-        help="Weights & Biases mode",
-    )
 
     return parser.parse_args()
 
@@ -180,11 +161,17 @@ def get_config(method: str, args):
         config.teacher_model_name = preset["teacher"]
         config.student_model_name = preset["student"]
         config.pooling_method = preset["pooling_method"]
+        # `TALASConfig.cache_path` is an f-string interpolated once at class
+        # definition time against DEFAULT_TALAS_PAIR, so assigning `paper_pair`
+        # above does not move it. Without this line `--talas_pair X` reads the
+        # default pair's teacher cache, and nothing downstream would notice: the
+        # cache-hit gate gets no further than os.path.exists, and the validator
+        # checks shape/dtype/finiteness but not teacher identity. Two of the paper
+        # pairs have 1024-dim teachers, so it fails silently rather than loudly.
+        config.cache_path = f"cache/talas/{args.talas_pair}/teacher_train.pt"
 
     if args.train_data is not None:
         config.train_data_path = args.train_data
-    if args.eval_data is not None:
-        config.eval_data_path = args.eval_data
 
     if args.student_model is not None:
         config.student_model_name = args.student_model
@@ -247,14 +234,6 @@ def get_config(method: str, args):
         config.debug_align = True
     if args.num_workers is not None:
         config.num_workers = args.num_workers
-    if args.no_wandb:
-        config.use_wandb = False
-    if args.wandb_project is not None:
-        config.wandb_project = args.wandb_project
-    if args.wandb_run_name is not None:
-        config.wandb_run_name = args.wandb_run_name
-    if args.wandb_mode is not None:
-        config.wandb_mode = args.wandb_mode
 
     return config
 

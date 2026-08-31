@@ -14,8 +14,6 @@ class DSKDConfig(BaseConfig):
     alpha_dtw = 1.0
     w_cls = 1.0
     
-    use_cross_attention = True
-    bidirectional_align = True
     
     batch_size = 32
     epochs = 10

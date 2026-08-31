@@ -30,7 +30,7 @@ DIFFUSION_BLOCK = 256
 # Memory guards, not modelling choices, which is why they are constants here and
 # not configuration. What a row actually keeps is decided by truncation_tolerance;
 # these only bound the arrays while that decision is being made, and the build
-# reports pool_capped_rows / walk_capped_rows if either ever binds first -- at
+# reports pool_capped_rows / diffusion_capped_rows if either ever binds first -- at
 # which point the tolerance is no longer a guarantee and the number must go up.
 DIFFUSION_ROW_CAP = 4096
 POOL_ROW_CAP = 2048
@@ -454,6 +454,9 @@ def _drop_self_renormalize(dist: sp.csr_matrix, start_ids: np.ndarray) -> sp.csr
     return out
 
 
+# The "walk" the diffusion_* stats describe is the lazy diffusion walk
+# X <- (X + XP)/2 below, not the row-selection walk L_row used to run. They were
+# renamed from walk_* so a later cleanup does not mistake one for the other.
 def _diffuse_block(
     start_ids: np.ndarray,
     scales: tuple[int, ...],
@@ -601,7 +604,7 @@ def _build_diffusion_pools(
     # those the TV/KL guarantee on the targets does not hold, so they are counted
     # rather than absorbed.
     pool_capped_rows = 0
-    walk_capped_rows = 0
+    diffusion_capped_rows = 0
 
     for block_start in tqdm(
         range(0, n_items, block_size), desc="HeatGeo diffusion pools"
@@ -609,10 +612,10 @@ def _build_diffusion_pools(
         block_ids = np.arange(
             block_start, min(block_start + block_size, n_items), dtype=np.int64
         )
-        scale_matrices, truncation_loss, walk_capped = _diffuse_block(
+        scale_matrices, truncation_loss, diffusion_capped = _diffuse_block(
             block_ids, scales, transition, DIFFUSION_ROW_CAP, tolerance
         )
-        walk_capped_rows += walk_capped
+        diffusion_capped_rows += diffusion_capped
         n_blocks += 1
         for step, dropped in truncation_loss.items():
             truncation_totals[step] = truncation_totals.get(step, 0.0) + dropped
@@ -695,7 +698,7 @@ def _build_diffusion_pools(
         # that many rows -- raise POOL_ROW_CAP / DIFFUSION_ROW_CAP until both are 0,
         # or the stated guarantee is not the one the targets actually satisfy.
         "pool_capped_rows": float(pool_capped_rows),
-        "walk_capped_rows": float(walk_capped_rows),
+        "diffusion_capped_rows": float(diffusion_capped_rows),
     }
     # Mass discarded by the top-keep_topk truncation at each walk step, before the
     # renormalization hides it. This is the only number that says whether keep_topk
@@ -705,9 +708,9 @@ def _build_diffusion_pools(
     for step in sorted(truncation_totals):
         per_step = truncation_totals[step] / max(1, n_blocks)
         cumulative = 1.0 - (1.0 - cumulative) * (1.0 - per_step)
-        stats[f"walk_truncation_step{step}"] = float(per_step)
+        stats[f"diffusion_truncation_step{step}"] = float(per_step)
         if step in scales:
-            stats[f"walk_truncation_cum_r{step}"] = float(cumulative)
+            stats[f"diffusion_truncation_cum_r{step}"] = float(cumulative)
     for scale_idx, scale in enumerate(scales):
         stats[f"pool_residual_mass_r{scale}"] = float(
             residual_mass[scale_idx] / max(1, n_items)
@@ -976,10 +979,10 @@ def _print_graph_summary(
                 f"KL(p||uniform_on_support)={graph_stats[key]:.4f}, "
                 f"top1={graph_stats[f'target_top1_r{scale}']:.4f}, "
                 f"residual_mass_outside_pool={graph_stats.get(f'pool_residual_mass_r{scale}', 0.0):.2e}, "
-                f"walk_truncation={graph_stats.get(f'walk_truncation_cum_r{scale}', 0.0):.2e}"
+                f"diffusion_truncation={graph_stats.get(f'diffusion_truncation_cum_r{scale}', 0.0):.2e}"
             )
     worst_truncation = max(
-        (graph_stats.get(f"walk_truncation_cum_r{scale}", 0.0) for scale in scales),
+        (graph_stats.get(f"diffusion_truncation_cum_r{scale}", 0.0) for scale in scales),
         default=0.0,
     )
     tolerance = graph_stats.get("truncation_tolerance", 0.0)
@@ -989,7 +992,7 @@ def _print_graph_summary(
             f"broadest scale before renormalizing, against a per-step tolerance of "
             f"{tolerance:.1%}. The per-step bound compounds across steps, so r*tolerance "
             f"is the figure to compare against; if it is exceeded, DIFFUSION_ROW_CAP bound "
-            f"first (walk_capped_rows={int(graph_stats.get('walk_capped_rows', 0))})."
+            f"first (diffusion_capped_rows={int(graph_stats.get('diffusion_capped_rows', 0))})."
         )
     cross_keys = [key for key in graph_stats if key.startswith("target_cross_kl_")]
     for key in sorted(cross_keys):

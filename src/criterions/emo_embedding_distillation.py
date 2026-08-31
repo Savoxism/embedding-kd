@@ -1,35 +1,34 @@
-import torch
-import torch.nn as nn
-import torch.nn.functional as F
 import math
-from typing import List, Tuple, Dict, Optional
+
 import editdistance
+import torch
+from torch import nn
 
 
 class CKALoss(nn.Module):
     def __init__(self, eps):
         super().__init__()
         self.eps = eps
-    def forward(self, SH, TH): 
+
+    def forward(self, SH, TH):
         dT = TH.size(-1)
         dS = SH.size(-1)
-        SH = SH.view(-1,dS).to(SH.device,torch.float64)
-        TH = TH.view(-1,dT).to(SH.device,torch.float64)
-        
+        SH = SH.view(-1, dS).to(SH.device, torch.float64)
+        TH = TH.view(-1, dT).to(SH.device, torch.float64)
+
         slen = SH.size(0)
         SH = SH - SH.mean(0, keepdim=True)
         TH = TH - TH.mean(0, keepdim=True)
-                
-        num = torch.norm(SH.t().matmul(TH),'fro')
-        den1 = torch.norm(SH.t().matmul(SH),'fro') + self.eps
-        den2 = torch.norm(TH.t().matmul(TH),'fro') + self.eps
-        
-        return 1 - num/torch.sqrt(den1*den2)
+
+        num = torch.norm(SH.t().matmul(TH), "fro")
+        den1 = torch.norm(SH.t().matmul(SH), "fro") + self.eps
+        den2 = torch.norm(TH.t().matmul(TH), "fro") + self.eps
+
+        return 1 - num / torch.sqrt(den1 * den2)
 
 
 def build_reciprocal_mapping_from_token_lists(
-    teacher_tokens, student_tokens,
-    teacher_special="<s>", student_special="[CLS]"
+    teacher_tokens, student_tokens, teacher_special="<s>", student_special="[CLS]"
 ):
     return align_tokens(
         teacher_tokens,
@@ -39,54 +38,9 @@ def build_reciprocal_mapping_from_token_lists(
     )
 
 
-def build_reciprocal_mapping_from_token_lists_old(
-    tokens_t: List[str],
-    tokens_s: List[str],
-    teacher_special: str = "<s>",
-    student_special: str = "[CLS]"
-) -> Dict[int, int]:
-    indices_t = [i for i, tok in enumerate(tokens_t) if not tok.startswith(teacher_special)]
-    indices_s = [i for i, tok in enumerate(tokens_s) if not tok.startswith(student_special)]
-    
-    pure_tokens_t = [tokens_t[i] for i in indices_t]
-    pure_tokens_s = [tokens_s[i] for i in indices_s]
-    
-    n_t = len(pure_tokens_t)
-    n_s = len(pure_tokens_s)
-    
-    dist_matrix = torch.zeros(n_t, n_s)
-    for i in range(n_t):
-        for j in range(n_s):
-            dist_matrix[i, j] = editdistance.eval(pure_tokens_t[i], pure_tokens_s[j])
-    
-    mapping = {}
-    used_s = set()
-    
-    for i in range(n_t):
-        min_dist = float('inf')
-        best_j = -1
-        for j in range(n_s):
-            if j not in used_s and dist_matrix[i, j] < min_dist:
-                min_dist = dist_matrix[i, j]
-                best_j = j
-        
-        if best_j >= 0:
-            reciprocal = True
-            for k in range(n_t):
-                if dist_matrix[k, best_j] < dist_matrix[i, best_j]:
-                    reciprocal = False
-                    break
-            
-            if reciprocal:
-                mapping[indices_t[i]] = indices_s[best_j]
-                used_s.add(best_j)
-    
-    return mapping
-
-
 def compute_token_importance(attention_weights, tokens):
     device = attention_weights.device
-    
+
     # Check if attention_weights is 3D (with multiple heads) or 2D (single attention matrix)
     if len(attention_weights.shape) == 3:
         # Average attention across heads: [seq_len, seq_len]
@@ -94,23 +48,23 @@ def compute_token_importance(attention_weights, tokens):
     else:
         # Already a 2D attention matrix
         avg_attention = attention_weights
-    
+
     # Ensure dimensions match
     seq_len = min(avg_attention.shape[0], len(tokens))
-    
+
     # Truncate attention matrix if needed
     avg_attention = avg_attention[:seq_len, :seq_len]
-    
+
     # Sum attention that each token receives: [seq_len]
     token_importance = avg_attention.sum(dim=0)
-    
+
     token_importance = token_importance.clamp_min(0)
     total = token_importance.sum()
     if total <= 1e-12:
         norm_importance = torch.full_like(token_importance, 1.0 / max(seq_len, 1))
     else:
         norm_importance = token_importance / total
-    
+
     return norm_importance
 
 
@@ -130,7 +84,9 @@ def project_importance(teacher_importance, teacher_tokens, student_tokens, mappi
         dtype=teacher_importance.dtype,
     )
     for teacher_idx, student_idx in mapping.items():
-        if teacher_idx < teacher_importance.numel() and student_idx < len(student_tokens):
+        if teacher_idx < teacher_importance.numel() and student_idx < len(
+            student_tokens
+        ):
             student_importance[student_idx] = teacher_importance[teacher_idx]
     total = student_importance.sum()
     if total <= 1e-12:
@@ -145,8 +101,8 @@ def sinkhorn(
     alpha: float = 0.1,
     max_iter: int = 100,
     stop_thr: float = 1e-9,
-    eps: float = 1e-9
-) -> Tuple[torch.Tensor, torch.Tensor]:
+    eps: float = 1e-9,
+) -> tuple[torch.Tensor, torch.Tensor]:
     """
     Sinkhorn Optimal Transport for 2D cost matrix (single batch item).
     cost_matrix: [m, n]
@@ -156,28 +112,28 @@ def sinkhorn(
     m, n = cost_matrix.shape
     device = cost_matrix.device
     dtype = cost_matrix.dtype
-    
+
     if m == 0 or n == 0:
         return (
             torch.tensor(0.0, device=device, dtype=dtype),
-            torch.zeros((m, n), device=device, dtype=dtype)
+            torch.zeros((m, n), device=device, dtype=dtype),
         )
-    
+
     a = a.to(device=device, dtype=dtype)
     b = b.to(device=device, dtype=dtype)
-    
+
     # Ensure correct shape
     if a.dim() == 1:
         a = a.view(-1, 1)
     if b.dim() == 1:
         b = b.view(-1, 1)
-    
+
     # Fallback to uniform if dimensions don't match
     if a.shape[0] != m:
         a = torch.ones(m, 1, device=device, dtype=dtype) / m
     if b.shape[0] != n:
         b = torch.ones(n, 1, device=device, dtype=dtype) / n
-    
+
     # Normalize marginals
     if torch.sum(a) < eps or torch.sum(b) < eps:
         a = torch.ones(m, 1, device=device, dtype=dtype) / m
@@ -185,30 +141,30 @@ def sinkhorn(
     else:
         a = a / torch.sum(a)
         b = b / torch.sum(b)
-    
+
     # Sinkhorn iterations
     K = torch.exp(-cost_matrix / alpha)
     u = torch.ones(m, 1, device=device, dtype=dtype)
     v = torch.ones(n, 1, device=device, dtype=dtype)
-    
+
     for _ in range(max_iter):
         u_prev = u.clone()
         KTu = torch.matmul(K.t(), u)  # [n, 1]
         v = b / (KTu + eps)
         Kv = torch.matmul(K, v)  # [m, 1]
         u = a / (Kv + eps)
-        
+
         # Check convergence
-        err = torch.norm(u - u_prev, p=float('inf'))
+        err = torch.norm(u - u_prev, p=float("inf"))
         if err < stop_thr:
             break
-    
+
     # Compute transport matrix
     P = torch.diag(u.squeeze()) @ K @ torch.diag(v.squeeze())  # [m, n]
-    
+
     # Compute OT loss
     ot_loss = torch.sum(P * cost_matrix)
-    
+
     return ot_loss, P
 
 
@@ -291,15 +247,15 @@ def align_tokens(
 
 
 def compute_att_loss_2(
-    teacher_atts,          # list: mỗi phần tử [B, H, L_t, L_t] trên device_s
-    student_atts,          # list: mỗi phần tử [B, H, L_s, L_s]
-    input_ids_tea,         # [B, L_t] trên device_s
-    input_ids_stu,         # [B, L_s] trên device_s
-    attention_mask_tea,    # [B, L_t] trên device_s
-    attention_mask_stu,    # [B, L_s] trên device_s
+    teacher_atts,  # list: mỗi phần tử [B, H, L_t, L_t] trên device_s
+    student_atts,  # list: mỗi phần tử [B, H, L_s, L_s]
+    input_ids_tea,  # [B, L_t] trên device_s
+    input_ids_stu,  # [B, L_s] trên device_s
+    attention_mask_tea,  # [B, L_t] trên device_s
+    attention_mask_stu,  # [B, L_s] trên device_s
     tok_teacher,
     tok_student,
-    k,                     # số last layers dùng (thường = 1)
+    k,  # số last layers dùng (thường = 1)
     device,
     teacher_special="<s>",
     student_special="[CLS]",
@@ -317,8 +273,8 @@ def compute_att_loss_2(
         for idx in range(student_layer_num)
     ]
 
-    teacher_last_k_layers = new_teacher_atts[-k:]   
-    student_last_k_layers = student_atts[-k:]       
+    teacher_last_k_layers = new_teacher_atts[-k:]
+    student_last_k_layers = student_atts[-k:]
 
     cka = CKALoss(eps=1e-8).to(device)
 
@@ -331,10 +287,14 @@ def compute_att_loss_2(
         ids_tea = input_ids_tea[b, :L_t_valid]
         ids_stu = input_ids_stu[b, :L_s_valid]
 
-        teacher_tokens = tok_teacher.convert_ids_to_tokens(ids_tea.detach().cpu().tolist())
-        student_tokens = tok_student.convert_ids_to_tokens(ids_stu.detach().cpu().tolist())
+        teacher_tokens = tok_teacher.convert_ids_to_tokens(
+            ids_tea.detach().cpu().tolist()
+        )
+        student_tokens = tok_student.convert_ids_to_tokens(
+            ids_stu.detach().cpu().tolist()
+        )
 
-        last_teacher_att_full = teacher_atts[-1][b]        # [H, L_t, L_t]
+        last_teacher_att_full = teacher_atts[-1][b]  # [H, L_t, L_t]
         last_teacher_att = last_teacher_att_full[:, :L_t_valid, :L_t_valid]
 
         teacher_importance = compute_token_importance(
@@ -342,9 +302,10 @@ def compute_att_loss_2(
         )  # [L_t_valid]
 
         reciprocal = build_reciprocal_mapping_from_token_lists(
-            teacher_tokens, student_tokens,
+            teacher_tokens,
+            student_tokens,
             teacher_special=teacher_special,
-            student_special=student_special
+            student_special=student_special,
         )
         if len(reciprocal) == 0:
             continue
@@ -366,27 +327,37 @@ def compute_att_loss_2(
         if N == 0:
             continue
 
-        for teacher_att_layer, student_att_layer in zip(teacher_last_k_layers, student_last_k_layers):
+        for teacher_att_layer, student_att_layer in zip(
+            teacher_last_k_layers, student_last_k_layers
+        ):
             # teacher_att_layer: [B, H, L_t, L_t]
             # student_att_layer: [B, H, L_s, L_s]
 
-            tea_sub = teacher_att_layer[b, :, :L_t_valid, :L_t_valid]  # [H, L_t_valid, L_t_valid]
-            stu_sub = student_att_layer[b, :, :L_s_valid, :L_s_valid]  # [H, L_s_valid, L_s_valid]
+            tea_sub = teacher_att_layer[
+                b, :, :L_t_valid, :L_t_valid
+            ]  # [H, L_t_valid, L_t_valid]
+            stu_sub = student_att_layer[
+                b, :, :L_s_valid, :L_s_valid
+            ]  # [H, L_s_valid, L_s_valid]
 
             # attention của N token đã align, trung bình các head
-            tea_tok_att = tea_sub[:, aligned_teacher_indices, :].mean(dim=0)  # [N, L_t_valid]
-            stu_tok_att = stu_sub[:, aligned_student_indices, :].mean(dim=0)  # [N, L_s_valid]
+            tea_tok_att = tea_sub[:, aligned_teacher_indices, :].mean(
+                dim=0
+            )  # [N, L_t_valid]
+            stu_tok_att = stu_sub[:, aligned_student_indices, :].mean(
+                dim=0
+            )  # [N, L_s_valid]
 
             # xử lý mask rất nhỏ
             tea_tok_att = torch.where(
                 tea_tok_att <= -1e2,
                 torch.zeros_like(tea_tok_att, device=device),
-                tea_tok_att
+                tea_tok_att,
             )
             stu_tok_att = torch.where(
                 stu_tok_att <= -1e2,
                 torch.zeros_like(stu_tok_att, device=device),
-                stu_tok_att
+                stu_tok_att,
             )
 
             if stu_tok_att.size(1) == 0 or tea_tok_att.size(1) == 0:
@@ -401,16 +372,16 @@ def compute_att_loss_2(
 
 
 def compute_ot_loss(
-    teacher_last,           # [B, L_t, d_t]  trên device_s
-    student_last,           # [B, L_s, d_s]  trên device_s
-    teacher_att_last,       # [B, H, L_t, L_t] (attention layer cuối) trên device_s
-    attention_mask_teacher, # [B, L_t] trên device_s
-    attention_mask_student, # [B, L_s] trên device_s
-    input_ids_tea,          # [B, L_t] trên device_s
-    input_ids_stu,          # [B, L_s] trên device_s
+    teacher_last,  # [B, L_t, d_t]  trên device_s
+    student_last,  # [B, L_s, d_s]  trên device_s
+    teacher_att_last,  # [B, H, L_t, L_t] (attention layer cuối) trên device_s
+    attention_mask_teacher,  # [B, L_t] trên device_s
+    attention_mask_student,  # [B, L_s] trên device_s
+    input_ids_tea,  # [B, L_t] trên device_s
+    input_ids_stu,  # [B, L_s] trên device_s
     tok_teacher,
     tok_student,
-    projector,              # proj_t2s: Linear(d_t -> d_s)
+    projector,  # proj_t2s: Linear(d_t -> d_s)
     alpha: float = 0.1,
     max_iter: int = 100,
     teacher_special="<s>",
@@ -434,36 +405,38 @@ def compute_ot_loss(
             valid_student_input_ids.detach().cpu().tolist()
         )
 
-        teacher_seq = teacher_last[b, :valid_teacher_len, :]   # [Lt', d_t]
-        student_seq = student_last[b, :valid_student_len, :]   # [Ls', d_s]
+        teacher_seq = teacher_last[b, :valid_teacher_len, :]  # [Lt', d_t]
+        student_seq = student_last[b, :valid_student_len, :]  # [Ls', d_s]
 
-        projected_teacher_seq = projector(teacher_seq)         # [Lt', d_s]
+        projected_teacher_seq = projector(teacher_seq)  # [Lt', d_s]
 
-        teacher_attention_full = teacher_att_last[b]           # [H, L_t, L_t]
-        valid_teacher_attention = teacher_attention_full[:, :valid_teacher_len, :valid_teacher_len]
+        teacher_attention_full = teacher_att_last[b]  # [H, L_t, L_t]
+        valid_teacher_attention = teacher_attention_full[
+            :, :valid_teacher_len, :valid_teacher_len
+        ]
 
         teacher_importance = compute_token_importance(
             valid_teacher_attention, teacher_tokens
         )  # [Lt']
 
         token_mapping = align_tokens(
-            teacher_tokens, student_tokens,
+            teacher_tokens,
+            student_tokens,
             teacher_special=teacher_special,
-            student_special=student_special
+            student_special=student_special,
         )
 
         student_importance = project_importance(
-            teacher_importance,
-            teacher_tokens,
-            student_tokens,
-            token_mapping
-        )   # [Ls']
+            teacher_importance, teacher_tokens, student_tokens, token_mapping
+        )  # [Ls']
 
         tea_mass = teacher_importance.view(-1, 1).to(device=device, dtype=torch.float32)
         stu_mass = student_importance.view(-1, 1).to(device=device, dtype=torch.float32)
 
         student_seq_f = student_seq.to(device=device, dtype=torch.float32)
-        proj_teacher_seq_f = projected_teacher_seq.to(device=device, dtype=torch.float32)
+        proj_teacher_seq_f = projected_teacher_seq.to(
+            device=device, dtype=torch.float32
+        )
 
         cost_matrix = pairwise_attention_distance(student_seq_f, proj_teacher_seq_f)
         cost_matrix = cost_matrix.to(device=device, dtype=torch.float32)
@@ -482,7 +455,6 @@ def compute_ot_loss(
 
 
 class EMODistillation(nn.Module):
-    
     def __init__(
         self,
         d_teacher: int,
@@ -491,18 +463,18 @@ class EMODistillation(nn.Module):
         alpha_ot: float = 0.1,
         max_iter: int = 100,
         teacher_special: str = "<s>",
-        student_special: str = "[CLS]"
+        student_special: str = "[CLS]",
     ):
         super().__init__()
-        
+
         self.k_layers = k_layers
         self.alpha_ot = alpha_ot
         self.max_iter = max_iter
         self.teacher_special = teacher_special
         self.student_special = student_special
-        
+
         self.proj_t2s = nn.Linear(d_teacher, d_student, bias=False)
-    
+
     def compute_emo_loss(
         self,
         teacher_outputs,
@@ -514,10 +486,10 @@ class EMODistillation(nn.Module):
         tok_teacher,
         tok_student,
         att_loss_weight: float = 1.0,
-        ot_loss_weight: float = 1.0
-    ) -> Tuple[torch.Tensor, Dict[str, float]]:
+        ot_loss_weight: float = 1.0,
+    ) -> tuple[torch.Tensor, dict[str, float]]:
         device = student_outputs.last_hidden_state.device
-        
+
         att_loss = compute_att_loss_2(
             teacher_atts=list(teacher_outputs.attentions),
             student_atts=list(student_outputs.attentions),
@@ -530,9 +502,9 @@ class EMODistillation(nn.Module):
             k=self.k_layers,
             device=device,
             teacher_special=self.teacher_special,
-            student_special=self.student_special
+            student_special=self.student_special,
         )
-        
+
         ot_loss = compute_ot_loss(
             teacher_last=teacher_outputs.last_hidden_state,
             student_last=student_outputs.last_hidden_state,
@@ -547,15 +519,15 @@ class EMODistillation(nn.Module):
             alpha=self.alpha_ot,
             max_iter=self.max_iter,
             teacher_special=self.teacher_special,
-            student_special=self.student_special
+            student_special=self.student_special,
         )
-        
+
         total_loss = att_loss_weight * att_loss + ot_loss_weight * ot_loss
-        
+
         loss_dict = {
             "att_loss": att_loss.item(),
             "ot_loss": ot_loss.item(),
-            "total_kd": total_loss.item()
+            "total_kd": total_loss.item(),
         }
-        
+
         return total_loss, loss_dict
