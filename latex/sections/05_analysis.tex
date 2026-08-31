@@ -33,7 +33,7 @@ The first transition asks whether broader corpus exposure alone is sufficient; t
 
 We compare one-hop RIPPLE with the same model augmented by diffusion targets. The main evidence is teacher--student error on held-out broader-rank relations, full-corpus relational divergence, and downstream performance. Improvement outside the immediate mutual-$k$NN support would show that diffusion transfers broader geometry rather than merely reweighting direct neighbors.
 
-Cross-anchor row supervision appears as an additional row in the component ablation rather than a separate main-paper study. The fuller controls---including injection-only supervision, graph-width sweeps, fixed rank bands, row-overlap disagreement, and a degree-preserving random graph---are reported in Appendix~\ref{app:additional-analysis}.
+Cross-anchor row supervision appears as an additional row in the component ablation rather than a separate main-paper study. The fuller controls---including a matched row-loss-off variant, graph-width sweeps, fixed rank bands, exposed-mass and row-KL diagnostics, and a degree-preserving random graph---are reported in Appendix~\ref{app:additional-analysis}.
 
 \subsection{Accuracy--Efficiency Trade-off}
 

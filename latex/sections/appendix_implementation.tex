@@ -13,8 +13,8 @@ Component & Configuration \\
 \midrule
 Teacher graph & Mutual $k$NN, $k=200$; target perplexity $30$ \\
 Diffusion & Scales $\{1,2,4\}$; truncation tolerance $0.01$ \\
-Candidates & $66$ per anchor: $14$ target, $26$ hard, $26$ random \\
-Row supervision & $4$ walks of length $4$; start epoch $2$; $\lambda_{\mathrm{row}}=0.5$ \\
+Candidates & Derived target quota; $40$ hard and $26$ random per anchor \\
+Row supervision & Uniform pool closure; start epoch $1$; $\lambda_{\mathrm{row}}=1$ \\
 Ambient profile & Teacher/student temperature $0.10$ \\
 \bottomrule
 \end{tabular}
@@ -40,7 +40,7 @@ where the target perplexity is $\rho=30$. Rows whose degree is below $\rho$ use 
 
 The lazy transition $\widetilde P^T=\tfrac12(I+P^T)$ prevents periodic oscillation. After each sparse multiplication, we retain the smallest support carrying at least $99\%$ of the row mass and renormalize. If discarded mass is at most $\eta$, the truncated distribution differs from the original by total variation $\eta$ and has reverse KL $-\log(1-\eta)$; the canonical tolerance is $\eta=0.01$. Student temperatures at scale $r$ are derived as $\sqrt r\,\tau_i$, matching the increasing spread of the diffusion target.
 
-For each anchor and epoch, the sampler keeps the two highest-mass entries, fills the remainder of its target quota without replacement in proportion to teacher mass, and adds hard and random negatives. Across an anchor batch, candidates are pooled and deduplicated before student encoding. The canonical relational scale set is $\mathcal R=\{0,1,2,4\}$: $r=0$ is an ambient teacher/student cosine-softmax over the shared pool at temperature $0.10$, $r=1$ is the direct transition row, and $r>1$ denotes diffusion. Scale weights follow the fixed rule
+For each anchor and epoch, the sampler keeps the two highest-mass entries per scale, fills the remainder of its target quota without replacement in proportion to teacher mass, and adds hard and random negatives. By default, the target quota is derived from the graph as the smallest support reaching $70\%$ of the scale-mixture mass at the median anchor. The Qwen3-Embedding-0.6B $\rightarrow$ MiniLMv2-H384 run reported in Table~\ref{tab:main_results} uses the explicit quota-$44$ setting, hence $110$ candidates per anchor. Across an anchor batch, candidates are pooled and deduplicated before student encoding. The canonical relational scale set is $\mathcal R=\{0,1,2,4\}$: $r=0$ is an ambient teacher/student cosine-softmax over the shared pool at temperature $0.10$, $r=1$ is the direct transition row, and $r>1$ denotes diffusion. Scale weights follow the fixed rule
 \begin{equation}
 \omega_r\propto\frac{1}{\max(1,r)},
 \end{equation}
@@ -48,14 +48,16 @@ normalized once over $\mathcal R$.
 
 \subsection{Cross-Anchor Row Supervision}
 
-From each anchor, RIPPLE samples four non-backtracking walks of length four using $P^T$. The walks select source rows; they are not prediction trajectories. Visited nodes replace random candidates when necessary. For a selected node $j$, the realized row support is
+RIPPLE derives auxiliary row centers directly from the realized candidate pool. A pool column is eligible when at least one anchor assigns it positive diffusion-target mass; hard and uniform negatives are therefore ineligible. The union of these teacher-selected columns is deduplicated, and every batch anchor is removed because its transition row is already supervised by the $r=1$ term of $\mathcal L_{\mathrm{rel}}$. This construction introduces no row-sampling distribution, traversal length, or candidate injection.
+
+For an eligible non-anchor node $j$, the realized row support is
 \begin{equation}
 \Omega_j^{\mathrm{row}}=\mathcal P_B\cap\mathcal M_k^T(j),
 \end{equation}
-where $\mathcal P_B$ is the shared candidate pool. The loss in Eq.~\eqref{eq:row-loss} matches the complete available transition row rather than a sampled successor. Duplicate visits are combined through $\nu_B(j)$, and rows with fewer than two available columns are skipped.
+where $\mathcal P_B$ is the shared candidate pool. The teacher probabilities on this support are renormalized by the exposed mass $m_B(j)=P_j^T(\Omega_j^{\mathrm{row}})$, and the student probabilities use the same stored row temperature $\tau_j$ as the teacher graph. Equation~\eqref{eq:row-loss} averages uniformly over all rows with at least two available teacher-neighbor columns. The implementation records $m_B(j)$ rather than using it as a loss weight, so heavily exposed rows do not receive a second mass-dependent preference.
 
 \subsection{Complexity and Approximate Neighbor Search}
 
-Exact construction from $N$ embeddings of dimension $d$ requires $O(N^2d)$ similarity work before sparsification. The stored mutual-neighbor graph uses $O(Nk)$ edges, and sparse diffusion operates on this cached graph subject to the mass-based row cap. During training, student computation depends on the deduplicated batch candidate pool rather than all $N$ corpus items; the canonical pre-deduplication budget is $66$ candidates per anchor. At inference, both graph storage and graph operations disappear.
+Exact construction from $N$ embeddings of dimension $d$ requires $O(N^2d)$ similarity work before sparsification. The stored mutual-neighbor graph uses $O(Nk)$ edges, and sparse diffusion operates on this cached graph subject to the mass-based row cap. During training, student computation depends on the deduplicated batch candidate pool rather than all $N$ corpus items; the pre-deduplication budget is the target quota plus $66$ hard and random negatives, totaling $110$ candidates per anchor for the explicit quota-$44$ run in setting (c). At inference, both graph storage and graph operations disappear.
 
 For larger corpora, approximate nearest-neighbor search can replace the exact all-pairs stage. The remaining pipeline only requires neighbor indices and teacher similarities, so mutuality filtering, entropy calibration, diffusion, and candidate sampling are unchanged. Approximation quality should be audited through reciprocal-edge recall and retained teacher mass because missed high-relevance neighbors directly affect the coverage term in Proposition~\ref{prop:global-geometry}.

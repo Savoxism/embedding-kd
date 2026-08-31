@@ -95,19 +95,33 @@ g^S_{i,r}|_{\Omega_{i,r}}
 \end{equation}
 The candidate construction also includes an ambient comparison over the shared pool, preventing a restricted high-mass target from hiding off-support alternatives. Exact quotas, scale weights, and temperatures are implementation details given in Appendix~\ref{app:candidates}.
 
-Anchor-wise objectives are not independent because their local geometries overlap. RIPPLE reuses overlapping pooled candidates to supervise additional rows of the teacher graph. If $\mathcal J_B$ is the set of selected row centers, $\Omega_j^{\mathrm{row}}$ is the available teacher-neighbor support for row $j$, and $\nu_B(j)$ is its normalized selection weight, then
+Anchor-wise objectives are not independent because their local geometries overlap. RIPPLE closes the sampled support under teacher transition rows, reusing already encoded candidates rather than sampling additional row centers. Let $\mathcal P_B$ be the deduplicated shared pool and let $\mathcal S_i\subseteq\mathcal P_B$ contain the columns with positive mass in anchor $i$'s realized diffusion targets. Thus $\mathcal S_i$ excludes hard and uniform negatives. The auxiliary row centers are
+\begin{equation}
+\mathcal J_B
+=\left(\bigcup_{i\in B}\mathcal S_i\right)\setminus B,
+\end{equation}
+where removing all batch anchors avoids duplicating the one-hop term already present in $\mathcal L_{\mathrm{rel}}$. For $j\in\mathcal J_B$, define the exposed teacher-neighbor support and its retained mass as
+\begin{equation}
+\Omega_j^{\mathrm{row}}
+=\mathcal P_B\cap\mathcal M_k^T(j),
+\qquad
+m_B(j)=\sum_{\ell\in\Omega_j^{\mathrm{row}}}P_{j\ell}^T.
+\end{equation}
+The teacher row is restricted and renormalized as $\bar P_{j\ell}^{T,B}=P_{j\ell}^T/m_B(j)$, while the student row is
+\begin{equation}
+q_{j\ell}^{S,B}
+=\frac{\exp(c_{j\ell}^S/\tau_j)}
+{\sum_{u\in\Omega_j^{\mathrm{row}}}\exp(c_{ju}^S/\tau_j)}.
+\end{equation}
+Writing $\mathcal J_B^+=\{j\in\mathcal J_B:|\Omega_j^{\mathrm{row}}|\geq2\}$, the row objective is the uniform mean
 \begin{equation}
 \mathcal L_{\mathrm{row}}
-=\sum_{j\in\mathcal J_B}\nu_B(j)
-D_{\mathrm{KL}}\!\left(
-P_j^T|_{\Omega_j^{\mathrm{row}}}
-\,\middle\|\,
-\operatorname{softmax}_{\Omega_j^{\mathrm{row}}}
-\left(c^S_{j\cdot}/\tau_j\right)
-\right).
+=\frac{1}{|\mathcal J_B^+|}
+\sum_{j\in\mathcal J_B^+}
+D_{\mathrm{KL}}\!\left(\bar P_j^{T,B}\,\middle\|\,q_j^{S,B}\right).
 \label{eq:row-loss}
 \end{equation}
-Rows with fewer than two available teacher-neighbor columns are omitted. The complete objective is
+The exposed mass $m_B(j)$ is monitored but does not reweight the rows. Rows with fewer than two available teacher-neighbor columns are omitted because their restricted KL is uninformative. The complete objective is
 \begin{equation}
 \mathcal L_{\mathrm{RIPPLE}}
 =\mathcal L_{\mathrm{rel}}

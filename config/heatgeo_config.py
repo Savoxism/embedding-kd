@@ -141,14 +141,13 @@ class HeatGeoConfig(BaseConfig):
     learning_rate = 3e-5
     min_lr = 3e-6
     num_workers = 4
-    # Validate every epoch. This was 0, which made a five-epoch run report exactly
-    # one number at the end: no way to tell a converged arm from one still
-    # improving, which epoch was best, or which benchmark an arm moved. An epoch
-    # of training is ~23 s at this corpus, so a validation pass is the cheapest
-    # information in the loop by a wide margin. Final pair thresholds are still
-    # selected on each test task by the final evaluation, so this changes what is
-    # observed, not what is reported.
-    eval_every = 1
+    # Per-epoch evaluation is off: it existed to answer whether a run converges
+    # inside the 5-epoch budget, and that question is answered — at lr 3e-5 the
+    # test avg plateaus from epoch 2 (74.59 -> 75.19 -> ~flat). Only the final
+    # evaluation runs now; the per-epoch training means, geometry probe and
+    # step_metrics.jsonl still record convergence without it. Set 1 to re-enable
+    # when a change (new pair, new lr, new objective term) reopens the question.
+    eval_every = 0
 
     train_data_path = "data/train_set/merged_3_data_5k_each.csv"
     # cache_teacher removed: nothing read it. Teacher caching is gated purely by

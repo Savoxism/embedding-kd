@@ -59,9 +59,10 @@ def test_heatgeo_cli_overrides(monkeypatch):
 
     assert config.row_weight == 0.8
     assert config.row_start_epoch == 2
-    # Validation runs every epoch: a five-epoch run reporting one number gave no
-    # way to see convergence, the best epoch, or which benchmark an arm moved.
-    assert config.eval_every == 1
+    # Per-epoch evaluation is off by default: convergence inside the 5-epoch
+    # budget is established (plateau from epoch 2 at lr 3e-5), so only the final
+    # evaluation runs.
+    assert config.eval_every == 0
     assert not hasattr(config, "walk_temp")
     assert config.perplexity == 45
     assert (

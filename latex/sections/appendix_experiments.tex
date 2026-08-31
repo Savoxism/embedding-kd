@@ -27,7 +27,7 @@ Checkpoint selection & Validation average \\
 \label{tab:optimization-config}
 \end{table}
 
-Stochastic candidate and walk streams are seeded independently by the run seed, epoch, anchor index, and stream identifier. Results for RIPPLE and TALAS are reported as mean $\pm$ standard deviation across three seeds. Comparisons of step time and peak memory use the same device, batch, mixed-precision policy, software stack, and measurement procedure for every variant; the exact accelerator and library versions should be included with the released run manifest.
+Stochastic candidate draws are seeded by the run seed, epoch, and anchor index. Auxiliary row centers are then derived deterministically from the realized shared pool. Results for RIPPLE and TALAS are reported as mean $\pm$ standard deviation across three seeds. Comparisons of step time and peak memory use the same device, batch, mixed-precision policy, software stack, and measurement procedure for every variant; the exact accelerator and library versions should be included with the released run manifest.
 
 \subsection{Downstream Protocols}
 
@@ -38,4 +38,3 @@ Checkpoints are selected using validation data, after which the corresponding te
 \subsection{Baselines}
 
 The comparison includes the frozen teacher and undistilled student references, SimCSE-unsup, CDM, DSKD, Jasper--Stella, DistillCSE, EMO, and TALAS. Published baseline results are taken from the shared TALAS protocol where indicated in Table~\ref{tab:main_results}; TALAS and RIPPLE are summarized over three runs. Controlled RIPPLE comparisons use the same initialization, optimizer, schedule, and evaluation code and vary only the named component.
-
