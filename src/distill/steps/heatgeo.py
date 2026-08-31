@@ -26,6 +26,9 @@ def step(ctx, batch: dict) -> tuple[torch.Tensor, dict]:
             "candidate_idx",
             "candidate_inverse",
             "teacher_probs",
+            "geometry_head_probs",
+            "geometry_tail_positions",
+            "geometry_tail_mass",
         }:
             batch_s[k] = v.to(ctx.device_s, non_blocking=True)
 
@@ -77,6 +80,9 @@ def step(ctx, batch: dict) -> tuple[torch.Tensor, dict]:
             teacher_probs=batch_s["teacher_probs"],
             candidate_idx=batch_s.get("candidate_idx"),
             anchor_idx=batch_s.get("idx"),
+            geometry_head_probs=batch_s.get("geometry_head_probs"),
+            geometry_tail_positions=batch_s.get("geometry_tail_positions"),
+            geometry_tail_mass=batch_s.get("geometry_tail_mass"),
         )
         loss = loss.float()
 

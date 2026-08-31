@@ -34,6 +34,7 @@ class HeatGeoCandidateSampler:
         random_neg_k: int,
         seed: int,
         deterministic_topm: int = DETERMINISTIC_TOPM,
+        unbiased_geometry: bool = False,
     ):
         self.pool_indices = artifact["pool_indices"].numpy()
         self.pool_probs = artifact["pool_probs"].numpy()
@@ -48,7 +49,13 @@ class HeatGeoCandidateSampler:
         self.hard_neg_k = int(hard_neg_k)
         self.random_neg_k = int(random_neg_k)
         self.deterministic_topm = int(deterministic_topm)
+        self.unbiased_geometry = bool(unbiased_geometry)
         self.seed = int(seed)
+        if self.unbiased_geometry and self.diffusion_quota < self.n_scales:
+            raise ValueError(
+                "unbiased geometry sampling needs at least one diffusion slot "
+                f"per scale; quota={self.diffusion_quota}, scales={self.n_scales}"
+            )
 
         scales = tuple(artifact.get("metadata", {}).get("diffusion_scales", ()))
         if len(scales) != self.n_scales:
@@ -92,9 +99,12 @@ class HeatGeoCandidateSampler:
             quotas[position] += 1
         return quotas
 
-    def _select_support(
-        self, idx: int, rng: np.random.Generator
-    ) -> tuple[np.ndarray, np.ndarray]:
+    def _select_support_impl(
+        self,
+        idx: int,
+        rng: np.random.Generator,
+        estimate_geometry: bool,
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
         pool = self.pool_indices[idx]
         valid = pool >= 0
         quotas = self._scale_quotas(self.diffusion_quota)
@@ -102,14 +112,40 @@ class HeatGeoCandidateSampler:
         taken = np.zeros(pool.size, dtype=bool)
         positions: list[int] = []
         deficit = 0
+        geometry_head_pool = np.zeros(
+            (self.n_scales, pool.size), dtype=np.float64
+        )
+        geometry_tail_pool = np.full(self.n_scales, -1, dtype=np.int64)
+        geometry_tail_mass = np.zeros(self.n_scales, dtype=np.float64)
 
         for scale_idx in range(self.n_scales):
             need = quotas[scale_idx] + deficit
-            probs = np.where(valid, self.pool_probs[scale_idx, idx], 0.0).astype(
-                np.float64
+            row_probs = np.where(
+                valid, self.pool_probs[scale_idx, idx], 0.0
+            ).astype(np.float64)
+            row_total = float(row_probs.sum())
+            normalized = (
+                row_probs / row_total
+                if row_total > 0.0
+                else np.zeros_like(row_probs)
             )
-            probs[taken] = 0.0
+            taken_before = taken.copy()
+            probs = row_probs.copy()
+            probs[taken_before] = 0.0
             if need <= 0 or not (probs > 0).any():
+                if estimate_geometry:
+                    geometry_head_pool[scale_idx, taken_before] = normalized[
+                        taken_before
+                    ]
+                    geometry_tail_mass[scale_idx] = float(
+                        normalized[~taken_before].sum()
+                    )
+                    if geometry_tail_mass[scale_idx] > 1e-12:
+                        raise ValueError(
+                            "unbiased geometry sampling needs at least one available "
+                            f"tail slot per diffusion scale; scale={scale_idx}, "
+                            f"diffusion_quota={self.diffusion_quota}"
+                        )
                 deficit = need
                 continue
 
@@ -118,7 +154,38 @@ class HeatGeoCandidateSampler:
             head = head[probs[head] > 0]
             rest = probs.copy()
             rest[head] = 0.0
+            if (
+                estimate_geometry
+                and head.size == need
+                and head.size > 0
+                and (rest > 0).any()
+            ):
+                # Preserve the fixed support budget while reserving one slot for
+                # an exact Gumbel-max draw from the remaining teacher mass.
+                head = head[:-1]
+                rest = probs.copy()
+                rest[head] = 0.0
+
+            estimator_head = taken_before.copy()
+            estimator_head[head] = True
             tail = _gumbel_topk(rest, need - head.size, rng)
+            if estimate_geometry:
+                geometry_head_pool[scale_idx, estimator_head] = normalized[
+                    estimator_head
+                ]
+                tail_mass = float(normalized[~estimator_head].sum())
+                geometry_tail_mass[scale_idx] = tail_mass
+                if tail_mass > 1e-12:
+                    if tail.size == 0:
+                        raise ValueError(
+                            "unbiased geometry sampling could not draw from a "
+                            f"positive-mass tail at scale={scale_idx}"
+                        )
+                    # The first ordered Gumbel top-k item is an exact categorical
+                    # draw. Later items have non-trivial inclusion probabilities
+                    # and remain support for KL only.
+                    geometry_tail_pool[scale_idx] = int(tail[0])
+
             chosen = np.concatenate([head, tail]).astype(np.int64)
             taken[chosen] = True
             positions.extend(int(position) for position in chosen)
@@ -134,12 +201,61 @@ class HeatGeoCandidateSampler:
             positions.extend(int(position) for position in extra)
 
         support_positions = np.asarray(positions, dtype=np.int64)
-        return pool[support_positions].astype(np.int64), support_positions
+        support = pool[support_positions].astype(np.int64)
+        geometry_head_probs = np.zeros(
+            (self.n_scales, support_positions.size), dtype=np.float32
+        )
+        geometry_tail_positions = np.full(self.n_scales, -1, dtype=np.int64)
+        if estimate_geometry and support_positions.size:
+            candidate_position = np.full(pool.size, -1, dtype=np.int64)
+            candidate_position[support_positions] = np.arange(support_positions.size)
+            for scale_idx in range(self.n_scales):
+                head_pool_positions = np.flatnonzero(
+                    geometry_head_pool[scale_idx] > 0
+                )
+                if head_pool_positions.size:
+                    mapped = candidate_position[head_pool_positions]
+                    if (mapped < 0).any():
+                        raise RuntimeError(
+                            "geometry head contains a node outside the candidate support"
+                        )
+                    geometry_head_probs[scale_idx, mapped] = geometry_head_pool[
+                        scale_idx, head_pool_positions
+                    ].astype(np.float32)
+                tail_pool_position = int(geometry_tail_pool[scale_idx])
+                if tail_pool_position >= 0:
+                    mapped_tail = int(candidate_position[tail_pool_position])
+                    if mapped_tail < 0:
+                        raise RuntimeError(
+                            "geometry tail draw is outside the candidate support"
+                        )
+                    geometry_tail_positions[scale_idx] = mapped_tail
 
-    def sample(self, idx: int) -> tuple[np.ndarray, np.ndarray]:
-        """Return candidates and diffusion targets restricted to that draw."""
+        return (
+            support,
+            support_positions,
+            geometry_head_probs,
+            geometry_tail_positions,
+            geometry_tail_mass.astype(np.float32),
+        )
+
+    def _select_support(
+        self, idx: int, rng: np.random.Generator
+    ) -> tuple[np.ndarray, np.ndarray]:
+        support, positions, _, _, _ = self._select_support_impl(
+            idx, rng, estimate_geometry=False
+        )
+        return support, positions
+
+    def _sample_impl(self, idx: int, estimate_geometry: bool):
         rng = self._rng(idx, self._STREAM_CANDIDATES)
-        support, support_positions = self._select_support(idx, rng)
+        (
+            support,
+            support_positions,
+            geometry_head_probs,
+            geometry_tail_positions,
+            geometry_tail_mass,
+        ) = self._select_support_impl(idx, rng, estimate_geometry=estimate_geometry)
         support_set = set(int(node) for node in support)
 
         # Partition the complement into a hard stratum and everything else. Their
@@ -183,7 +299,28 @@ class HeatGeoCandidateSampler:
             teacher_probs[:, : support.size] = self.pool_probs[
                 :, idx, support_positions
             ]
-        return candidate_arr, teacher_probs
+        if not estimate_geometry:
+            return candidate_arr, teacher_probs
+
+        geometry_head_full = np.zeros_like(teacher_probs)
+        geometry_head_full[:, : support.size] = geometry_head_probs
+        return (
+            candidate_arr,
+            teacher_probs,
+            geometry_head_full,
+            geometry_tail_positions,
+            geometry_tail_mass,
+        )
+
+    def sample(self, idx: int) -> tuple[np.ndarray, np.ndarray]:
+        """Return candidates and diffusion targets restricted to that draw."""
+        return self._sample_impl(idx, estimate_geometry=False)
+
+    def sample_with_geometry(
+        self, idx: int
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+        """Return candidates plus exact head--tail estimator metadata."""
+        return self._sample_impl(idx, estimate_geometry=True)
 
     def _draw_random(
         self, rng: np.random.Generator, excluded: set[int], count: int
@@ -213,4 +350,18 @@ class HeatGeoCandidateSampler:
         return (
             torch.from_numpy(candidate_arr).long(),
             torch.from_numpy(teacher_probs).float(),
+        )
+
+    def sample_geometry_torch(
+        self, idx: int
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+        candidate_arr, teacher_probs, head_probs, tail_positions, tail_mass = (
+            self.sample_with_geometry(idx)
+        )
+        return (
+            torch.from_numpy(candidate_arr).long(),
+            torch.from_numpy(teacher_probs).float(),
+            torch.from_numpy(head_probs).float(),
+            torch.from_numpy(tail_positions).long(),
+            torch.from_numpy(tail_mass).float(),
         )

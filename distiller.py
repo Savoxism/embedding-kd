@@ -171,6 +171,7 @@ class KnowledgeDistiller:
                 teacher_embeddings=self.teacher_cls_all,
                 direct_temp=config.direct_temp,
                 row_weight=config.row_weight,
+                unbiased_geometry_weight=config.unbiased_geometry_weight,
                 row_temps=artifact["row_temps"],
                 transition_neighbors=artifact["transition_neighbors"],
                 transition_probs=artifact["transition_probs"],
@@ -548,6 +549,7 @@ class KnowledgeDistiller:
                     random_neg_k=cfg.random_neg_k,
                     seed=cfg.seed,
                     deterministic_topm=DETERMINISTIC_TOPM,
+                    unbiased_geometry=cfg.unbiased_geometry_weight > 0.0,
                 )
                 anchor_texts = df[self.heatgeo_anchor_column].astype(str).tolist()
                 self.train_ds = TextPairWithTeacherAndHeatGeo(
@@ -864,6 +866,11 @@ class KnowledgeDistiller:
                     "loss_row_weighted",
                     getattr(self.config, "row_weight", 0.0) > 0,
                 ),
+                (
+                    "geom",
+                    "loss_geometry_weighted",
+                    getattr(self.config, "unbiased_geometry_weight", 0.0) > 0,
+                ),
                 ("grad", "grad_norm", True),
             )
             for label, key, enabled in concise_metrics:
@@ -905,6 +912,10 @@ class KnowledgeDistiller:
                 "loss_nbr",
                 "loss_diff",
                 "loss_row_weighted",
+                "loss_geometry_weighted",
+                "geometry_head_loss",
+                "geometry_tail_loss",
+                "geometry_tail_mass",
                 "row_count",
                 "row_exposed_mass",
                 "row_valid_ratio",

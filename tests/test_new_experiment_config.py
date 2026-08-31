@@ -9,6 +9,7 @@ import torch.nn.functional as F
 import main
 from distiller import KnowledgeDistiller, add_domain_averages
 from src.criterions.heatgeo_distillation import HeatGeoDistillation
+from src.data_utils.dataset_cache import TextPairWithTeacherAndHeatGeo
 from src.distill.checkpointing import save_student_weights
 from src.heatgeo.candidate_sampler import HeatGeoCandidateSampler
 from src.heatgeo.graph_builder import _entropic_affinity, _mass_prefix, _softmax_at
@@ -32,6 +33,8 @@ def test_heatgeo_cli_overrides(monkeypatch):
             "heatgeo",
             "--row_weight",
             "0.8",
+            "--unbiased_geometry_weight",
+            "0.1",
             "--row_start_epoch",
             "2",
             "--perplexity",
@@ -58,6 +61,7 @@ def test_heatgeo_cli_overrides(monkeypatch):
     config = main.get_config(args.method, args)
 
     assert config.row_weight == 0.8
+    assert config.unbiased_geometry_weight == 0.1
     assert config.row_start_epoch == 2
     # Per-epoch evaluation is off by default: convergence inside the 5-epoch
     # budget is established (plateau from epoch 2 at lr 3e-5), so only the final
@@ -370,6 +374,91 @@ def test_sampler_returns_candidates_and_targets_only():
     assert not hasattr(sampler, "transition_neighbors")
 
 
+def test_head_tail_sampler_is_unbiased_for_cached_target_distortion():
+    """The exact head plus one Gumbel-max tail draw recovers the full row in mean."""
+    n_items = 8
+    pool_indices = torch.stack(
+        [
+            torch.tensor([(idx + offset) % n_items for offset in range(1, 5)])
+            for idx in range(n_items)
+        ]
+    )
+    row = torch.tensor([0.55, 0.25, 0.15, 0.05], dtype=torch.float32)
+    artifact = {
+        "pool_indices": pool_indices,
+        "pool_probs": row.view(1, 1, -1).repeat(1, n_items, 1),
+        "hard_neg_indices": torch.full((n_items, 1), -1, dtype=torch.long),
+        "metadata": {"diffusion_scales": (1,)},
+    }
+    sampler = HeatGeoCandidateSampler(
+        artifact=artifact,
+        diffusion_quota=2,
+        hard_neg_k=0,
+        random_neg_k=1,
+        deterministic_topm=1,
+        unbiased_geometry=True,
+        seed=17,
+    )
+    dataset = TextPairWithTeacherAndHeatGeo(
+        anchor_texts=[str(idx) for idx in range(n_items)],
+        teacher_cls=torch.zeros(n_items, 2),
+        sampler=sampler,
+    )
+    item = dataset[0]
+    assert item["geometry_head_probs"].shape == (1, 3)
+    assert item["geometry_tail_positions"].shape == (1,)
+    assert item["geometry_tail_mass"].shape == (1,)
+    distortion_by_node = np.asarray(
+        [0.0, 0.10, 0.35, 0.70, 0.95, 0.20, 0.40, 0.80], dtype=np.float64
+    )
+    full = float((row.numpy() * distortion_by_node[[1, 2, 3, 4]]).sum())
+    estimates = []
+    for epoch in range(4000):
+        sampler.set_epoch(epoch)
+        candidates, _, head_probs, tail_positions, tail_mass = (
+            sampler.sample_with_geometry(0)
+        )
+        estimate = float((head_probs[0] * distortion_by_node[candidates]).sum())
+        estimate += float(
+            tail_mass[0]
+            * distortion_by_node[candidates[int(tail_positions[0])]]
+        )
+        estimates.append(estimate)
+
+    assert np.mean(estimates) == pytest.approx(full, abs=0.01)
+    assert head_probs[0].sum() == pytest.approx(0.55)
+    assert tail_mass[0] == pytest.approx(0.45)
+
+
+def test_unbiased_geometry_loss_matches_the_head_tail_formula():
+    teacher_bank = torch.tensor(
+        [[1.0, 0.0], [1.0, 0.0], [0.0, 1.0], [-1.0, 0.0]]
+    )
+    criterion = HeatGeoDistillation(
+        teacher_embeddings=teacher_bank,
+        row_weight=0.0,
+        unbiased_geometry_weight=1.0,
+    )
+    similarity = torch.tensor([[0.2, 0.4, -0.2]], requires_grad=True)
+    head_probs = torch.tensor([[[0.6, 0.0, 0.0]]])
+    loss, metrics = criterion._compute_unbiased_geometry_loss(
+        similarity_own=similarity,
+        candidate_idx=torch.tensor([[1, 2, 3]]),
+        anchor_idx=torch.tensor([0]),
+        geometry_head_probs=head_probs,
+        geometry_tail_positions=torch.tensor([[1]]),
+        geometry_tail_mass=torch.tensor([[0.4]]),
+    )
+
+    # Teacher cosines are [1, 0, -1], hence distortions [0.16, 0.04, 0.16].
+    expected = 0.6 * 0.16 + 0.4 * 0.04
+    assert loss.item() == pytest.approx(expected)
+    assert metrics["geometry_head_loss"].item() == pytest.approx(0.6 * 0.16)
+    assert metrics["geometry_tail_loss"].item() == pytest.approx(0.4 * 0.04)
+    loss.backward()
+    assert similarity.grad is not None and torch.isfinite(similarity.grad).all()
+
+
 def test_sampler_mixture_row_matches_the_weighted_pool_and_feeds_the_spill():
     """The scale mixture is computed per anchor instead of being precomputed.
 
@@ -554,6 +643,7 @@ def test_row_selection_knobs_are_gone():
 
     assert config.row_weight == 1.0
     assert config.row_start_epoch == 1
+    assert config.unbiased_geometry_weight == 0.0
 
 
 def test_entropic_affinity_hits_the_requested_perplexity():
@@ -746,6 +836,7 @@ def test_heatgeo_train_step_updates_the_student(monkeypatch):
         transition_probs=probs,
         row_temps=torch.full((corpus,), 0.15),
         row_weight=1.0,
+        unbiased_geometry_weight=0.1,
     )
     distiller.criterion.use_row_loss = True
     distiller.optimizer = torch.optim.Adam(
@@ -780,6 +871,11 @@ def test_heatgeo_train_step_updates_the_student(monkeypatch):
         "candidate_idx": candidate_idx,
         "candidate_inverse": inverse,
         "teacher_probs": teacher_probs,
+        "geometry_head_probs": torch.nn.functional.pad(
+            torch.full((batch_size, 1, 1), 0.6), (0, n_candidates - 1)
+        ),
+        "geometry_tail_positions": torch.ones(batch_size, 1, dtype=torch.long),
+        "geometry_tail_mass": torch.full((batch_size, 1), 0.4),
         "candidate_chunks": [
             {
                 "input_ids": unique_idx.view(-1, 1),
@@ -796,6 +892,8 @@ def test_heatgeo_train_step_updates_the_student(monkeypatch):
     # L_row must actually be active, not silently zero.
     assert metrics["row_count"] > 0
     assert metrics["loss_row"] > 0
+    assert metrics["loss_geometry"] > 0
+    assert metrics["loss_geometry_weighted"] > 0
     assert not torch.equal(before, distiller.model_student.embedding.weight.detach())
 
 

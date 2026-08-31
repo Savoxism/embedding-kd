@@ -69,6 +69,7 @@ def parse_args():
     )
     parser.add_argument("--truncation_tolerance", type=float, default=None)
     parser.add_argument("--row_weight", type=float, default=None)
+    parser.add_argument("--unbiased_geometry_weight", type=float, default=None)
     parser.add_argument("--row_start_epoch", type=int, default=None)
     parser.add_argument("--direct_temp", type=float, default=None)
     parser.add_argument("--diffusion_quota", type=int, default=None)
@@ -191,6 +192,7 @@ def get_config(method: str, args):
         "graph_k",
         "truncation_tolerance",
         "row_weight",
+        "unbiased_geometry_weight",
         "row_start_epoch",
         "direct_temp",
         "diffusion_quota",

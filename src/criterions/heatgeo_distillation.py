@@ -270,6 +270,7 @@ class HeatGeoDistillation(nn.Module):
         transition_probs: torch.Tensor | None = None,
         row_weight: float = 0.5,
         row_temps: torch.Tensor | None = None,
+        unbiased_geometry_weight: float = 0.0,
         **kwargs,
     ):
         super().__init__()
@@ -300,6 +301,13 @@ class HeatGeoDistillation(nn.Module):
         if row_weight < 0.0:
             raise ValueError("row_weight must be non-negative")
         self.row_weight = float(row_weight)
+        if unbiased_geometry_weight < 0.0:
+            raise ValueError("unbiased_geometry_weight must be non-negative")
+        self.unbiased_geometry_weight = float(unbiased_geometry_weight)
+        if self.unbiased_geometry_weight > 0.0 and teacher_embeddings is None:
+            raise ValueError(
+                "the unbiased geometry loss needs cached teacher_embeddings"
+            )
         self.use_row_loss = False
         if transition_neighbors is not None and transition_probs is not None:
             self.register_buffer(
@@ -603,6 +611,129 @@ class HeatGeoDistillation(nn.Module):
         }
         return loss_row, metrics
 
+    def _compute_unbiased_geometry_loss(
+        self,
+        similarity_own: torch.Tensor,
+        candidate_idx: torch.Tensor | None,
+        anchor_idx: torch.Tensor | None,
+        geometry_head_probs: torch.Tensor | None,
+        geometry_tail_positions: torch.Tensor | None,
+        geometry_tail_mass: torch.Tensor | None,
+    ) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
+        """Estimate cached teacher-weighted cosine distortion without truncation bias.
+
+        For every anchor and diffusion scale, the sampler returns an exact stratum
+        ``H`` plus one categorical draw ``J`` from the remaining teacher mass. The
+        estimate is ``sum_{j in H} p_j ell_j + delta * ell_J``. Conditional on the
+        previously selected support, its expectation is the complete cached-row
+        distortion. The KL objectives remain unchanged; this is an auxiliary term.
+        """
+        zero = similarity_own.new_zeros((), dtype=torch.float32)
+        empty = {
+            "geometry_head_loss": zero,
+            "geometry_tail_loss": zero,
+            "geometry_tail_mass": zero,
+        }
+        if self.unbiased_geometry_weight == 0.0:
+            return zero, empty
+
+        supplied = (
+            candidate_idx,
+            anchor_idx,
+            geometry_head_probs,
+            geometry_tail_positions,
+            geometry_tail_mass,
+        )
+        if any(value is None for value in supplied):
+            raise ValueError(
+                "unbiased geometry loss needs candidate_idx, anchor_idx, "
+                "geometry_head_probs, geometry_tail_positions, and "
+                "geometry_tail_mass from HeatGeoCandidateSampler"
+            )
+        assert candidate_idx is not None
+        assert anchor_idx is not None
+        assert geometry_head_probs is not None
+        assert geometry_tail_positions is not None
+        assert geometry_tail_mass is not None
+        batch_size, candidate_size = similarity_own.shape
+        n_scales = geometry_head_probs.size(1)
+        expected_head_shape = (batch_size, n_scales, candidate_size)
+        if tuple(geometry_head_probs.shape) != expected_head_shape:
+            raise ValueError(
+                "geometry_head_probs must have shape "
+                f"{expected_head_shape}, got {tuple(geometry_head_probs.shape)}"
+            )
+        expected_tail_shape = (batch_size, n_scales)
+        if tuple(geometry_tail_positions.shape) != expected_tail_shape or tuple(
+            geometry_tail_mass.shape
+        ) != expected_tail_shape:
+            raise ValueError(
+                "geometry tail tensors must have shape "
+                f"{expected_tail_shape}, got positions="
+                f"{tuple(geometry_tail_positions.shape)}, mass="
+                f"{tuple(geometry_tail_mass.shape)}"
+            )
+
+        head_probs = geometry_head_probs.float().clamp_min(0.0)
+        tail_mass = geometry_tail_mass.float().clamp_min(0.0)
+        represented_mass = head_probs.sum(dim=-1) + tail_mass
+        if not torch.allclose(
+            represented_mass,
+            torch.ones_like(represented_mass),
+            atol=2e-5,
+            rtol=2e-5,
+        ):
+            raise ValueError(
+                "geometry head probabilities and tail mass must sum to one per row"
+            )
+        live_tail = tail_mass > 1e-12
+        invalid_tail = live_tail & (
+            (geometry_tail_positions < 0)
+            | (geometry_tail_positions >= candidate_size)
+        )
+        if bool(invalid_tail.any()):
+            raise ValueError("positive geometry tail mass needs a valid sampled position")
+
+        bank = self.teacher_bank
+        if bank is None:
+            raise ValueError("unbiased geometry loss needs cached teacher embeddings")
+        teacher_anchor = bank.index_select(0, anchor_idx).float()
+        teacher_candidates = bank.index_select(0, candidate_idx.reshape(-1)).float()
+        teacher_candidates = teacher_candidates.view(batch_size, candidate_size, -1)
+        teacher_similarity = torch.einsum(
+            "bd,bcd->bc", teacher_anchor, teacher_candidates
+        ).clamp(-1.0, 1.0)
+        pair_distortion = (
+            similarity_own.float().clamp(-1.0, 1.0) - teacher_similarity
+        ).square() / 4.0
+
+        head_per_scale = (head_probs * pair_distortion.unsqueeze(1)).sum(dim=-1)
+        safe_tail_positions = geometry_tail_positions.clamp(0, candidate_size - 1)
+        sampled_tail_distortion = pair_distortion.gather(
+            1, safe_tail_positions.reshape(batch_size, -1)
+        ).view_as(tail_mass)
+        tail_per_scale = torch.where(
+            live_tail,
+            tail_mass * sampled_tail_distortion,
+            torch.zeros_like(tail_mass),
+        )
+        weights = self._resolved(self.scale_weights, n_scales).float()
+        weights = weights / weights.sum().clamp_min(1e-12)
+        loss = (
+            (head_per_scale + tail_per_scale) * weights.view(1, -1)
+        ).sum(dim=-1).mean()
+        return loss, {
+            "geometry_head_loss": (
+                head_per_scale * weights.view(1, -1)
+            ).sum(dim=-1).mean(),
+            "geometry_tail_loss": (
+                tail_per_scale * weights.view(1, -1)
+            ).sum(dim=-1).mean(),
+            "geometry_tail_mass": (
+                tail_mass * weights.view(1, -1)
+            ).sum(dim=-1).mean(),
+        }
+
     def forward(
         self,
         anchor_embeddings: torch.Tensor,
@@ -610,17 +741,34 @@ class HeatGeoDistillation(nn.Module):
         teacher_probs: torch.Tensor,
         candidate_idx: torch.Tensor | None = None,
         anchor_idx: torch.Tensor | None = None,
+        geometry_head_probs: torch.Tensor | None = None,
+        geometry_tail_positions: torch.Tensor | None = None,
+        geometry_tail_mass: torch.Tensor | None = None,
     ) -> tuple[torch.Tensor, dict[str, float]]:
         named_tensors = [
             ("anchor_embeddings", anchor_embeddings),
             ("candidate_embeddings", candidate_embeddings),
             ("teacher_probs", teacher_probs),
         ]
+        for name, tensor in (
+            ("geometry_head_probs", geometry_head_probs),
+            ("geometry_tail_mass", geometry_tail_mass),
+        ):
+            if tensor is not None:
+                named_tensors.append((name, tensor))
         _assert_finite_tensors(named_tensors)
 
         batch_size = anchor_embeddings.size(0)
         candidate_size = teacher_probs.size(-1)
         n_scales = teacher_probs.size(1)
+        if (
+            geometry_head_probs is not None
+            and geometry_head_probs.size(1) != n_scales
+        ):
+            raise ValueError(
+                "geometry estimator and diffusion target must have the same "
+                f"number of scales; got {geometry_head_probs.size(1)} and {n_scales}"
+            )
 
         teacher_probs = teacher_probs.clamp_min(0.0)
         teacher_probs = teacher_probs / teacher_probs.sum(
@@ -635,6 +783,14 @@ class HeatGeoDistillation(nn.Module):
             candidate_embeddings, p=2, dim=-1, eps=self.eps_norm
         )
         similarity_own = torch.einsum("bd,bcd->bc", anchor_norm, candidate_norm_own)
+        loss_geometry, geometry_metrics = self._compute_unbiased_geometry_loss(
+            similarity_own=similarity_own,
+            candidate_idx=candidate_idx,
+            anchor_idx=anchor_idx,
+            geometry_head_probs=geometry_head_probs,
+            geometry_tail_positions=geometry_tail_positions,
+            geometry_tail_mass=geometry_tail_mass,
+        )
         candidate_embeddings = candidate_embeddings.reshape(
             batch_size * candidate_size, -1
         )
@@ -792,7 +948,11 @@ class HeatGeoDistillation(nn.Module):
                     "term disabled."
                 )
 
-        total_loss = loss_rel + self.row_weight * loss_row
+        total_loss = (
+            loss_rel
+            + self.row_weight * loss_row
+            + self.unbiased_geometry_weight * loss_geometry
+        )
         _assert_finite_tensors(
             (
                 ("loss_rel", loss_rel),
@@ -800,6 +960,7 @@ class HeatGeoDistillation(nn.Module):
                 ("loss_nbr", loss_nbr),
                 ("loss_diff", loss_diff),
                 ("loss_row", loss_row),
+                ("loss_geometry", loss_geometry),
                 ("total_loss", total_loss),
             )
         )
@@ -820,6 +981,23 @@ class HeatGeoDistillation(nn.Module):
             self_mask=self_mask,
             diffusion_mask=diffusion_mask,
             temps=temps,
+        )
+        geometry_entries = [
+            ("loss_geometry", loss_geometry),
+            (
+                "loss_geometry_weighted",
+                self.unbiased_geometry_weight * loss_geometry,
+            ),
+            *geometry_metrics.items(),
+        ]
+        geometry_values = torch.stack(
+            [value.detach().float() for _, value in geometry_entries]
+        ).cpu().tolist()
+        metrics.update(
+            {
+                name: float(value)
+                for (name, _), value in zip(geometry_entries, geometry_values)
+            }
         )
         return total_loss, metrics
 

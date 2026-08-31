@@ -39,6 +39,14 @@ class HeatGeoConfig(BaseConfig):
     # tuned.
     direct_temp = 0.10  # shared by both sides of the direct scale
 
+    # Optional head--tail estimator of teacher-weighted cosine distortion. The
+    # deterministic stratum is evaluated exactly and one teacher-proportional tail
+    # draw supplies an unbiased estimate of the remaining cached-target mass. It is
+    # additive to the KL stack, not a replacement, so multi-scale distribution
+    # matching and ambient calibration remain intact. Off until its coefficient is
+    # selected by the matched-budget ablation.
+    unbiased_geometry_weight = 0.0
+
     # ---- Teacher Graph -------------------------------------------------------
     graph_k = 200
     # Bandwidth selection. Each transition row is solved for its own temperature so
@@ -169,8 +177,9 @@ class HeatGeoConfig(BaseConfig):
     # kd_teacher_layers = [12, 24, 36, 36]
     # kd_student_layers = [4, 8, 12, 12]
 
-    # ---- Removed: auxiliary objectives ---------------------------------------
-    # The objective is L_rel + row_weight * L_row inside the HeatGeo criterion.
+    # ---- Removed: earlier auxiliary objectives -------------------------------
+    # The active objective is L_rel + row_weight * L_row +
+    # unbiased_geometry_weight * E_hat inside the HeatGeo criterion.
     # lambda_heatgeo,
     # lambda_cosine, lambda_infonce,
     # lambda_simcse, simcse_temp, simcse_start_epoch and lambda_sim used to sit
@@ -194,6 +203,8 @@ class HeatGeoConfig(BaseConfig):
             setattr(self, k, v)
         if self.row_weight < 0:
             raise ValueError("row_weight must be non-negative")
+        if self.unbiased_geometry_weight < 0:
+            raise ValueError("unbiased_geometry_weight must be non-negative")
         if self.row_start_epoch < 1:
             raise ValueError("row_start_epoch must be at least 1")
         if self.diffusion_quota is not None and self.diffusion_quota < 0:
