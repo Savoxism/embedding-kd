@@ -212,6 +212,52 @@ def test_canonical_policy_preserves_the_previous_resolved_values():
     )
 
 
+def test_heatgeo_relational_loss_reports_semantic_decomposition():
+    """Renaming the scale groups must not change the optimized objective."""
+    torch.manual_seed(7)
+    teacher_bank = F.normalize(torch.randn(6, 4), dim=-1)
+    anchor_embeddings = F.normalize(torch.randn(2, 4), dim=-1)
+    candidate_embeddings = F.normalize(torch.randn(2, 3, 4), dim=-1)
+    candidate_idx = torch.tensor([[1, 2, 3], [0, 4, 5]], dtype=torch.long)
+    anchor_idx = torch.tensor([0, 1], dtype=torch.long)
+    teacher_probs = torch.rand(2, 3, 3)
+
+    criterion = HeatGeoDistillation(
+        student_dim=4,
+        teacher_dim=4,
+        diffusion_scales=(1, 2, 4),
+        teacher_embeddings=teacher_bank,
+    )
+    loss, metrics = criterion(
+        anchor_embeddings=anchor_embeddings,
+        candidate_embeddings=candidate_embeddings,
+        teacher_probs=teacher_probs,
+        candidate_idx=candidate_idx,
+        anchor_idx=anchor_idx,
+    )
+
+    # Raw semantic terms: ambient r=0, neighbor r=1, and the normalized
+    # multi-hop group (2/3 at r=2 and 1/3 at r=4).
+    assert metrics["loss_amb"] == pytest.approx(metrics["kl_amb"], rel=1e-6)
+    assert metrics["loss_nbr"] == pytest.approx(metrics["kl_nbr"], rel=1e-6)
+    expected_diff = (
+        (2.0 / 3.0) * metrics["kl_diff_r2"]
+        + (1.0 / 3.0) * metrics["kl_diff_r4"]
+    )
+    assert metrics["loss_diff"] == pytest.approx(expected_diff, rel=1e-6)
+
+    # The original raw weights [1, 1, 1/2, 1/4] normalize to the grouped
+    # coefficients [4/11, 4/11, 3/11].
+    expected_rel = (
+        (4.0 / 11.0) * metrics["loss_amb"]
+        + (4.0 / 11.0) * metrics["loss_nbr"]
+        + (3.0 / 11.0) * metrics["loss_diff"]
+    )
+    assert metrics["loss_rel"] == pytest.approx(expected_rel, rel=1e-6)
+    assert loss.item() == pytest.approx(metrics["loss_rel"], rel=1e-6)
+    assert metrics["loss_total"] == pytest.approx(metrics["loss_rel"], rel=1e-6)
+
+
 def test_heatgeo_tied_temperature_makes_teacher_row_attainable():
     """With tau_1 = graph_temp, a student that reproduces the teacher's cosines
     reaches loss 0 exactly -- the attainability statement behind the tie."""

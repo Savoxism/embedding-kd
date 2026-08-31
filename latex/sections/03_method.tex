@@ -49,7 +49,7 @@ The one-step row represents direct teacher neighbors; larger $r$ summarizes corp
 
 Full-corpus scoring would defeat compact training. For each anchor and scale, RIPPLE retains the highest-mass relations, samples the remaining target quota in proportion to teacher mass, and adds hard and uniform negatives. Candidate sets are then pooled and deduplicated across the anchor batch, so each candidate text is encoded once while retaining anchor-specific targets.
 
-The selected-support loss matches teacher and student distributions within each anchor's candidates. Because this restricted comparison cannot reveal alternatives outside a high-mass support, RIPPLE also forms an ambient comparison from pooled hard and random negatives. Let $\mathcal R_0=\{0\}\cup\mathcal R$, where scale $0$ denotes this ambient comparison, and let $\Omega_{i,r}$ denote the corresponding candidate domain. The relational objective is
+The selected-support loss matches teacher and student distributions within each anchor's candidates. Because this restricted comparison cannot reveal alternatives outside a high-mass support, RIPPLE also forms an ambient comparison over the full shared candidate pool, including pooled hard and random negatives. Let $\mathcal R_0=\{0\}\cup\mathcal R$, where scale $0$ denotes this ambient comparison, and let $\Omega_{i,r}$ denote the corresponding candidate domain. The relational objective is
 \begin{equation}
 \mathcal L_{\mathrm{rel}}
 =\frac1{|B|}\sum_{i\in B}\sum_{r\in\mathcal R_0}
@@ -57,6 +57,12 @@ The selected-support loss matches teacher and student distributions within each 
 \left(g^T_{i,r}|_{\Omega_{i,r}}\|g^S_{i,r}|_{\Omega_{i,r}}\right).
 \label{eq:relational-loss}
 \end{equation}
+All scale weights follow one fixed rule,
+$\omega_r\propto 1/\max(1,r)$, normalized once over $\mathcal R_0$; they are
+not separately tuned. For the canonical scales $\{0,1,2,4\}$, $r=0$ is the
+ambient profile, $r=1$ matches direct teacher neighbors, and $r>1$ transfers
+multi-hop diffusion. These names describe the diagnostics, not separate
+auxiliary losses.
 The analysis reports retained teacher mass and student off-support mass alongside full-corpus divergence, rather than treating restricted KL as evidence of global matching by itself.
 
 \paragraph{Finite-epoch geometry approximation.}

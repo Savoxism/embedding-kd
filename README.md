@@ -70,13 +70,13 @@ Each diffusion scale uses its own temperature $\tau_r$ to avoid the single-tempe
 
 ### 6. Loss Function
 
-The ambient and diffusion scales form one derived-weight relational objective, augmented by transition-row supervision:
+All relational scales form one objective, augmented by transition-row supervision:
 
 $$\mathcal{L} = \mathcal{L}_{\text{rel}} + \lambda_{\text{row}} \cdot \mathcal{L}_{\text{row}}$$
 
 where:
 
-- $\mathcal{L}_{\text{rel}} = \sum_{r\in\{0,1,2,4\}} \omega_r \, \text{KL}(q_{i,r} \| p_{i,r}^S)$, with $\omega_r=1/r$ for diffusion and $\omega_0=\omega_1$; scale 0 is the ambient teacher-similarity profile.
+- $\mathcal{L}_{\text{rel}} = \sum_{r\in\{0,1,2,4\}}\omega_r\,\mathrm{KL}(q_{i,r}\|p^S_{i,r})$, with the single fixed rule $\omega_r\propto1/\max(1,r)$, normalized over the scales. Here $r=0$ is ambient, $r=1$ is direct-neighbor matching, and $r>1$ is multi-hop diffusion; these are diagnostic names rather than separately weighted auxiliary losses.
 - $\mathcal{L}_{\text{row}}$ uses non-backtracking teacher walks to select non-anchor nodes, then matches each selected node's available teacher transition row with a dense KL. The walk chooses rows; it is not a trajectory likelihood.
 
 ### 7. Per-Epoch Candidate Sampling

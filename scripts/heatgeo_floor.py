@@ -1,4 +1,4 @@
-"""Report the irreducible floor of L_diff directly from a HeatGeo artifact.
+"""Report the graph-scale contribution to the floor of L_rel from an artifact.
 
 Because cross-entropy is linear in the target, a weighted sum of forward KLs that
 all share one student distribution satisfies
@@ -9,11 +9,12 @@ so its minimum over every possible q is
 
     JS_w(p_1..p_R) = H(pbar) - sum_r w_r H(p_r)  >= 0.
 
-That number is fixed by the graph, not by training. If the observed loss_diff sits
-near it, the objective is exhausted and no amount of extra optimization will move
-it -- which is a different diagnosis, and a different fix, from "optimization
-stalled". Distinct per-scale temperatures break the identity, and then JS_w is a
-lower bound plus a measure of how much the scales actually disagree.
+The artifact contains the neighbor scale r=1 and multi-hop diffusion scales r>1;
+the ambient r=0 profile is built online from the teacher bank. The reported floor
+therefore covers the graph-scale portion of L_rel and is multiplied by that group's
+weight in the full objective. If an observed loss_rel sits near this lower bound,
+the objective is close to exhausted. Distinct per-scale temperatures break the
+identity, and then JS_w is a diagnostic bound rather than the exact minimum.
 
 Usage:
     python scripts/heatgeo_floor.py cache/heatgeo/qwen3_4b_bert_base_graph.pt
@@ -29,7 +30,7 @@ import torch
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from src.heatgeo.policy import normalized_diffusion_weights
+from src.heatgeo.policy import diffusion_weights
 
 
 def _entropy(probs: np.ndarray) -> np.ndarray:
@@ -52,7 +53,7 @@ def main() -> int:
         "--observed-loss",
         type=float,
         default=None,
-        help="a loss_diff value from training, to compare against the floor",
+        help="a loss_rel value from training, to compare against the floor",
     )
     args = parser.parse_args()
 
@@ -74,7 +75,12 @@ def main() -> int:
             f"artifact scale metadata {scales} does not match pool_probs axis {n_scales}"
         )
         return 1
-    weights = normalized_diffusion_weights(scales)
+    raw_weights = np.asarray(diffusion_weights(scales), dtype=np.float64)
+    # The ambient raw weight equals the r=1 raw weight. Normalize graph scales
+    # internally to form their mixture, then multiply their JS divergence by the
+    # graph group's actual weight in the full relational objective.
+    weights = raw_weights / raw_weights.sum()
+    graph_group_weight = raw_weights.sum() / (raw_weights[0] + raw_weights.sum())
 
     valid = pool_indices >= 0
     probs = np.where(valid[None, :, :], probs, 0.0)
@@ -84,15 +90,18 @@ def main() -> int:
     print(f"artifact          : {args.artifact}")
     print(f"n_items           : {n_items}")
     print(f"scales            : {scales}")
-    print(f"scale weights     : {np.round(weights, 4).tolist()}")
+    print(f"graph mix weights : {np.round(weights, 4).tolist()}")
+    print(f"graph weight L_rel: {graph_group_weight:.4f}")
     print(f"teacher print     : {metadata.get('teacher_fingerprint', 'n/a')[:16]}")
     print()
 
     per_scale_entropy = np.stack([_entropy(probs[r]) for r in range(n_scales)])
     mixture = (probs * weights.reshape(-1, 1, 1)).sum(axis=0)
     mixture_entropy = _entropy(mixture)
-    js = np.clip(
-        mixture_entropy - (per_scale_entropy * weights.reshape(-1, 1)).sum(0), 0, None
+    js = graph_group_weight * np.clip(
+        mixture_entropy - (per_scale_entropy * weights.reshape(-1, 1)).sum(0),
+        0,
+        None,
     )
 
     print("Per-scale targets")
@@ -117,8 +126,8 @@ def main() -> int:
         print(f"  KL(p_r{left} || p_r{right}) = {cross.mean():.4f} nats")
     print()
 
-    print("Irreducible floor of L_diff with a TIED student temperature")
-    _percentiles(js, "JS_w(p_1..p_R)")
+    print("Graph-scale contribution to the L_rel floor (tied temperature)")
+    _percentiles(js, "W_graph * JS_w(p_1..p_R)")
     print(f"  mixture entropy: mean={mixture_entropy.mean():.4f} nats")
     print(f"  mixture top1   : mean={mixture.max(axis=-1).mean():.4f}")
     print()
@@ -127,7 +136,7 @@ def main() -> int:
     if args.observed_loss is not None:
         excess = args.observed_loss - floor
         share = 100.0 * floor / max(args.observed_loss, 1e-12)
-        print(f"observed loss_diff = {args.observed_loss:.4f}")
+        print(f"observed loss_rel  = {args.observed_loss:.4f}")
         print(f"floor              = {floor:.4f}  ({share:.1f}% of the observed value)")
         print(f"excess KL(pbar||q) = {excess:.4f}")
         if excess < 0.05:

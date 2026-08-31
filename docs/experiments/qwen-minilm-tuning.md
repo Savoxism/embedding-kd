@@ -9,8 +9,8 @@ walk và `row_start_epoch=2` (đánh số epoch từ 1).
 | $L_{rel}$ | 0.00 | 0 | 4 | 67.76 | 76.82 | 73.80 |
 | $L_{rel} + 0.1L_{row}$ | 0.10 | 4 | 4 | — | — | — |
 | $L_{rel} + 0.3L_{row}$ | 0.30 | 4 | 4 | — | — | — |
-| $L_{rel} + 0.5L_{row}$ | 0.50 | 4 | 4 | — | — | — |
-| $L_{rel} + 1.0L_{row}$ | 1.00 | 4 | 4 | — | — | — |
+| $L_{rel} + 0.5L_{row}$ | 0.50 | 4 | 4 | 68.00 | 77.94 | 74.63 |
+| $L_{rel} + 1.0L_{row}$ | 1.00 | 4 | 4 | 68.13 | 78.25 | 74.88 |
 
 Các giá trị `Avg-In`, `Avg-Out` và `Avg` được ghi theo thang `[0, 100]`, làm
 tròn đến hai chữ số sau dấu thập phân.

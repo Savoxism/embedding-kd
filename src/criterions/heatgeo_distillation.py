@@ -72,7 +72,7 @@ class HeatGeoDistillation(nn.Module):
     factor of the batch size, and the shared columns couple anchors, which is what
     makes similarity levels comparable across the batch.
 
-    **The direct scale, and why it is not optional.** The diffusion targets are the
+    **The ambient scale, and why it is not optional.** The diffusion targets are the
     graph's mass renormalized over the scored columns, so every column outside the
     anchor's diffusion pool receives target *exactly zero*. That is not a neutral
     "no information" value: the gradient of the cross-entropy at such a column is
@@ -91,7 +91,7 @@ class HeatGeoDistillation(nn.Module):
 
     which is dense: every scored column gets its true teacher mass instead of a
     false zero. It costs nothing (the teacher embeddings are already cached), and it
-    supplies the absolute calibration the objective needs.
+    anchors the selected relations against the broader shared candidate pool.
 
     **Separate column domains, and why adding r=0 was not enough on its own.**
     Adding r=0 alongside diffusion scales that still softmax over the whole shared
@@ -114,8 +114,8 @@ class HeatGeoDistillation(nn.Module):
     lambda_anchor * (1 - cos(W_a s_i, t_i)) with a free linear map W_a. That term is
     invariant to any invertible transform of the student space -- W_a simply absorbs
     it -- so it cannot pin absolute similarity levels no matter how it is weighted,
-    which is the one thing it was introduced to do. The direct scale supplies that
-    calibration properly, by comparing the teacher's *relative* similarities over a
+    which is the one thing it was introduced to do. The ambient scale supplies that
+    comparison properly, by comparing the teacher's *relative* similarities over a
     shared column set rather than comparing cosines across two different metrics. The
     term has been removed rather than left at weight 0: it also made the criterion
     carry trainable parameters, and a knob that cannot work is worse than no knob.
@@ -139,7 +139,7 @@ class HeatGeoDistillation(nn.Module):
       transition row, a softmax of teacher cosines at graph_temp. Matching it at
       the same temperature makes zero loss attainable exactly on the shift family
       cos_S = cos_T + a_i; any other temperature forces the affine family
-      cos_S = (tau_1/graph_temp) cos_T + a_i, which contradicts the direct scale
+      cos_S = (tau_1/graph_temp) cos_T + a_i, which contradicts the ambient scale
       on the same row (it pins unrescaled gaps), so the joint zero set is empty
       unless the teacher cosines are constant.
 
@@ -189,7 +189,7 @@ class HeatGeoDistillation(nn.Module):
         "geo_weight": "L_geo has been removed",
         "sym_weight": "L_sym has been removed",
         "direct_student_temp": (
-            "tied to direct_temp: the direct scale uses one temperature on both "
+            "tied to direct_temp: the ambient scale uses one temperature on both "
             "the teacher and the student side (Hinton et al., 2015)"
         ),
         "broad_scale_temps": (
@@ -265,7 +265,7 @@ class HeatGeoDistillation(nn.Module):
                 teacher_embeddings.float(), p=2, dim=-1, eps=self.eps_norm
             ).half()
             self.register_buffer("teacher_bank", normalized, persistent=False)
-            # One temperature for both sides of the direct scale (same-temperature
+            # One temperature for both sides of the ambient scale (same-temperature
             # distillation, Hinton et al. 2015): the student softmax at scale 0 in
             # forward() reuses this exact value.
             self.direct_temp = float(direct_temp)
@@ -601,7 +601,7 @@ class HeatGeoDistillation(nn.Module):
         # renormalized over *this anchor's* draw, so outside that draw their zeros are
         # an artefact of who else happened to be in the batch, not a teacher judgement.
         # Softmaxing them over the whole shared pool turns those artefacts into a
-        # gradient that pushes ~900 of ~965 cosines down, and the direct scale then
+        # gradient that pushes ~900 of ~965 cosines down, and the ambient scale then
         # spends its weight pulling the same columns back up. Measured on the 13.5k
         # run, the two halves disagreed by 0.42 nats -- 61% of the maximum possible --
         # and that disagreement was 94% of the irreducible loss floor, which is why
@@ -609,8 +609,8 @@ class HeatGeoDistillation(nn.Module):
         #
         # Restricting the diffusion softmax to the anchor's own columns makes the
         # gradient on every other column exactly zero, so the diffusion scales rank
-        # within the neighbourhood and the direct scale owns absolute calibration
-        # across the full pool. Complementary instead of opposed.
+        # within the neighbourhood and the ambient scale compares against the full
+        # shared pool. Complementary instead of opposed.
         diffusion_mask = self_mask | ~own_mask
 
         # The sharpest diffusion scale is the one whose target IS the anchor's
@@ -645,7 +645,29 @@ class HeatGeoDistillation(nn.Module):
             )
             kl_per_scale.append(contribution.sum(dim=-1))
         kl_per_scale = torch.stack(kl_per_scale, dim=1)
-        loss_diff = (kl_per_scale * weights.view(1, -1)).sum(dim=-1).mean()
+        # Semantic decomposition of the relational stack. Scale r=0 is the
+        # ambient teacher-similarity profile, r=1 is the direct transition row,
+        # and r>1 are the genuinely multi-hop diffusion targets. The grouped
+        # diagnostics are normalized within their own groups; ``loss_rel`` keeps
+        # the original all-scale weighting exactly, so this split does not alter
+        # the optimized objective.
+        loss_rel = (kl_per_scale * weights.view(1, -1)).sum(dim=-1).mean()
+        zero = loss_rel.new_zeros(())
+        loss_amb = kl_per_scale[:, 0].mean() if offset else zero
+
+        graph_kl = kl_per_scale[:, offset:]
+        loss_nbr = graph_kl[:, 0].mean() if graph_kl.size(1) else zero
+        multi_hop_kl = graph_kl[:, 1:]
+        multi_hop_weights = weights[offset + 1 :]
+        if multi_hop_kl.size(1):
+            normalized_multi_hop_weights = multi_hop_weights / (
+                multi_hop_weights.sum().clamp_min(1e-12)
+            )
+            loss_diff = (
+                multi_hop_kl * normalized_multi_hop_weights.view(1, -1)
+            ).sum(dim=-1).mean()
+        else:
+            loss_diff = zero
 
         loss_row = anchor_embeddings.new_zeros(())
         row_metrics: dict[str, torch.Tensor] = {}
@@ -663,9 +685,12 @@ class HeatGeoDistillation(nn.Module):
                     "term disabled."
                 )
 
-        total_loss = loss_diff + self.row_weight * loss_row
+        total_loss = loss_rel + self.row_weight * loss_row
         _assert_finite_tensors(
             (
+                ("loss_rel", loss_rel),
+                ("loss_amb", loss_amb),
+                ("loss_nbr", loss_nbr),
                 ("loss_diff", loss_diff),
                 ("loss_row", loss_row),
                 ("total_loss", total_loss),
@@ -674,6 +699,9 @@ class HeatGeoDistillation(nn.Module):
 
         metrics = self._diagnostics(
             total_loss=total_loss,
+            loss_rel=loss_rel,
+            loss_amb=loss_amb,
+            loss_nbr=loss_nbr,
             loss_diff=loss_diff,
             loss_row=loss_row,
             row_metrics=row_metrics,
@@ -692,6 +720,9 @@ class HeatGeoDistillation(nn.Module):
     def _diagnostics(
         self,
         total_loss: torch.Tensor,
+        loss_rel: torch.Tensor,
+        loss_amb: torch.Tensor,
+        loss_nbr: torch.Tensor,
         loss_diff: torch.Tensor,
         loss_row: torch.Tensor,
         row_metrics: dict[str, torch.Tensor],
@@ -710,12 +741,12 @@ class HeatGeoDistillation(nn.Module):
         floor", which is why the Jensen-Shannon term and the excess above it are
         logged next to the raw loss.
 
-        Unsuffixed metrics describe the *sharpest diffusion* scale, over the anchor's
+        Unsuffixed metrics describe the *neighbor* scale, over the anchor's
         own candidate columns. An earlier version indexed scale 0, which stopped being
-        that scale the moment the direct target was prepended to the stack: the curves
-        kept their names and silently started reporting the direct scale at a
-        different temperature over a 15x larger column set. The direct scale now
-        reports under its own `*_direct` names.
+        that scale the moment the ambient target was prepended to the stack: the curves
+        kept their names and silently started reporting the ambient scale at a
+        different temperature over a 15x larger column set. The ambient scale now
+        reports under its own `*_amb` names.
         """
         offset = 1 if getattr(self, "direct_active", False) else 0
         k = min(self.diag_topk, target.size(-1))
@@ -742,23 +773,24 @@ class HeatGeoDistillation(nn.Module):
                 n_columns.mean(),
             )
 
-        # Irreducible floor of the *diffusion group*: sum_r w_r KL(p_r||q) >= W *
-        # JS_v(p_r), with W the group's total weight and v_r = w_r/W. The direct scale
+        # Irreducible floor of the graph-scale group (neighbor plus diffusion):
+        # sum_r w_r KL(p_r||q) >= W * JS_v(p_r), with W the group's total weight
+        # and v_r = w_r/W. The ambient scale
         # is excluded: it no longer shares a column domain with the diffusion scales,
         # so a single q cannot be substituted into both, and on its own its floor is
         # zero. Folding it in was what made js_floor read 0.45 nats while the diffusion
         # scales genuinely disagreed by 0.05 -- the gap was the two halves of the
         # objective fighting, reported as if it were a property of the targets.
-        diff_target = target[:, offset:, :]
-        diff_weights = weights[offset:].view(1, -1)
+        graph_target = target[:, offset:, :]
+        graph_weights = weights[offset:].view(1, -1)
         # Scales with no mass on this anchor's draw contribute KL 0 and must not dilute
         # the mixture either; their weight is dropped for that anchor only.
-        has_mass = diff_target.sum(dim=-1) > 0
-        w_eff = diff_weights * has_mass.to(diff_weights.dtype)
+        has_mass = graph_target.sum(dim=-1) > 0
+        w_eff = graph_weights * has_mass.to(graph_weights.dtype)
         w_total = w_eff.sum(dim=-1, keepdim=True)
         w_norm = w_eff / w_total.clamp_min(1e-12)
 
-        mixture = (diff_target * w_norm.unsqueeze(-1)).sum(dim=1)
+        mixture = (graph_target * w_norm.unsqueeze(-1)).sum(dim=1)
         log_mixture = torch.where(
             mixture > 0, mixture.clamp_min(1e-12).log(), torch.zeros_like(mixture)
         )
@@ -768,13 +800,16 @@ class HeatGeoDistillation(nn.Module):
             0.0
         )
 
-        # Full-stack weighted entropy: loss_diff = CE - H holds over every scale that
-        # is actually in the loss, direct included.
+        # Full-stack weighted entropy: loss_rel = CE - H holds over every scale that
+        # is actually in the loss, ambient included.
         weighted_entropy = (target_entropy * weights.view(1, -1)).sum(dim=-1)
         row_zero = loss_row.new_zeros(())
 
         scalars = [
             total_loss.detach(),
+            loss_rel.detach(),
+            loss_amb.detach(),
+            loss_nbr.detach(),
             loss_diff.detach(),
             loss_row.detach(),
             (self.row_weight * loss_row).detach(),
@@ -784,8 +819,8 @@ class HeatGeoDistillation(nn.Module):
             row_metrics.get("row_valid_ratio", row_zero).detach(),
             row_metrics.get("row_node_hit_ratio", row_zero).detach(),
             js_floor.mean(),
-            (loss_diff - js_floor.mean()).detach(),
-            (loss_diff + weighted_entropy.mean()).detach(),
+            (loss_rel - js_floor.mean()).detach(),
+            (loss_rel + weighted_entropy.mean()).detach(),
             weighted_entropy.mean(),
             # `target_entropy` above is the whole weighted stack, because that is what
             # loss_cross_entropy needs. It is therefore the one metric here that is not
@@ -799,6 +834,9 @@ class HeatGeoDistillation(nn.Module):
         ]
         names = [
             "loss_total",
+            "loss_rel",
+            "loss_amb",
+            "loss_nbr",
             "loss_diff",
             "loss_row",
             "loss_row_weighted",
@@ -826,13 +864,13 @@ class HeatGeoDistillation(nn.Module):
             )
             names.extend(
                 [
-                    "teacher_entropy_direct",
-                    "student_entropy_direct",
-                    "student_entropy_ratio_direct",
-                    "student_top1_direct",
-                    "target_top1_direct",
-                    f"student_mass_on_teacher_top{k}_direct",
-                    "pool_columns_direct",
+                    "teacher_entropy_amb",
+                    "student_entropy_amb",
+                    "student_entropy_ratio_amb",
+                    "student_top1_amb",
+                    "target_top1_amb",
+                    f"student_mass_on_teacher_top{k}_amb",
+                    "pool_columns_amb",
                 ]
             )
 
@@ -845,13 +883,19 @@ class HeatGeoDistillation(nn.Module):
 
         per_scale_values = values[len(names) :]
         if offset:
-            metrics["kl_direct"] = per_scale_values[0]
+            metrics["kl_amb"] = per_scale_values[0]
         for scale_idx, value in enumerate(per_scale_values[offset:]):
-            metrics[f"kl_scale{scale_idx}"] = value
-        # js_floor bounds the diffusion group only, and only under a tied student
-        # temperature. With distinct tau_r the true minimum is lower, so loss_excess
-        # is an upper bound on what is left to learn -- it reaching 0 means the
-        # objective is spent, but it can also go negative.
+            scale = (
+                self.diffusion_scales[scale_idx]
+                if scale_idx < len(self.diffusion_scales)
+                else scale_idx + 1
+            )
+            key = "kl_nbr" if scale == 1 else f"kl_diff_r{scale}"
+            metrics[key] = value
+        # js_floor bounds the graph-scale group (neighbor plus diffusion), and only
+        # under a tied student temperature. With distinct tau_r the true minimum is
+        # lower, so loss_excess is an upper bound on what is left to learn -- it
+        # reaching 0 means the objective is spent, but it can also go negative.
         metrics["excess_is_exact"] = float(
             bool(
                 self.row_temps is None

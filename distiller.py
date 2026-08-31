@@ -1769,7 +1769,7 @@ class KnowledgeDistiller:
                 )
 
             concise_metrics = (
-                ("rel", "loss_diff", True),
+                ("rel", "loss_rel", True),
                 (
                     "row",
                     "loss_row_weighted",
@@ -1809,13 +1809,16 @@ class KnowledgeDistiller:
         # have nothing to do with training. Print the example-weighted epoch means.
         if epoch_means:
             headline = [
-                "loss_diff", "loss_row_weighted", "row_count", "row_valid_ratio",
-                "row_node_hit_ratio", "js_floor", "loss_excess", "target_entropy",
-                "student_entropy", "student_entropy_ratio", "student_top1",
-                "target_top1", "candidates_per_anchor",
+                "loss_rel", "loss_amb", "loss_nbr", "loss_diff",
+                "loss_row_weighted", "row_count", "row_valid_ratio",
+                "row_node_hit_ratio", "js_floor", "loss_excess",
+                "target_entropy", "student_entropy", "student_entropy_ratio",
+                "student_top1", "target_top1", "candidates_per_anchor",
             ]
             shown = [k for k in headline if k in epoch_means]
-            shown += sorted(k for k in epoch_means if k.startswith("kl_scale"))
+            semantic_kls = ("kl_amb", "kl_nbr")
+            shown += [k for k in semantic_kls if k in epoch_means]
+            shown += sorted(k for k in epoch_means if k.startswith("kl_diff_r"))
             body = "  ".join(f"{k}={epoch_means[k]:.4f}" for k in shown)
             print(f"[Epoch {epoch + 1}] mean over {n_items} examples: {body}")
 
