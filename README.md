@@ -70,15 +70,14 @@ Each diffusion scale uses its own temperature $\tau_r$ to avoid the single-tempe
 
 ### 6. Loss Function
 
-The total loss combines three components:
+The ambient and diffusion scales form one derived-weight relational objective:
 
-$$\mathcal{L} = \mathcal{L}_{\text{diff}} + \lambda_{\text{direct}} \cdot \mathcal{L}_{\text{direct}} + \lambda_{\text{walk}} \cdot \mathcal{L}_{\text{walk}}$$
+$$\mathcal{L} = \mathcal{L}_{\text{rel}} + \lambda_{\text{walk}} \cdot \mathcal{L}_{\text{walk}}$$
 
 where:
 
-- $\mathcal{L}_{\text{diff}} = \sum_r \omega_r \, \text{KL}(q_{i,r} \| p_{i,r}^S)$ -- multi-scale diffusion matching over the anchor's candidate set
-- $\mathcal{L}_{\text{direct}}$ -- direct teacher similarity matching over the full in-batch shared pool (provides absolute calibration)
-- $\mathcal{L}_{\text{walk}}$ -- random walk trajectory NLL that scores how well the student follows step-by-step paths sampled from the teacher's transition matrix (see `WALK_DISTILLATION_GUIDE.md`)
+- $\mathcal{L}_{\text{rel}} = \sum_{r\in\{0,1,2,4\}} \omega_r \, \text{KL}(q_{i,r} \| p_{i,r}^S)$, with $\omega_r=1/r$ for diffusion and $\omega_0=\omega_1$; scale 0 is the ambient teacher-similarity profile.
+- $\mathcal{L}_{\text{walk}}$ matches the full one-step teacher kernel at walk-selected rows; the path selects rows but is not itself a trajectory target.
 
 ### 7. Per-Epoch Candidate Sampling
 
@@ -92,15 +91,21 @@ In-batch sharing deduplicates candidates and exposes each anchor to the full uni
 
 ## Configuration
 
-All hyperparameters are in `config/heatgeo_config.py`. Key groups:
+Only genuine experiment controls live in `config/heatgeo_config.py`. Derived
+weights, capacities, and correctness policies are resolved internally:
 
 | Group | Parameters | Description |
 |:---|:---|:---|
 | Teacher Graph | `graph_k`, `perplexity`, `diffusion_scales`, `truncation_tolerance` | kNN construction, adaptive row bandwidths, and diffusion |
-| Candidate Sampling | `candidate_size`, `diffusion_quota`, `hard_neg_k`, `random_neg_k` | Per-anchor candidate composition |
+| Candidate Sampling | `diffusion_quota`, `hard_neg_k`, `random_neg_k` | Per-anchor composition; total size is their sum |
 | Walk Distillation | `num_walks`, `walk_length`, `walk_weight`, `walk_start_epoch` | Walk-selected row matching; each row reuses its stored bandwidth |
 | Training | `batch_size`, `epochs`, `learning_rate`, `min_lr` | Standard training setup |
-| Objectives | `temp_exponent`, `walk_weight`, `lambda_simcse`, `lambda_sim` | Temperature-law exponent and loss weights |
+| Ambient profile | `direct_temp` | Shared teacher/student temperature for scale 0 |
+
+RIPPLE always uses in-batch sharing, per-epoch stochastic resampling, corpus
+deduplication, and non-backtracking walks. Scale weights are `1/r`, the ambient
+weight equals the `r=1` weight, hard-negative storage equals `graph_k`, and the
+fixed-bandwidth baseline uses temperature `0.05`; none is a tunable method knob.
 
 ## Training
 

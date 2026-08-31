@@ -1,19 +1,7 @@
-from collections.abc import Sequence
-
 import numpy as np
 import torch
 
-
-def _normalized_weights(scale_weights: Sequence[float], n_scales: int) -> np.ndarray:
-    weights = np.asarray(list(scale_weights), dtype=np.float64)
-    if weights.size == 0:
-        weights = np.ones(n_scales, dtype=np.float64)
-    if weights.size < n_scales:
-        weights = np.concatenate(
-            [weights, np.repeat(weights[-1], n_scales - weights.size)]
-        )
-    weights = weights[:n_scales]
-    return weights / max(float(weights.sum()), 1e-12)
+from .policy import candidate_budget, normalized_diffusion_weights
 
 
 def _gumbel_topk(probs: np.ndarray, k: int, rng: np.random.Generator) -> np.ndarray:
@@ -49,17 +37,13 @@ class HeatGeoCandidateSampler:
     def __init__(
         self,
         artifact: dict,
-        candidate_size: int,
         diffusion_quota: int,
         hard_neg_k: int,
         random_neg_k: int,
-        scale_weights: Sequence[float],
         seed: int,
         deterministic_topm: int = 4,
-        stochastic: bool = True,
         num_walks: int = 0,
         walk_length: int = 4,
-        walk_non_backtracking: bool = True,
     ):
         self.pool_indices = artifact["pool_indices"].numpy()
         self.pool_probs = artifact["pool_probs"].numpy()
@@ -67,27 +51,30 @@ class HeatGeoCandidateSampler:
         self.n_items = int(self.pool_indices.shape[0])
         self.n_scales = int(self.pool_probs.shape[0])
 
-        if diffusion_quota + hard_neg_k + random_neg_k > candidate_size:
-            raise ValueError(
-                f"quotas exceed candidate_size: diffusion={diffusion_quota} + "
-                f"hard={hard_neg_k} + random={random_neg_k} > {candidate_size}"
-            )
-
-        self.candidate_size = int(candidate_size)
+        self.candidate_size = candidate_budget(
+            diffusion_quota, hard_neg_k, random_neg_k
+        )
         self.diffusion_quota = int(diffusion_quota)
         self.hard_neg_k = int(hard_neg_k)
         self.random_neg_k = int(random_neg_k)
         self.deterministic_topm = int(deterministic_topm)
-        self.stochastic = bool(stochastic)
         self.seed = int(seed)
-        self.weights = _normalized_weights(scale_weights, self.n_scales)
+        scales = tuple(artifact.get("metadata", {}).get("diffusion_scales", ()))
+        if len(scales) != self.n_scales:
+            if self.n_scales == 1:
+                scales = (1,)
+            else:
+                raise ValueError(
+                    "HeatGeo artifact metadata must provide one diffusion scale "
+                    f"per target tensor; got scales={scales}, n_scales={self.n_scales}"
+                )
+        self.weights = normalized_diffusion_weights(scales)
         self.mixture = (self.pool_probs * self.weights.reshape(-1, 1, 1)).sum(axis=0)
         self.epoch = 0
 
         # ---- Random walk trajectory sampling ------------------------------------
         self.num_walks = int(num_walks)
         self.walk_length = int(walk_length)
-        self.walk_non_backtracking = bool(walk_non_backtracking)
         if self.num_walks > 0:
             if (
                 "transition_neighbors" not in artifact
@@ -159,20 +146,15 @@ class HeatGeoCandidateSampler:
                 deficit = need
                 continue
 
-            if self.stochastic:
-                # Always keep this scale's strongest neighbours, sample the rest in
-                # proportion to diffusion mass so the tail of the support is seen too.
-                order = np.argsort(-probs)
-                head = order[: min(head_per_scale, need)]
-                head = head[probs[head] > 0]
-                rest = probs.copy()
-                rest[head] = 0.0
-                tail = _gumbel_topk(rest, need - head.size, rng)
-                chosen = np.concatenate([head, tail]).astype(np.int64)
-            else:
-                order = np.argsort(-probs)
-                chosen = order[:need]
-                chosen = chosen[probs[chosen] > 0]
+            # Always keep this scale's strongest neighbours, then sample the rest
+            # in proportion to diffusion mass so the tail is seen across epochs.
+            order = np.argsort(-probs)
+            head = order[: min(head_per_scale, need)]
+            head = head[probs[head] > 0]
+            rest = probs.copy()
+            rest[head] = 0.0
+            tail = _gumbel_topk(rest, need - head.size, rng)
+            chosen = np.concatenate([head, tail]).astype(np.int64)
 
             taken[chosen] = True
             positions.extend(int(position) for position in chosen)
@@ -296,12 +278,12 @@ class HeatGeoCandidateSampler:
         r=1 diffusion target, and injecting it would burn a candidate slot that every
         scale then masks out again.
 
-        **Non-backtracking.** With ``walk_non_backtracking`` the step at time t+1 may
-        not return to the node occupied at t-1. This changes only the sampling measure
+        **Non-backtracking.** A step at time t+1 may not return to the node occupied
+        at t-1. This changes only the sampling measure
         nu -- *which* rows the walk term supervises -- and never a target: the teacher
-        row matched at a visited node is still the full transition row P(.|j) at
-        graph_temp, read from the artifact by the criterion. The temperature tie and
-        the walk term's infimum of 0 are therefore untouched.
+        row matched at a visited node is still the full transition row P(.|j), read
+        with its stored bandwidth by the criterion. The temperature tie and the walk
+        term's infimum of 0 are therefore untouched.
 
         Two things the plain walk wastes and this recovers. Rows are supervised with
         weight equal to visit count, so an A->B->A->B excursion spends the whole walk
@@ -339,7 +321,7 @@ class HeatGeoCandidateSampler:
                 # truncation can also leave a real neighbour at probability 0; both are
                 # dropped here so the renormalization below can never divide by zero.
                 valid = (neighbors >= 0) & (probs > 0)
-                if self.walk_non_backtracking and previous >= 0:
+                if previous >= 0:
                     forward = valid & (neighbors != previous)
                     # Only when every forward edge is gone -- a degree-1 node, where
                     # the edge we arrived on is the sole way out -- is the backtrack

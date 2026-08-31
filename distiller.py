@@ -223,19 +223,11 @@ class KnowledgeDistiller:
                     criterion = HeatGeoDistillation(
                         student_dim=self.model_student.config.hidden_size,
                         teacher_dim=self.teacher_cls_all.shape[-1],
-                        scale_weights=config.scale_weights,
                         diffusion_scales=config.diffusion_scales,
-                        eps_norm=config.eps_norm,
-                        diag_topk=config.diag_topk,
-                        share_in_batch=config.share_in_batch,
                         teacher_embeddings=self.teacher_cls_all[:, l_idx, :],
-                        direct_weight=config.direct_weight,
                         direct_temp=config.direct_temp,
                         walk_weight=config.walk_weight,
                         row_temps=getattr(self, "heatgeo_artifact", {}).get("row_temps"),
-                        # The tie tau_1 = tau_w = graph_temp lives in the criterion;
-                        # this is the temperature the transition rows were built at.
-                        graph_temp=config.graph_temp,
                         transition_neighbors=getattr(self, "heatgeo_artifact", {}).get("transition_neighbors")
                         if config.num_walks > 0
                         else None,
@@ -266,19 +258,11 @@ class KnowledgeDistiller:
                 self.criterion = HeatGeoDistillation(
                     student_dim=self.model_student.config.hidden_size,
                     teacher_dim=self.teacher_cls_all.shape[-1],
-                    scale_weights=config.scale_weights,
                     diffusion_scales=config.diffusion_scales,
-                    eps_norm=config.eps_norm,
-                    diag_topk=config.diag_topk,
-                    share_in_batch=config.share_in_batch,
                     teacher_embeddings=self.teacher_cls_all,
-                    direct_weight=config.direct_weight,
                     direct_temp=config.direct_temp,
                     walk_weight=config.walk_weight,
                     row_temps=getattr(self, "heatgeo_artifact", {}).get("row_temps"),
-                    # The tie tau_1 = tau_w = graph_temp lives in the criterion;
-                    # this is the temperature the transition rows were built at.
-                    graph_temp=config.graph_temp,
                     transition_neighbors=getattr(self, "heatgeo_artifact", {}).get("transition_neighbors")
                     if config.num_walks > 0
                     else None,
@@ -523,9 +507,6 @@ class KnowledgeDistiller:
         teacher mass and a candidate slot.
         """
         keep_positions = np.arange(len(df), dtype=np.int64)
-        if not self.config.dedup_corpus:
-            return df.reset_index(drop=True), keep_positions
-
         texts = df[anchor_column].astype(str)
         duplicated = texts.duplicated(keep="first").to_numpy()
         if not duplicated.any():
@@ -675,14 +656,9 @@ class KnowledgeDistiller:
                     cache_path=cfg.heatgeo_cache_path,
                     log_dir=cfg.heatgeo_log_dir,
                     graph_k=cfg.graph_k,
-                    # No fallback default: the criterion ties tau_1 and tau_w to this
-                    # value, so the artifact and the loss must read the same source.
-                    graph_temp=cfg.graph_temp,
                     perplexity=cfg.perplexity,
                     truncation_tolerance=cfg.truncation_tolerance,
                     diffusion_scales=cfg.diffusion_scales,
-                    scale_weights=cfg.scale_weights,
-                    hard_neg_pool=cfg.hard_neg_pool,
                     source_ids=self._heatgeo_source_ids(df),
                 )
 
@@ -696,17 +672,13 @@ class KnowledgeDistiller:
             if cfg.distill_method == "heatgeo":
                 self.heatgeo_sampler = HeatGeoCandidateSampler(
                     artifact=self.heatgeo_artifact,
-                    candidate_size=cfg.candidate_size,
                     diffusion_quota=cfg.diffusion_quota,
                     hard_neg_k=cfg.hard_neg_k,
                     random_neg_k=cfg.random_neg_k,
-                    scale_weights=cfg.scale_weights,
                     seed=cfg.seed,
                     deterministic_topm=cfg.deterministic_topm,
-                    stochastic=cfg.stochastic_candidates,
                     num_walks=cfg.num_walks,
                     walk_length=cfg.walk_length,
-                    walk_non_backtracking=cfg.walk_non_backtracking,
                 )
                 anchor_texts = df[self.heatgeo_anchor_column].astype(str).tolist()
                 self.train_ds = TextPairWithTeacherAndHeatGeo(
@@ -725,7 +697,6 @@ class KnowledgeDistiller:
                     cfg.task_type,
                     cfg.max_length,
                     corpus_texts=anchor_texts,
-                    encode_chunk_size=cfg.encode_chunk_size,
                 )
                 print(
                     "HeatGeo candidate sampling: "
@@ -733,9 +704,7 @@ class KnowledgeDistiller:
                     f"(diffusion={self.heatgeo_sampler.diffusion_quota}, "
                     f"hard={self.heatgeo_sampler.hard_neg_k}, "
                     f"random={self.heatgeo_sampler.random_neg_k}), "
-                    f"stochastic={self.heatgeo_sampler.stochastic}, "
-                    f"resample_per_epoch="
-                    f"{getattr(cfg, 'resample_candidates_per_epoch', True)}"
+                    "stochastic=True, resample_per_epoch=True"
                 )
             else:
                 self.train_ds = TextPairWithTeacher(df, cfg.task_type, teacher_cls_list)
@@ -1643,10 +1612,7 @@ class KnowledgeDistiller:
         # anchor/candidate comparisons every epoch, fits them in the first one, and
         # spends the rest of the run overfitting a frozen 32-way problem.
         if hasattr(self.train_ds, "set_epoch"):
-            sampling_epoch = (
-                epoch if getattr(self.config, "resample_candidates_per_epoch", True) else 0
-            )
-            self.train_ds.set_epoch(sampling_epoch)
+            self.train_ds.set_epoch(epoch)
 
         total_loss = 0.0
         n_items = 0

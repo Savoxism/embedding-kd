@@ -1,10 +1,9 @@
-"""Compare plain and non-backtracking walks on the *sampler* side, before training.
+"""Measure canonical non-backtracking walk coverage before training.
 
 The walk term supervises the teacher's transition row at every node a walk visits,
 weighted by visit count. What a walk buys is therefore measured in distinct rows per
-unit of walk budget, and that quantity is fixed by the graph and the walk rule alone
--- no student, no loss, no training run. This script reports it for both walk rules
-so the switch can be justified by a number instead of an appeal to the literature.
+unit of walk budget, and that quantity is fixed by the graph alone -- no student,
+loss, or training run is needed. Non-backtracking is a fixed RIPPLE policy.
 
 Reported per arm:
 
@@ -35,11 +34,12 @@ import torch
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from src.heatgeo.candidate_sampler import HeatGeoCandidateSampler  # noqa: E402
+from src.heatgeo.candidate_sampler import HeatGeoCandidateSampler
+from src.heatgeo.policy import FIXED_BANDWIDTH_TEMP
 
 
 def _synthetic_artifact(
-    n_items: int, n_clusters: int, dim: int, graph_k: int, graph_temp: float, seed: int
+    n_items: int, n_clusters: int, dim: int, graph_k: int, seed: int
 ) -> dict:
     """A clustered mutual-kNN graph, built the way graph_builder builds the real one.
 
@@ -65,7 +65,7 @@ def _synthetic_artifact(
         if not neighbors:
             neighbors = [int(j) for j in top[i]]
         scores = similarity[i, neighbors]
-        weights = np.exp((scores - scores.max()) / max(graph_temp, 1e-6))
+        weights = np.exp((scores - scores.max()) / FIXED_BANDWIDTH_TEMP)
         rows.append((neighbors, weights / weights.sum()))
 
     max_degree = max(len(neighbors) for neighbors, _ in rows)
@@ -81,6 +81,7 @@ def _synthetic_artifact(
         "hard_neg_indices": torch.full((n_items, 1), -1, dtype=torch.long),
         "transition_neighbors": torch.from_numpy(transition_neighbors),
         "transition_probs": torch.from_numpy(transition_probs),
+        "metadata": {"diffusion_scales": (1,)},
     }
 
 
@@ -110,21 +111,17 @@ def _probe(
     anchors: np.ndarray,
     num_walks: int,
     walk_length: int,
-    non_backtracking: bool,
     seed: int,
     measure_hops: bool,
 ) -> dict[str, float]:
     sampler = HeatGeoCandidateSampler(
         artifact=artifact,
-        candidate_size=2,
         diffusion_quota=1,
         hard_neg_k=0,
         random_neg_k=1,
-        scale_weights=(1.0,),
         seed=seed,
         num_walks=num_walks,
         walk_length=walk_length,
-        walk_non_backtracking=non_backtracking,
     )
     neighbors = sampler.trans_neighbors
 
@@ -157,9 +154,7 @@ def _probe(
             distances = _hop_distances(
                 neighbors, anchor, endpoints, max_hops=walk_length
             )
-            hops.extend(
-                distances.get(endpoint, walk_length) for endpoint in endpoints
-            )
+            hops.extend(distances.get(endpoint, walk_length) for endpoint in endpoints)
 
     return {
         "distinct_per_walk": float(np.mean(distinct_per_walk)),
@@ -189,7 +184,6 @@ def main() -> int:
     parser.add_argument("--synthetic-clusters", type=int, default=40)
     parser.add_argument("--synthetic-dim", type=int, default=64)
     parser.add_argument("--graph-k", type=int, default=200)
-    parser.add_argument("--graph-temp", type=float, default=0.05)
     args = parser.parse_args()
 
     if args.artifact:
@@ -207,12 +201,11 @@ def main() -> int:
             n_clusters=args.synthetic_clusters,
             dim=args.synthetic_dim,
             graph_k=args.graph_k,
-            graph_temp=args.graph_temp,
             seed=args.seed,
         )
         source = (
             f"synthetic: {args.synthetic_items} items, {args.synthetic_clusters} "
-            f"clusters, graph_k={args.graph_k}, graph_temp={args.graph_temp}"
+            f"clusters, graph_k={args.graph_k}, fixed_temp={FIXED_BANDWIDTH_TEMP}"
         )
     else:
         parser.error("pass an artifact path or --synthetic")
@@ -233,17 +226,14 @@ def main() -> int:
         f"anchors={len(anchors)}"
     )
 
-    arms = {}
-    for label, non_backtracking in (("plain", False), ("non-backtracking", True)):
-        arms[label] = _probe(
-            artifact=artifact,
-            anchors=anchors,
-            num_walks=args.num_walks,
-            walk_length=args.walk_length,
-            non_backtracking=non_backtracking,
-            seed=args.seed,
-            measure_hops=not args.no_hops,
-        )
+    metrics = _probe(
+        artifact=artifact,
+        anchors=anchors,
+        num_walks=args.num_walks,
+        walk_length=args.walk_length,
+        seed=args.seed,
+        measure_hops=not args.no_hops,
+    )
 
     keys = [
         "distinct_per_walk",
@@ -253,21 +243,9 @@ def main() -> int:
         "hops_reached",
     ]
     width = max(len(key) for key in keys)
-    print(f"\n  {'metric':<{width}}  {'plain':>10}  {'non-backtr':>10}  {'delta':>10}")
+    print(f"\n  {'metric':<{width}}  {'value':>10}")
     for key in keys:
-        plain = arms["plain"][key]
-        nbw = arms["non-backtracking"][key]
-        print(f"  {key:<{width}}  {plain:>10.4f}  {nbw:>10.4f}  {nbw - plain:>+10.4f}")
-
-    gain = (
-        arms["non-backtracking"]["distinct_per_walk"]
-        / max(arms["plain"]["distinct_per_walk"], 1e-12)
-        - 1.0
-    )
-    print(
-        f"\n  distinct rows supervised per walk: {gain:+.1%} "
-        "(the walk budget is unchanged, so this is the whole of the gain)"
-    )
+        print(f"  {key:<{width}}  {metrics[key]:>10.4f}")
     return 0
 
 

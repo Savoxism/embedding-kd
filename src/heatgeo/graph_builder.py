@@ -10,6 +10,12 @@ import torch
 import torch.nn.functional as F
 from tqdm import tqdm
 
+from .policy import (
+    FIXED_BANDWIDTH_TEMP,
+    hard_negative_pool_size,
+    normalized_diffusion_weights,
+)
+
 # 7: the lazy-walk truncation holds the anchor's own column out of the tolerance
 #    budget, so the discarded mass of every target is `truncation_tolerance`
 #    rather than tolerance/(1 - self_mass) -- 2x it at r=1. Targets changed;
@@ -122,18 +128,6 @@ def _entropic_affinity(
     if probs is None:
         probs, _ = _softmax_at(scores, beta)
     return probs, 1.0 / beta, clamped
-
-
-def _normalized_weights(scale_weights: Sequence[float], n_scales: int) -> np.ndarray:
-    weights = np.asarray(list(scale_weights), dtype=np.float64)
-    if weights.size == 0:
-        weights = np.ones(n_scales, dtype=np.float64)
-    if weights.size < n_scales:
-        weights = np.concatenate(
-            [weights, np.repeat(weights[-1], n_scales - weights.size)]
-        )
-    weights = weights[:n_scales]
-    return weights / max(float(weights.sum()), 1e-12)
 
 
 def _fingerprint(embeddings: torch.Tensor) -> str:
@@ -819,27 +813,20 @@ def build_or_load_heatgeo_artifact(
     cache_path: str,
     log_dir: str,
     graph_k: int,
-    graph_temp: float,
     diffusion_scales: Sequence[int],
-    scale_weights: Sequence[float],
-    hard_neg_pool: int,
     source_ids: Sequence[int] | None = None,
     perplexity: float | None = None,
     truncation_tolerance: float = 0.01,
 ) -> dict:
     n_items = int(teacher_embeddings.size(0))
     scales = _as_tuple(diffusion_scales)
-    # `_as_tuple` sorts and deduplicates, but `scale_weights` is consumed by
-    # position, and so is `pool_probs`'s first axis downstream. Silently reordering
-    # the scales while leaving the weights where they were pairs every scale with
-    # another scale's weight, so the reorder is rejected rather than performed. The
-    # criterion enforces the same two conditions; checking here as well means the
-    # error arrives before a full graph build rather than after it.
+    # `pool_probs`'s first axis is positional. Reject an implicit reorder so every
+    # downstream component derives omega_r = 1/r from the same scale sequence.
     requested = tuple(int(r) for r in diffusion_scales)
     if requested != scales:
         raise ValueError(
             f"diffusion_scales must be sorted and unique, got {requested}: they are "
-            f"stored as {scales} and scale_weights is applied by position"
+            f"stored as {scales} and consumed by position"
         )
     if scales[0] != 1:
         raise ValueError(
@@ -847,7 +834,8 @@ def build_or_load_heatgeo_artifact(
             f"temperature ladder is anchored to the r=1 target being the "
             f"transition row"
         )
-    weights = _normalized_weights(scale_weights, len(scales))
+    weights = normalized_diffusion_weights(scales)
+    hard_neg_pool = hard_negative_pool_size(graph_k)
     if source_ids is None:
         source_array = np.zeros(n_items, dtype=np.int64)
     else:
@@ -861,11 +849,10 @@ def build_or_load_heatgeo_artifact(
     metadata = {
         "n_items": n_items,
         "graph_k": int(graph_k),
-        # Both are recorded, but only one of them shaped the rows: with a
-        # perplexity the temperature is per row and graph_temp is inert, and the
-        # two arms must never share a cache entry.
+        # The scalar bandwidth is a fixed baseline policy. Canonical entropic
+        # affinities ignore it and store one solved temperature per row.
         "perplexity": None if perplexity is None else float(perplexity),
-        "graph_temp": float(graph_temp),
+        "graph_temp": FIXED_BANDWIDTH_TEMP,
         "diffusion_scales": scales,
         "scale_weights": tuple(round(float(w), 8) for w in weights),
         "hard_neg_pool": int(hard_neg_pool),
@@ -893,11 +880,8 @@ def build_or_load_heatgeo_artifact(
 
     if str(artifact_path.parent):
         os.makedirs(artifact_path.parent, exist_ok=True)
-    # Hard negatives are drawn from this list *after* removing everything already in
-    # the diffusion pool, so a list of size hard_neg_pool can never yield
-    # hard_neg_pool negatives -- on the 13.5k corpus it half-filled (102/200) and the
-    # config knob was silently capped at ~100. The list has to be big enough for both
-    # consumers.
+    # Hard-negative storage is derived from graph width. Retrieval must still cover
+    # both the graph pool and that derived hard-negative pool.
     topk_for_graph = min(n_items - 1, max(graph_k, hard_neg_pool + graph_k))
     top_indices, top_scores = _compute_topk_cosine(teacher_embeddings, k=topk_for_graph)
     (
@@ -911,7 +895,7 @@ def build_or_load_heatgeo_artifact(
         top_indices=top_indices,
         top_scores=top_scores,
         graph_k=graph_k,
-        graph_temp=graph_temp,
+        graph_temp=FIXED_BANDWIDTH_TEMP,
         perplexity=perplexity,
     )
     graph_log_path, graph_stats = _write_knn_graph_log(
@@ -1039,8 +1023,9 @@ def _print_graph_summary(
     if low:
         print(
             f"WARNING: HeatGeo targets at scales {low} are close to uniform on their support "
-            f"(KL < 0.05 nats) -- lower graph_temp, otherwise L_diff degenerates into a "
-            f"binary neighbour/non-neighbour objective."
+            f"(KL < 0.05 nats) -- lower the target perplexity (or the internal "
+            f"fixed-baseline temperature), otherwise L_diff degenerates into a binary "
+            f"neighbour/non-neighbour objective."
         )
     if float(graph_stats.get("target_js_floor", 1.0)) < 0.01:
         print(

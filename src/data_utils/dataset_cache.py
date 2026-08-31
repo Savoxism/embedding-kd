@@ -133,7 +133,7 @@ class HeatGeoCollate:
 
     Three things drive the cost of a HeatGeo step, and none of them are the loss:
 
-    * **Duplicate encodes.** With ``share_in_batch`` the criterion runs
+    * **Duplicate encodes.** In-batch sharing makes the criterion run
       ``torch.unique`` over the flattened candidate indices and keeps exactly one
       representative embedding per corpus index -- every other copy is encoded and
       then thrown away. Deduplicating here instead makes that waste impossible.
@@ -151,10 +151,8 @@ class HeatGeoCollate:
     Only the anchor text is encoded on the anchor side: the objective scores
     anchor-vs-candidates, so the second view of the pair has no consumer.
 
-    Note that with ``share_in_batch=False`` the criterion scores every copy of a
-    duplicated candidate separately; deduplication makes those copies share one
-    forward pass (hence one dropout draw) instead of getting independent ones. The
-    expected gradient is unchanged.
+    Deduplication also makes repeated candidates share one forward pass (hence one
+    dropout draw); this is the canonical path rather than an optional mode.
     """
 
     def __init__(

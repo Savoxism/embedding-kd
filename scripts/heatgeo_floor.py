@@ -29,7 +29,7 @@ import torch
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from src.heatgeo.candidate_sampler import _normalized_weights  # noqa: E402
+from src.heatgeo.policy import normalized_diffusion_weights
 
 
 def _entropy(probs: np.ndarray) -> np.ndarray:
@@ -54,13 +54,6 @@ def main() -> int:
         default=None,
         help="a loss_diff value from training, to compare against the floor",
     )
-    parser.add_argument(
-        "--scale-weights",
-        type=float,
-        nargs="*",
-        default=None,
-        help="override the weights stored in the artifact metadata",
-    )
     args = parser.parse_args()
 
     artifact = torch.load(args.artifact, map_location="cpu", weights_only=False)
@@ -76,12 +69,12 @@ def main() -> int:
     pool_indices = artifact["pool_indices"].numpy()
     probs = artifact["pool_probs"].numpy().astype(np.float64)
     n_scales, n_items, _ = probs.shape
-    weights = _normalized_weights(
-        args.scale_weights
-        if args.scale_weights
-        else metadata.get("scale_weights", [1.0] * n_scales),
-        n_scales,
-    )
+    if len(scales) != n_scales:
+        print(
+            f"artifact scale metadata {scales} does not match pool_probs axis {n_scales}"
+        )
+        return 1
+    weights = normalized_diffusion_weights(scales)
 
     valid = pool_indices >= 0
     probs = np.where(valid[None, :, :], probs, 0.0)
@@ -98,7 +91,9 @@ def main() -> int:
     per_scale_entropy = np.stack([_entropy(probs[r]) for r in range(n_scales)])
     mixture = (probs * weights.reshape(-1, 1, 1)).sum(axis=0)
     mixture_entropy = _entropy(mixture)
-    js = np.clip(mixture_entropy - (per_scale_entropy * weights.reshape(-1, 1)).sum(0), 0, None)
+    js = np.clip(
+        mixture_entropy - (per_scale_entropy * weights.reshape(-1, 1)).sum(0), 0, None
+    )
 
     print("Per-scale targets")
     for r in range(n_scales):

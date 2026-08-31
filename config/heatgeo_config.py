@@ -1,5 +1,6 @@
 from .base_config import BaseConfig
 
+
 class HeatGeoConfig(BaseConfig):
     distill_method = "heatgeo"
 
@@ -15,29 +16,24 @@ class HeatGeoConfig(BaseConfig):
     # No student temperature on the diffusion ladder is a free parameter. The
     # criterion rejects scale_temps / broad_scale_temps / walk_temp /
     # direct_student_temp and derives all of them:
-    #   tau_1 = graph_temp   the r=1 target IS the transition row, a softmax of
-    #                        teacher cosines at graph_temp -- any other student
-    #                        temperature makes zero loss unattainable. Under
-    #                        `perplexity` this is read per row: tau_1(i) = tau_i;
+    #   tau_1(i) = tau_i     the r=1 target IS the transition row, so the student
+    #                        reuses the per-row bandwidth stored in the graph;
     #   tau_r = sqrt(r) tau_1   the spread of a diffusion grows as sqrt of its
     #                        time, so scale r is matched at the resolution its own
-    #                        target already has. At graph_temp = 0.05 this is
+    #                        target already has. In the fixed-bandwidth baseline
+    #                        at 0.05 this is
     #                        (0.0707, 0.1000) for r = 2, 4 -- the values that were
     #                        previously written out by hand as (0.07, 0.10);
-    #   tau_w = graph_temp   walk targets are transition rows, same argument;
+    #   tau_w(i) = tau_i     walk targets are transition rows, same argument;
     #   direct scale         one temperature (direct_temp) on both teacher and
     #                        student side (Hinton et al. 2015 convention).
-    # direct_temp is the only student temperature left to choose.
-    share_in_batch = True
+    # direct_temp is the only student temperature left to choose. In-batch
+    # sharing is part of the method definition and is always enabled when corpus
+    # indices are available.
 
     # ---- Direct Scale (r=0) --------------------------------------------------
-    # omega_0. It lives on the same unnormalized scale as `scale_weights` below and
-    # the criterion normalizes the two together, once -- so omega_0 = omega_1 is
-    # written by setting this to scale_weights[0]. It used to be normalized
-    # separately, which quietly bought the ambient scale 0.500 of the total instead
-    # of the 0.364 the rule asks for.
-    direct_weight = 1.0
-    direct_temp = 0.10                # shared by both sides of the direct scale
+    # omega_0 is derived as omega_1 inside the criterion; it is not configurable.
+    direct_temp = 0.10  # shared by both sides of the direct scale
 
     # ---- Teacher Graph -------------------------------------------------------
     graph_k = 200
@@ -50,21 +46,12 @@ class HeatGeoConfig(BaseConfig):
     # which is what forced graph_temp to be retuned for each teacher. 30 is the
     # t-SNE default for the same quantity (van der Maaten and Hinton, 2008).
     perplexity = 30
-    # Only used when perplexity is None: the fixed-bandwidth baseline this arm is
-    # meant to be compared against. It is not a second knob to tune -- set one or
-    # the other.
-    graph_temp = 0.05
     # Sorted, unique, and starting at 1. All three are enforced: the artifact stores
-    # its scales sorted and applies `scale_weights` by position, and the temperature
-    # ladder is anchored to the r=1 target being the transition row.
+    # its scales sorted, and the temperature ladder is anchored to the r=1 target
+    # being the transition row.
     diffusion_scales = (1, 2, 4)
-    # omega_r = 1/r, and omega_0 = omega_1 (= `direct_weight` above): each scale is
-    # weighted by the inverse of its diffusion time. Written as the rule rather than
-    # as (1.0, 0.5, 0.25), which is what it evaluates to. Only the ratios matter,
-    # but they are ratios against direct_weight too -- the criterion normalizes the
-    # full vector (omega_0, omega_1, ...) in one step, not each half separately.
-    scale_weights = tuple(1.0 / r for r in diffusion_scales)
-    
+    # omega_r = 1/r and omega_0 = omega_1 are derived centrally from these scales.
+
     # ---- Random Walk Kernel Matching -----------------------------------------
     # L_walk is a KL against the teacher's own transition row, so it shares the
     # scale of L_diff and walk_weight is a genuine trade-off rather than a units
@@ -72,14 +59,10 @@ class HeatGeoConfig(BaseConfig):
     num_walks = 4
     walk_length = 4
     walk_weight = 0.5
-    # walk_temp is gone: it is tied to graph_temp inside the criterion.
+    # Walk temperatures are the stored per-row graph bandwidths.
     walk_start_epoch = 1
-    # Which rows the walk supervises, never what they are matched against: a step may
-    # not return to the node it came from (except out of a degree-1 node, where that
-    # is the only edge). Same walk budget, more distinct rows, and no new temperature.
-    walk_non_backtracking = True
-    
-    hard_neg_pool = 200
+    # Walks are always non-backtracking (except at degree-one nodes). This is a
+    # canonical sampling rule, not an experiment knob.
 
     # ---- Truncation ----------------------------------------------------------
     # Every capacity in the build is the same operation: keep a subset S of a
@@ -99,16 +82,12 @@ class HeatGeoConfig(BaseConfig):
     truncation_tolerance = 0.01
 
     # ---- Per-Epoch Candidate Sampling ---------------------------------------
-    candidate_size = 66
     diffusion_quota = 14
     hard_neg_k = 26
     random_neg_k = 26
-    resample_candidates_per_epoch = True
+    # candidate_size is derived as 14 + 26 + 26 = 66. Candidates are always
+    # resampled per epoch with mass-proportional stochastic tails.
     deterministic_topm = 2
-    stochastic_candidates = True
-    dedup_corpus = True
-    diag_topk = 8
-    eps_norm = 1e-8
 
     # ---- Corpus Columns ------------------------------------------------------
     # Which column is the graph node, and which defines "same source" for hard
@@ -124,7 +103,6 @@ class HeatGeoConfig(BaseConfig):
     learning_rate = 2e-5
     min_lr = 3e-6
     num_workers = 4
-    encode_chunk_size = 256
 
     train_data_path = "data/train_set/merged_3_data_5k_each.csv"
     # cache_teacher removed: nothing read it. Teacher caching is gated purely by

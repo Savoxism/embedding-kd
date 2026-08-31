@@ -4,6 +4,13 @@ import torch
 import torch.nn.functional as F
 from torch import nn
 
+from src.heatgeo.policy import (
+    DIAG_TOPK,
+    EPS_NORM,
+    FIXED_BANDWIDTH_TEMP,
+    diffusion_weights,
+)
+
 
 def _assert_finite_tensors(named_tensors: Sequence[tuple[str, torch.Tensor]]) -> None:
     finite_status = None
@@ -184,18 +191,20 @@ class HeatGeoDistillation(nn.Module):
 
     **Scale weights.** ``omega_r = 1/r`` with ``omega_0 = omega_1``: a scale's
     influence falls off with the diffusion time it describes, and the ambient scale
-    sits at the sharpest scale's weight. ``omega_0`` is ``direct_weight`` and
-    ``omega_r`` for r >= 1 is ``scale_weights``; the two live on one scale and are
-    normalized together, once, in ``forward``. ``scale_weights`` is therefore held
-    unnormalized -- normalizing it on its own would silently redefine what
-    ``direct_weight`` is measured against.
+    sits at the sharpest scale's weight. The full vector is derived from
+    ``diffusion_scales`` and normalized together once in ``forward``.
 
-    Passing the removed knobs (``scale_temps``, ``broad_scale_temps``,
-    ``walk_temp``, ``direct_student_temp``) raises rather than being silently
-    absorbed.
+    Passing removed or derived knobs raises rather than being silently absorbed.
     """
 
     _TIED_KNOBS = {
+        "scale_weights": "derived from diffusion_scales by omega_r = 1/r",
+        "direct_weight": "derived from omega_0 = omega_1",
+        "share_in_batch": "in-batch sharing is always used when corpus indices exist",
+        "graph_temp": (
+            "canonical rows use their stored bandwidths; the scalar fixed-bandwidth "
+            "baseline is an internal constant"
+        ),
         "scale_temps": (
             "the whole ladder is derived: tau_1 is tied to graph_temp (or to the "
             "per-row bandwidth) and tau_r = sqrt(r) * tau_1"
@@ -218,20 +227,13 @@ class HeatGeoDistillation(nn.Module):
         self,
         student_dim: int,
         teacher_dim: int,
-        scale_weights: Sequence[float],
         diffusion_scales: Sequence[int] | None = None,
-        eps_norm: float = 1e-8,
-        diag_topk: int = 8,
-        share_in_batch: bool = True,
         teacher_embeddings: torch.Tensor | None = None,
-        direct_weight: float = 1.0,
         direct_temp: float = 0.10,
         transition_neighbors: torch.Tensor | None = None,
         transition_probs: torch.Tensor | None = None,
         walk_weight: float = 0.5,
         row_temps: torch.Tensor | None = None,
-        *,
-        graph_temp: float,
         **kwargs,
     ):
         super().__init__()
@@ -240,11 +242,9 @@ class HeatGeoDistillation(nn.Module):
                 raise ValueError(
                     f"HeatGeoDistillation no longer accepts {name!r}: {why}"
                 )
-        if graph_temp <= 0.0:
-            raise ValueError("graph_temp must be positive")
         self.student_dim = student_dim
         self.teacher_dim = teacher_dim
-        self.graph_temp = float(graph_temp)
+        self.graph_temp = FIXED_BANDWIDTH_TEMP
 
         # Per-row temperatures (entropic affinities). The tie tau_1 = tau_w =
         # "the temperature this row's target was built at" is unchanged; it is
@@ -261,9 +261,8 @@ class HeatGeoDistillation(nn.Module):
             self.register_buffer("row_temps", temps_row, persistent=False)
         else:
             self.row_temps = None
-        self.eps_norm = eps_norm
-        self.diag_topk = diag_topk
-        self.share_in_batch = share_in_batch
+        self.eps_norm = EPS_NORM
+        self.diag_topk = DIAG_TOPK
 
         # ---- Random walk kernel matching ----------------------------------------
         # Enabled by the curriculum, not by construction: the walk term ranks inside
@@ -289,7 +288,7 @@ class HeatGeoDistillation(nn.Module):
             self.walk_probs = None
         self._warned_walk_needs_sharing = False
 
-        self.use_direct = teacher_embeddings is not None and direct_weight > 0.0
+        self.use_direct = teacher_embeddings is not None
         if self.use_direct:
             if direct_temp <= 0.0:
                 raise ValueError("direct_temp must be positive")
@@ -297,37 +296,19 @@ class HeatGeoDistillation(nn.Module):
             # a cosine, and at corpus scale this buffer is the largest thing the
             # criterion owns (N x 2560).
             normalized = F.normalize(
-                teacher_embeddings.float(), p=2, dim=-1, eps=eps_norm
+                teacher_embeddings.float(), p=2, dim=-1, eps=self.eps_norm
             ).half()
             self.register_buffer("teacher_bank", normalized, persistent=False)
             # One temperature for both sides of the direct scale (same-temperature
             # distillation, Hinton et al. 2015): the student softmax at scale 0 in
             # forward() reuses this exact value.
             self.direct_temp = float(direct_temp)
-            self.register_buffer("direct_weight", torch.tensor([float(direct_weight)]))
         else:
             self.teacher_bank = None
             self.direct_temp = float(direct_temp)
 
-        # Stored *unnormalized*, on purpose. The stated rule is omega_r = 1/r with
-        # omega_0 = omega_1, and omega_0 is `direct_weight`, which is concatenated
-        # onto this vector in forward(). Normalizing here first would put
-        # direct_weight on a different scale from the ladder it is supposed to tie
-        # to: with (1, 1/2, 1/4) the ladder became (0.571, 0.286, 0.143) and
-        # direct_weight=1.0 then bought the ambient scale 0.5 of the total instead
-        # of the 0.364 that omega_0 = omega_1 asks for -- the diffusion group was
-        # 21% light against the rule the paper states. forward() normalizes once,
-        # after the concatenation, which is the only point where the full weight
-        # vector exists.
-        weights = torch.tensor(list(scale_weights), dtype=torch.float32)
-        if weights.numel() == 0:
-            weights = torch.ones(1, dtype=torch.float32)
-        if not bool(torch.isfinite(weights).all()) or bool((weights < 0).any()):
-            raise ValueError("scale_weights must be finite and non-negative")
-        if float(weights.sum()) <= 0.0:
-            raise ValueError("scale_weights must not sum to zero")
-        self.register_buffer("scale_weights", weights)
-
+        # Weights stay unnormalized until the ambient and diffusion entries have
+        # been concatenated. This preserves omega_0 = omega_1 exactly.
         # The whole diffusion ladder is derived from the sharpest scale by
         # tau_r = sqrt(r) * tau_1. The sharpest scale is itself tied (its target IS
         # the transition row), so no student temperature on this ladder is free.
@@ -369,6 +350,10 @@ class HeatGeoDistillation(nn.Module):
                 f"transition row, and the whole ladder is derived from it"
             )
         self.diffusion_scales = scales
+        weights = torch.tensor(diffusion_weights(scales), dtype=torch.float32)
+        self.register_buffer("scale_weights", weights)
+        # The ambient profile has the same unnormalized weight as r=1.
+        self.register_buffer("direct_weight", weights[:1].clone())
         sqrt_r = torch.tensor(
             [(r / scales[0]) ** 0.5 for r in scales], dtype=torch.float32
         )
@@ -618,9 +603,7 @@ class HeatGeoDistillation(nn.Module):
             batch_size * candidate_size, -1
         )
 
-        share = (
-            self.share_in_batch and candidate_idx is not None and anchor_idx is not None
-        )
+        share = candidate_idx is not None and anchor_idx is not None
         if share:
             (
                 pool_embeddings,
@@ -746,7 +729,10 @@ class HeatGeoDistillation(nn.Module):
                 )
             elif not self._warned_walk_needs_sharing:
                 self._warned_walk_needs_sharing = True
-                print("HeatGeo: walk loss requires share_in_batch=True; term disabled.")
+                print(
+                    "HeatGeo: walk loss requires corpus indices for in-batch sharing; "
+                    "term disabled."
+                )
 
         total_loss = loss_diff + self.walk_weight * loss_walk
 

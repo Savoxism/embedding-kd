@@ -11,6 +11,12 @@ from distiller import KnowledgeDistiller
 from src.criterions.heatgeo_distillation import HeatGeoDistillation
 from src.heatgeo.candidate_sampler import HeatGeoCandidateSampler
 from src.heatgeo.graph_builder import _entropic_affinity, _mass_prefix, _softmax_at
+from src.heatgeo.policy import (
+    FIXED_BANDWIDTH_TEMP,
+    candidate_budget,
+    hard_negative_pool_size,
+    normalized_diffusion_weights,
+)
 
 
 def test_heatgeo_cli_overrides(monkeypatch):
@@ -23,12 +29,14 @@ def test_heatgeo_cli_overrides(monkeypatch):
             "heatgeo",
             "--walk_weight",
             "0.8",
-            "--graph_temp",
-            "0.04",
             "--perplexity",
             "45",
-            "--candidate_size",
-            "96",
+            "--diffusion_quota",
+            "20",
+            "--hard_neg_k",
+            "30",
+            "--random_neg_k",
+            "46",
             "--cache_path",
             "cache/teacher.pt",
             "--heatgeo_cache_path",
@@ -45,10 +53,28 @@ def test_heatgeo_cli_overrides(monkeypatch):
     config = main.get_config(args.method, args)
 
     assert config.walk_weight == 0.8
-    assert config.graph_temp == 0.04
     assert not hasattr(config, "walk_temp")
     assert config.perplexity == 45
-    assert config.candidate_size == 96
+    assert (
+        candidate_budget(config.diffusion_quota, config.hard_neg_k, config.random_neg_k)
+        == 96
+    )
+    for removed in (
+        "graph_temp",
+        "scale_weights",
+        "direct_weight",
+        "candidate_size",
+        "hard_neg_pool",
+        "share_in_batch",
+        "resample_candidates_per_epoch",
+        "stochastic_candidates",
+        "dedup_corpus",
+        "walk_non_backtracking",
+        "diag_topk",
+        "eps_norm",
+        "encode_chunk_size",
+    ):
+        assert not hasattr(config, removed)
     assert config.cache_path == "cache/teacher.pt"
     assert config.heatgeo_cache_path == "cache/graph.pt"
     assert config.pooling_method == "last_token"
@@ -95,17 +121,25 @@ def test_heatgeo_temperature_ties():
     criterion = HeatGeoDistillation(
         student_dim=4,
         teacher_dim=4,
-        scale_weights=(1.0, 0.5, 0.25),
         diffusion_scales=(1, 2, 4),
-        graph_temp=0.05,
     )
-    # tau_1 = tau_w = graph_temp and tau_r = sqrt(r) tau_1: not knobs, derived.
-    assert criterion.walk_temp == pytest.approx(0.05)
+    # The scalar baseline is fixed; omega_r and tau_r are derived from the scales.
+    assert criterion.walk_temp == pytest.approx(FIXED_BANDWIDTH_TEMP)
     assert criterion.scale_temps.tolist() == pytest.approx(
-        [0.05, 0.05 * 2 ** 0.5, 0.05 * 2.0]
+        [
+            FIXED_BANDWIDTH_TEMP,
+            FIXED_BANDWIDTH_TEMP * 2**0.5,
+            FIXED_BANDWIDTH_TEMP * 2.0,
+        ]
     )
+    assert criterion.scale_weights.tolist() == pytest.approx([1.0, 0.5, 0.25])
+    assert criterion.direct_weight.item() == pytest.approx(1.0)
 
     for removed in (
+        "scale_weights",
+        "direct_weight",
+        "share_in_batch",
+        "graph_temp",
         "scale_temps",
         "broad_scale_temps",
         "walk_temp",
@@ -115,16 +149,23 @@ def test_heatgeo_temperature_ties():
             HeatGeoDistillation(
                 student_dim=4,
                 teacher_dim=4,
-                scale_weights=(1.0,),
-                graph_temp=0.05,
                 **{removed: 0.07},
             )
+
+
+def test_canonical_policy_preserves_the_previous_resolved_values():
+    assert candidate_budget(14, 26, 26) == 66
+    assert hard_negative_pool_size(200) == 200
+    np.testing.assert_allclose(
+        normalized_diffusion_weights((1, 2, 4)),
+        np.asarray([1.0, 0.5, 0.25]) / 1.75,
+    )
 
 
 def test_heatgeo_tied_temperature_makes_teacher_row_attainable():
     """With tau_1 = graph_temp, a student that reproduces the teacher's cosines
     reaches loss 0 exactly -- the attainability statement behind the tie."""
-    graph_temp = 0.05
+    graph_temp = FIXED_BANDWIDTH_TEMP
     torch.manual_seed(0)
     anchor = torch.nn.functional.normalize(torch.randn(1, 4), dim=-1)
     candidates = torch.nn.functional.normalize(torch.randn(1, 3, 4), dim=-1)
@@ -134,8 +175,6 @@ def test_heatgeo_tied_temperature_makes_teacher_row_attainable():
     criterion = HeatGeoDistillation(
         student_dim=4,
         teacher_dim=4,
-        scale_weights=(1.0,),
-        graph_temp=graph_temp,
     )
     loss, _ = criterion(
         anchor_embeddings=anchor,
@@ -163,15 +202,14 @@ def test_sampler_reads_transition_rows_untruncated():
             [[0.1, 0.6, 0.3, 0.0], [0.5, 0.2, 0.3, 0.0]],
             dtype=torch.float32,
         ),
+        "metadata": {"diffusion_scales": (1,)},
     }
 
     sampler = HeatGeoCandidateSampler(
         artifact=artifact,
-        candidate_size=2,
         diffusion_quota=1,
         hard_neg_k=0,
         random_neg_k=1,
-        scale_weights=(1.0,),
         seed=42,
         num_walks=1,
         walk_length=1,
@@ -256,9 +294,7 @@ def test_mass_prefix_meets_the_stated_tv_and_kl_bounds():
 
         assert 0.0 <= delta <= tolerance
         truncated = kept / kept.sum()
-        total_variation = 0.5 * (
-            np.abs(truncated - kept / probs.sum()).sum() + delta
-        )
+        total_variation = 0.5 * (np.abs(truncated - kept / probs.sum()).sum() + delta)
         np.testing.assert_allclose(total_variation, delta, atol=1e-12)
         kl = float((truncated * np.log(truncated / kept)).sum())
         np.testing.assert_allclose(kl, -np.log1p(-delta), atol=1e-12)
@@ -275,10 +311,7 @@ def test_criterion_uses_the_row_temperature_of_each_anchor():
     criterion = HeatGeoDistillation(
         student_dim=4,
         teacher_dim=4,
-        scale_weights=(1.0,),
-        graph_temp=0.05,
         row_temps=torch.tensor([0.02, 0.50, 0.10, 0.10, 0.10, 0.10]),
-        share_in_batch=False,
     )
     # Identical anchor and identical candidates for both rows, and no anchor index
     # among the candidates, so the only thing that differs is the temperature.
@@ -312,7 +345,6 @@ def _walk_sampler(
     probs: list[list[float]],
     *,
     walk_length: int,
-    non_backtracking: bool,
     num_walks: int = 8,
     seed: int = 0,
 ) -> HeatGeoCandidateSampler:
@@ -322,27 +354,23 @@ def _walk_sampler(
     keeps the quota check happy; the walk path never reads them.
     """
     n_items = len(neighbors)
-    pool = torch.tensor(
-        [[(i + 1) % n_items] for i in range(n_items)], dtype=torch.long
-    )
+    pool = torch.tensor([[(i + 1) % n_items] for i in range(n_items)], dtype=torch.long)
     artifact = {
         "pool_indices": pool,
         "pool_probs": torch.ones((1, n_items, 1), dtype=torch.float32),
         "hard_neg_indices": torch.full((n_items, 1), -1, dtype=torch.long),
         "transition_neighbors": torch.tensor(neighbors, dtype=torch.long),
         "transition_probs": torch.tensor(probs, dtype=torch.float32),
+        "metadata": {"diffusion_scales": (1,)},
     }
     return HeatGeoCandidateSampler(
         artifact=artifact,
-        candidate_size=2,
         diffusion_quota=1,
         hard_neg_k=0,
         random_neg_k=1,
-        scale_weights=(1.0,),
         seed=seed,
         num_walks=num_walks,
         walk_length=walk_length,
-        walk_non_backtracking=non_backtracking,
     )
 
 
@@ -353,9 +381,7 @@ _CYCLE_PROBS = [[0.5, 0.5]] * 4
 
 
 def test_non_backtracking_walk_never_returns_to_the_previous_node():
-    sampler = _walk_sampler(
-        _CYCLE_NEIGHBORS, _CYCLE_PROBS, walk_length=3, non_backtracking=True
-    )
+    sampler = _walk_sampler(_CYCLE_NEIGHBORS, _CYCLE_PROBS, walk_length=3)
     walks, _ = sampler._sample_walks(0, sampler._rng(0))
 
     assert not (walks[:, 2:] == walks[:, :-2]).any()
@@ -365,38 +391,12 @@ def test_non_backtracking_walk_never_returns_to_the_previous_node():
         assert len(set(path.tolist())) == path.size
 
 
-def test_plain_walk_backtracks_and_covers_less():
-    plain = _walk_sampler(
-        _CYCLE_NEIGHBORS, _CYCLE_PROBS, walk_length=3, non_backtracking=False
-    )
-    plain_walks, _ = plain._sample_walks(0, plain._rng(0))
-    non_backtracking = _walk_sampler(
-        _CYCLE_NEIGHBORS, _CYCLE_PROBS, walk_length=3, non_backtracking=True
-    )
-    nb_walks, _ = non_backtracking._sample_walks(0, non_backtracking._rng(0))
-
-    def distinct_per_walk(walks: np.ndarray) -> float:
-        # Per walk, not unioned over walks: the union saturates on a 4-node graph
-        # while the quantity the loss actually spends -- rows supervised per step of
-        # walk budget -- is what differs.
-        return float(
-            np.mean([len(set(path[1:].tolist())) for path in walks])
-        )
-
-    # A plain walk on the 4-cycle returns to its previous node half the time, and
-    # each such visit re-supervises a row it has already seen.
-    assert (plain_walks[:, 2:] == plain_walks[:, :-2]).any()
-    assert distinct_per_walk(plain_walks) < distinct_per_walk(nb_walks)
-
-
 def test_non_backtracking_backtracks_out_of_a_degree_one_node():
     # Path graph 0 -- 1 -- 2: node 2 has a single edge, so the walk that arrives
     # there has to retreat rather than stall on a self-loop.
     neighbors = [[1, -1], [0, 2], [1, -1]]
     probs = [[1.0, 0.0], [0.5, 0.5], [1.0, 0.0]]
-    sampler = _walk_sampler(
-        neighbors, probs, walk_length=3, non_backtracking=True, num_walks=4
-    )
+    sampler = _walk_sampler(neighbors, probs, walk_length=3, num_walks=4)
     walks, _ = sampler._sample_walks(0, sampler._rng(0))
 
     # 0 -> 1 -> 2 -> 1 is the only path of this length, and step 3 is a backtrack.
@@ -405,35 +405,24 @@ def test_non_backtracking_backtracks_out_of_a_degree_one_node():
 
 
 def test_walk_paths_are_reproducible_under_the_same_seed():
-    first = _walk_sampler(
-        _CYCLE_NEIGHBORS, _CYCLE_PROBS, walk_length=4, non_backtracking=True
-    )
-    second = _walk_sampler(
-        _CYCLE_NEIGHBORS, _CYCLE_PROBS, walk_length=4, non_backtracking=True
-    )
+    first = _walk_sampler(_CYCLE_NEIGHBORS, _CYCLE_PROBS, walk_length=4)
+    second = _walk_sampler(_CYCLE_NEIGHBORS, _CYCLE_PROBS, walk_length=4)
     walks_first, _ = first._sample_walks(2, first._rng(2))
     walks_second, _ = second._sample_walks(2, second._rng(2))
 
     np.testing.assert_array_equal(walks_first, walks_second)
 
 
-def test_walk_non_backtracking_cli_override():
-    monkeypatched = [
-        "main.py",
-        "--method",
-        "heatgeo",
-        "--walk_non_backtracking",
-        "0",
-    ]
-    original = sys.argv
-    try:
-        sys.argv = monkeypatched
-        args = main.parse_args()
-        config = main.get_config(args.method, args)
-    finally:
-        sys.argv = original
-
-    assert config.walk_non_backtracking is False
+@pytest.mark.parametrize(
+    "removed_flag",
+    ("--graph_temp", "--direct_weight", "--candidate_size", "--walk_non_backtracking"),
+)
+def test_removed_heatgeo_cli_knobs_are_rejected(monkeypatch, removed_flag):
+    monkeypatch.setattr(
+        sys, "argv", ["main.py", "--method", "heatgeo", removed_flag, "1"]
+    )
+    with pytest.raises(SystemExit):
+        main.parse_args()
 
 
 def test_final_student_weights_are_idempotent(tmp_path):
