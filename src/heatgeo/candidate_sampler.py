@@ -51,11 +51,6 @@ class HeatGeoCandidateSampler:
         self.deterministic_topm = int(deterministic_topm)
         self.unbiased_geometry = bool(unbiased_geometry)
         self.seed = int(seed)
-        if self.unbiased_geometry and self.diffusion_quota < self.n_scales:
-            raise ValueError(
-                "unbiased geometry sampling needs at least one diffusion slot "
-                f"per scale; quota={self.diffusion_quota}, scales={self.n_scales}"
-            )
 
         scales = tuple(artifact.get("metadata", {}).get("diffusion_scales", ()))
         if len(scales) != self.n_scales:

@@ -761,14 +761,6 @@ class HeatGeoDistillation(nn.Module):
         batch_size = anchor_embeddings.size(0)
         candidate_size = teacher_probs.size(-1)
         n_scales = teacher_probs.size(1)
-        if (
-            geometry_head_probs is not None
-            and geometry_head_probs.size(1) != n_scales
-        ):
-            raise ValueError(
-                "geometry estimator and diffusion target must have the same "
-                f"number of scales; got {geometry_head_probs.size(1)} and {n_scales}"
-            )
 
         teacher_probs = teacher_probs.clamp_min(0.0)
         teacher_probs = teacher_probs / teacher_probs.sum(

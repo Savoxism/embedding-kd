@@ -864,13 +864,13 @@ class KnowledgeDistiller:
                 (
                     "row",
                     "loss_row_weighted",
-                    getattr(self.config, "row_weight", 0.0) > 0,
-                ),
-                (
-                    "geom",
-                    "loss_geometry_weighted",
-                    getattr(self.config, "unbiased_geometry_weight", 0.0) > 0,
-                ),
+                        getattr(self.config, "row_weight", 0.0) > 0,
+                    ),
+                    (
+                        "geom",
+                        "loss_geometry_weighted",
+                        getattr(self.config, "unbiased_geometry_weight", 0.0) > 0,
+                    ),
                 ("grad", "grad_norm", True),
             )
             for label, key, enabled in concise_metrics:

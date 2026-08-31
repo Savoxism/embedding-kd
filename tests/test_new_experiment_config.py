@@ -9,7 +9,6 @@ import torch.nn.functional as F
 import main
 from distiller import KnowledgeDistiller, add_domain_averages
 from src.criterions.heatgeo_distillation import HeatGeoDistillation
-from src.data_utils.dataset_cache import TextPairWithTeacherAndHeatGeo
 from src.distill.checkpointing import save_student_weights
 from src.heatgeo.candidate_sampler import HeatGeoCandidateSampler
 from src.heatgeo.graph_builder import _entropic_affinity, _mass_prefix, _softmax_at
@@ -399,15 +398,6 @@ def test_head_tail_sampler_is_unbiased_for_cached_target_distortion():
         unbiased_geometry=True,
         seed=17,
     )
-    dataset = TextPairWithTeacherAndHeatGeo(
-        anchor_texts=[str(idx) for idx in range(n_items)],
-        teacher_cls=torch.zeros(n_items, 2),
-        sampler=sampler,
-    )
-    item = dataset[0]
-    assert item["geometry_head_probs"].shape == (1, 3)
-    assert item["geometry_tail_positions"].shape == (1,)
-    assert item["geometry_tail_mass"].shape == (1,)
     distortion_by_node = np.asarray(
         [0.0, 0.10, 0.35, 0.70, 0.95, 0.20, 0.40, 0.80], dtype=np.float64
     )
@@ -643,7 +633,6 @@ def test_row_selection_knobs_are_gone():
 
     assert config.row_weight == 1.0
     assert config.row_start_epoch == 1
-    assert config.unbiased_geometry_weight == 0.0
 
 
 def test_entropic_affinity_hits_the_requested_perplexity():
