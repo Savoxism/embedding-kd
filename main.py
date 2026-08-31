@@ -6,6 +6,7 @@ from config import (
     DSKDConfig,
     EMOConfig,
     HeatGeoConfig,
+    RKDConfig,
     StellaConfig,
     TALAS_PAPER_PAIRS,
     TALASConfig,
@@ -33,7 +34,7 @@ def parse_args():
         '--method',
         type=str,
         default='cdm',
-        choices=['cdm', 'dskd', 'emo', 'stella', 'talas', 'heatgeo'],
+        choices=['cdm', 'dskd', 'emo', 'stella', 'talas', 'heatgeo', 'rkd'],
         help='Distillation method to use'
     )
     
@@ -141,6 +142,18 @@ def parse_args():
         help='DTW KD loss weight'
     )
     parser.add_argument(
+        '--rkd_distance_weight',
+        type=float,
+        default=None,
+        help='RKD distance-wise loss weight',
+    )
+    parser.add_argument(
+        '--rkd_angle_weight',
+        type=float,
+        default=None,
+        help='RKD angle-wise loss weight',
+    )
+    parser.add_argument(
         '--task_type',
         choices=['single_cls', 'pair_cls', 'pair_reg'],
         default=None,
@@ -167,7 +180,7 @@ def parse_args():
     parser.add_argument(
         '--prepare_cache_only',
         action='store_true',
-        help='Prepare and validate a TALAS teacher cache, then exit before training',
+        help='Prepare and validate a cached-teacher method, then exit before training',
     )
     
     parser.add_argument(
@@ -228,6 +241,8 @@ def get_config(method: str, args):
         config = TALASConfig()
     elif method == 'heatgeo':
         config = HeatGeoConfig()
+    elif method == 'rkd':
+        config = RKDConfig()
     else:
         config = BaseConfig()
 
@@ -293,6 +308,10 @@ def get_config(method: str, args):
         config.w_task = args.w_task
     if args.alpha_dtw is not None:
         config.alpha_dtw = args.alpha_dtw
+    if args.rkd_distance_weight is not None:
+        config.rkd_distance_weight = args.rkd_distance_weight
+    if args.rkd_angle_weight is not None:
+        config.rkd_angle_weight = args.rkd_angle_weight
     if args.task_type is not None:
         config.task_type = args.task_type
     
@@ -324,8 +343,10 @@ def get_config(method: str, args):
 def main():
     args = parse_args()
 
-    if args.prepare_cache_only and args.method != 'talas':
-        raise SystemExit('--prepare_cache_only is supported only with --method talas')
+    if args.prepare_cache_only and args.method not in {'talas', 'rkd'}:
+        raise SystemExit(
+            '--prepare_cache_only is supported only with --method talas or rkd'
+        )
     
     config = get_config(args.method, args)
     
@@ -345,7 +366,7 @@ def main():
         sys.exit(1)
 
     if args.prepare_cache_only:
-        print(f"TALAS teacher cache prepared and validated: {config.cache_path}")
+        print(f"{args.method.upper()} teacher cache prepared and validated: {config.cache_path}")
         return
     
     try:

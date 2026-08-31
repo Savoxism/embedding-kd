@@ -56,6 +56,41 @@ def test_heatgeo_cli_overrides(monkeypatch):
     assert config.final_weights_only is True
 
 
+def test_rkd_cli_uses_paper_defaults_and_accepts_overrides(monkeypatch):
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "main.py",
+            "--method",
+            "rkd",
+            "--rkd_distance_weight",
+            "0.5",
+            "--rkd_angle_weight",
+            "3.0",
+            "--cache_path",
+            "cache/rkd/teacher.pt",
+            "--pooling_method",
+            "mean",
+        ],
+    )
+
+    args = main.parse_args()
+    config = main.get_config(args.method, args)
+
+    assert config.distill_method == "rkd"
+    assert config.rkd_distance_weight == 0.5
+    assert config.rkd_angle_weight == 3.0
+    assert config.w_task == 0.0
+    assert config.batch_size == 128
+    assert config.epochs == 80
+    assert config.learning_rate == 1e-4
+    assert config.weight_decay == 1e-5
+    assert config.rkd_lr_decay_epochs == (40, 60)
+    assert config.cache_path == "cache/rkd/teacher.pt"
+    assert config.pooling_method == "mean"
+
+
 def test_heatgeo_temperature_ties():
     criterion = HeatGeoDistillation(
         student_dim=4,

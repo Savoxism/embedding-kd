@@ -44,6 +44,7 @@ from src.criterions.contextual_dynamic_mapping import ContextualDynamicMapping
 from src.criterions.dual_space_kd import DualSpaceKD
 from src.criterions.emo_embedding_distillation import EMODistillation
 from src.criterions.heatgeo_distillation import HeatGeoDistillation
+from src.criterions.relational_kd import RelationalKnowledgeDistillation
 from src.criterions.stella_distillation import (
     StellaModel,
     stella_stage1_loss,
@@ -193,6 +194,18 @@ class KnowledgeDistiller:
             )
             self.scheduler = self._build_scheduler()
             print("EMO criterion initialized and added to optimizer")
+        elif config.distill_method == "rkd":
+            self.criterion = RelationalKnowledgeDistillation(
+                distance_weight=config.rkd_distance_weight,
+                angle_weight=config.rkd_angle_weight,
+                task_weight=config.w_task,
+                eps=config.eps_norm,
+            ).to(self.device_s)
+            print(
+                "RKD-DA criterion initialized: "
+                f"distance={config.rkd_distance_weight}, "
+                f"angle={config.rkd_angle_weight}, task={config.w_task}"
+            )
         elif config.distill_method == "heatgeo":
             # Multi-layer HeatGeo logic
             if hasattr(config, "kd_teacher_layers") and hasattr(config, "kd_student_layers"):
@@ -368,16 +381,21 @@ class KnowledgeDistiller:
 
         print("Loading tokenizers...")
         tokenizer_kwargs = {"use_fast": True}
-        self._talas_cache_ready = (
-            cfg.distill_method == "talas" and Path(cfg.cache_path).is_file()
+        cached_teacher_methods = {"talas", "heatgeo", "rkd"}
+        self._teacher_cache_ready = (
+            cfg.distill_method in cached_teacher_methods
+            and Path(cfg.cache_path).is_file()
         )
         self.tok_student = AutoTokenizer.from_pretrained(
             cfg.student_model_name,
             **tokenizer_kwargs,
         )
-        if self._talas_cache_ready:
+        if self._teacher_cache_ready:
             self.tok_teacher = None
-            print("TALAS teacher cache found; skipping teacher tokenizer/model loading")
+            print(
+                f"{cfg.distill_method.upper()} teacher cache found; "
+                "skipping teacher tokenizer/model loading"
+            )
         else:
             self.tok_teacher = AutoTokenizer.from_pretrained(
                 cfg.teacher_model_name,
@@ -423,7 +441,7 @@ class KnowledgeDistiller:
                 **student_kwargs,
             )
 
-        if self._talas_cache_ready:
+        if self._teacher_cache_ready:
             self.model_teacher = None
         else:
             print(f"Loading teacher model: {cfg.teacher_model_name}")
@@ -571,8 +589,8 @@ class KnowledgeDistiller:
                     self.device_s
                 )
 
-        # TALAS and HeatGeo use cached teacher embeddings
-        if cfg.distill_method in ("talas", "heatgeo"):
+        # TALAS, HeatGeo and RKD use cached teacher embeddings.
+        if cfg.distill_method in ("talas", "heatgeo", "rkd"):
             cache_path = Path(cfg.cache_path)
 
             # Check if cache exists
@@ -643,7 +661,7 @@ class KnowledgeDistiller:
                 teacher_cls_list,
                 len(df),
                 cache_path=str(cache_path),
-                require_single_layer=cfg.distill_method == "talas",
+                require_single_layer=cfg.distill_method in ("talas", "rkd"),
             )
 
             self.teacher_cls_all = teacher_cls_list
@@ -747,12 +765,10 @@ class KnowledgeDistiller:
             pin_memory=True,
             num_workers=cfg.num_workers,
             persistent_workers=cfg.num_workers > 0 and not resamples_per_epoch,
-            # 13553 rows at batch 16 leaves a remainder of one. Under in-batch sharing
-            # that step scores its single anchor against candidate_size columns instead
-            # of ~batch_size * candidate_size, which is a structurally different
-            # objective taking a real gradient step -- and it is also the step whose
-            # diagnostics land in the progress bar.
-            drop_last=cfg.distill_method == "heatgeo",
+            # HeatGeo and RKD define their relational support from the batch. A short
+            # remainder would therefore optimize a structurally different objective;
+            # RKD additionally needs at least two examples to form a relation.
+            drop_last=cfg.distill_method in ("heatgeo", "rkd"),
         )
 
         print(f"Training samples: {len(self.train_ds)}")
@@ -762,6 +778,16 @@ class KnowledgeDistiller:
     def _build_scheduler(self):
         cfg = self.config
         total_steps = len(self.train_loader) * cfg.epochs
+        if cfg.distill_method == "rkd":
+            milestones = [
+                int(epoch) * len(self.train_loader)
+                for epoch in cfg.rkd_lr_decay_epochs
+            ]
+            return optim.lr_scheduler.MultiStepLR(
+                self.optimizer,
+                milestones=milestones,
+                gamma=cfg.rkd_lr_decay_gamma,
+            )
         min_lr_rate = cfg.min_lr / cfg.learning_rate
         return get_scheduler(
             name="cosine_with_min_lr",
@@ -782,6 +808,14 @@ class KnowledgeDistiller:
             print(
                 "TALAS: Deferring optimizer/scheduler initialization until criterion is created"
             )
+        elif cfg.distill_method == "rkd":
+            self.optimizer = optim.Adam(
+                self.model_student.parameters(),
+                lr=cfg.learning_rate,
+                weight_decay=cfg.weight_decay,
+            )
+            self.scaler = GradScaler("cuda", enabled=torch.cuda.is_available())
+            self.scheduler = self._build_scheduler()
         else:
             optimizer_parameters = list(self.model_student.parameters())
             if self.task_head is not None:
@@ -1058,6 +1092,67 @@ class KnowledgeDistiller:
             )
             self.scheduler.step()
 
+            return loss, metrics
+
+        if method == "rkd":
+            batch_s = {
+                key: value.to(self.device_s, non_blocking=True)
+                for key, value in batch.items()
+                if torch.is_tensor(value)
+                and (key.endswith("_stu") or key in {"labels", "teacher_cls"})
+            }
+            self.optimizer.zero_grad(set_to_none=True)
+
+            with autocast("cuda", enabled=torch.cuda.is_available()):
+                student_output = self.model_student(
+                    input_ids=batch_s["input_ids1_stu"],
+                    attention_mask=batch_s["attention_mask1_stu"],
+                    return_dict=True,
+                )
+                student_cls = student_output.last_hidden_state[:, 0, :]
+
+                task_loss = None
+                if cfg.w_task > 0:
+                    if "input_ids2_stu" not in batch_s:
+                        raise ValueError(
+                            "RKD with w_task > 0 requires a second text view"
+                        )
+                    student_output2 = self.model_student(
+                        input_ids=batch_s["input_ids2_stu"],
+                        attention_mask=batch_s["attention_mask2_stu"],
+                        return_dict=True,
+                    )
+                    student_cls2 = student_output2.last_hidden_state[:, 0, :]
+                    task_loss, _ = info_nce(
+                        student_cls,
+                        student_cls2,
+                        temperature=cfg.temperature,
+                    )
+
+                loss, metrics = self.criterion(
+                    student=student_cls,
+                    teacher=batch_s["teacher_cls"],
+                    task_loss=task_loss,
+                )
+                loss = loss.float()
+
+            if not is_finite(loss):
+                raise RuntimeError(
+                    f"RKD loss NaN/Inf at epoch={self.current_epoch} "
+                    f"step={self.current_step}"
+                )
+
+            self.scaler.scale(loss).backward()
+            self.scaler.unscale_(self.optimizer)
+            if not grads_are_finite(self.optimizer):
+                self.optimizer.zero_grad(set_to_none=True)
+                self.scaler.update()
+                self.scheduler.step()
+                return loss, {**metrics, "skip": "grad_inf"}
+
+            self.scaler.step(self.optimizer)
+            self.scaler.update()
+            self.scheduler.step()
             return loss, metrics
 
         if method == "talas":

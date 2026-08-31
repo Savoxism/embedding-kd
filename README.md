@@ -104,6 +104,31 @@ All hyperparameters are in `config/heatgeo_config.py`. Key groups:
 
 ## Training
 
+### RKD baseline
+
+RKD uses the paper-default RKD-DA objective (distance weight 1, angle weight 2,
+no task loss) and the original metric-learning optimizer schedule (Adam,
+batch 128, 80 epochs, learning rate `1e-4`, decays at epochs 40 and 60). Teacher
+embeddings are cached before student training.
+
+```bash
+bash scripts/train_rkd.sh
+```
+
+Select another supported teacher-student pair or prepare only its cache:
+
+```bash
+bash scripts/train_rkd.sh bge_m3_to_minilmv2_h768
+bash scripts/train_rkd.sh qwen3_4b_to_bert_base --prepare-cache
+```
+
+For a quick smoke run, override the expensive paper defaults through environment
+variables:
+
+```bash
+BATCH_SIZE=16 EPOCHS=1 bash scripts/train_rkd.sh
+```
+
 ### Using the shell script
 
 ```bash
@@ -170,6 +195,7 @@ Validation runs after each epoch. Test evaluation runs once after training.
 This repository also includes implementations of other distillation baselines for comparison:
 
 - **TALAS** (`config/talas_config.py`, `scripts/train_talas.sh`)
+- **RKD** (`config/rkd_config.py`, `scripts/train_rkd.sh`)
 - **CDM** (`config/cdm_config.py`, `scripts/train_cdm.sh`)
 - **DSKD** (`config/dskd_config.py`, `scripts/train_dskd.sh`)
 - **EMO** (`config/emo_config.py`, `scripts/train_emo.sh`)
