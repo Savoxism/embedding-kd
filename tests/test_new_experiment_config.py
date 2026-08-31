@@ -389,6 +389,8 @@ def test_symmetric_geometry_loss_scores_each_unordered_edge_once():
     teacher_bank, anchor, candidates, teacher_probs, candidate_idx, anchor_idx = (
         _geometry_loss_inputs()
     )
+    anchor.requires_grad_()
+    candidates.requires_grad_()
     criterion = HeatGeoDistillation(
         student_dim=3,
         teacher_dim=3,
@@ -433,6 +435,9 @@ def test_symmetric_geometry_loss_scores_each_unordered_edge_once():
     assert total.item() == pytest.approx(
         metrics["loss_diff"] + expected.item(), rel=1e-5
     )
+    total.backward()
+    assert anchor.grad is not None and torch.isfinite(anchor.grad).all()
+    assert candidates.grad is not None and torch.isfinite(candidates.grad).all()
 
 
 def test_entropic_affinity_hits_the_requested_perplexity():

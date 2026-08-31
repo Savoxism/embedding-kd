@@ -520,7 +520,19 @@ class HeatGeoDistillation(nn.Module):
         squared_error = (similarity - teacher_similarity).square()
 
         # ell_ij = (cos_S(i,j) - cos_T(i,j))^2 / 4 lies in [0, 1].
-        loss_geo = (selected_distribution * squared_error / 4.0).sum(dim=-1).mean()
+        loss_geo = zero
+        if self.geo_weight > 0.0:
+            loss_geo = (
+                selected_distribution * squared_error / 4.0
+            ).sum(dim=-1).mean()
+
+        # A geo-only run must not pay for unique-edge construction (or execute
+        # scatter kernels that cannot affect its objective).
+        if self.sym_weight <= 0.0:
+            return loss_geo, zero, {
+                "geo_relations": selected.float().sum(),
+                "sym_edges": zero,
+            }
 
         flat_selected = selected.reshape(-1)
         directed_anchor = anchor_idx.view(-1, 1).expand_as(candidate_idx).reshape(-1)
