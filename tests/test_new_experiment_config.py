@@ -7,7 +7,7 @@ import torch
 import torch.nn.functional as F
 
 import main
-from distiller import KnowledgeDistiller
+from distiller import KnowledgeDistiller, add_domain_averages
 from src.criterions.heatgeo_distillation import HeatGeoDistillation
 from src.heatgeo.candidate_sampler import HeatGeoCandidateSampler
 from src.heatgeo.graph_builder import _entropic_affinity, _mass_prefix, _softmax_at
@@ -80,6 +80,42 @@ def test_heatgeo_cli_overrides(monkeypatch):
     assert config.pooling_method == "last_token"
     assert config.weights_dir == "weights"
     assert config.final_weights_only is True
+
+
+def test_domain_averages_follow_the_paper_metric_protocol():
+    results = {
+        "classification": {
+            "data/test_set/banking77_test.csv": {"accuracy": 0.01, "f1": 0.9},
+            "data/test_set/emotion_test.csv": {"accuracy": 0.02, "f1": 0.6},
+            "data/test_set/tweet_test.csv": {"accuracy": 0.03, "f1": 0.7},
+        },
+        "pair": {
+            "data/test_set/mrpc_test.csv": {
+                "accuracy": 0.04,
+                "average_precision": 0.8,
+            },
+            "data/test_set/scitail_test.csv": {
+                "accuracy": 0.05,
+                "average_precision": 0.75,
+            },
+            "data/test_set/wic_test.csv": {
+                "accuracy": 0.06,
+                "average_precision": 0.65,
+            },
+        },
+        "sts": {
+            "data/test_set/sick_test.csv": 0.72,
+            "data/test_set/sts12_test.csv": 0.68,
+            "data/test_set/stsb_test.csv": 0.74,
+        },
+    }
+
+    enriched = add_domain_averages(results)
+
+    assert enriched["avg_in"] == 66.33
+    assert enriched["avg_out"] == 75.83
+    assert enriched["avg"] == 72.67
+    assert enriched["classification"] is results["classification"]
 
 
 def test_rkd_cli_uses_paper_defaults_and_accepts_overrides(monkeypatch):

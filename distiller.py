@@ -84,6 +84,67 @@ from src.pooling import last_token_pool
 # would be the loss curve afterwards.
 MAX_GRAD_NORM = 1.0
 
+PRIMARY_EVALUATION_METRICS = {
+    "classification": "f1",
+    "pair": "average_precision",
+    "sts": "spearman",
+}
+IN_DOMAIN_BENCHMARKS = ("emotion", "wic", "stsb")
+OUT_DOMAIN_BENCHMARKS = (
+    "banking77",
+    "tweet",
+    "mrpc",
+    "scitail",
+    "sick",
+    "sts12",
+)
+ALL_BENCHMARKS = IN_DOMAIN_BENCHMARKS + OUT_DOMAIN_BENCHMARKS
+
+
+def add_domain_averages(results: dict[str, Any]) -> dict[str, Any]:
+    """Add paper-protocol averages while preserving all detailed metrics.
+
+    Classification contributes F1, pair classification contributes average
+    precision, and STS contributes Spearman. The three aggregate values use the
+    paper's [0, 100] percentage-point scale; detailed metrics remain unchanged.
+    """
+    scores: dict[str, float] = {}
+    for family, metric_name in PRIMARY_EVALUATION_METRICS.items():
+        for path, raw_values in results.get(family, {}).items():
+            benchmark = Path(path).stem
+            for suffix in ("_validation", "_test"):
+                benchmark = benchmark.removesuffix(suffix)
+            if family == "sts":
+                score = float(raw_values)
+            else:
+                score = float(raw_values[metric_name])
+            scores[benchmark] = score
+
+    missing = sorted(set(ALL_BENCHMARKS) - scores.keys())
+    if missing:
+        raise ValueError(
+            "Cannot compute domain averages; missing primary metrics for: "
+            + ", ".join(missing)
+        )
+
+    enriched = dict(results)
+    enriched["avg_in"] = round(
+        100.0 * sum(scores[name] for name in IN_DOMAIN_BENCHMARKS)
+        / len(IN_DOMAIN_BENCHMARKS),
+        2,
+    )
+    enriched["avg_out"] = round(
+        100.0 * sum(scores[name] for name in OUT_DOMAIN_BENCHMARKS)
+        / len(OUT_DOMAIN_BENCHMARKS),
+        2,
+    )
+    enriched["avg"] = round(
+        100.0 * sum(scores[name] for name in ALL_BENCHMARKS)
+        / len(ALL_BENCHMARKS),
+        2,
+    )
+    return enriched
+
 
 def is_finite(x: torch.Tensor) -> bool:
     return torch.is_tensor(x) and torch.isfinite(x).all().item()
@@ -1855,11 +1916,6 @@ class KnowledgeDistiller:
         split: str,
         results: dict[str, Any],
     ) -> None:
-        primary_metrics = {
-            "classification": "f1",
-            "pair": "average_precision",
-            "sts": "spearman",
-        }
         rows = []
         for family in ("classification", "pair", "sts"):
             family_scores = []
@@ -1867,7 +1923,7 @@ class KnowledgeDistiller:
                 values = (
                     {"spearman": raw_values} if family == "sts" else dict(raw_values)
                 )
-                metric_name = primary_metrics[family]
+                metric_name = PRIMARY_EVALUATION_METRICS[family]
                 score = float(values[metric_name])
                 family_scores.append(score)
                 rows.append(
@@ -1884,7 +1940,7 @@ class KnowledgeDistiller:
                     (
                         family,
                         "MEAN",
-                        primary_metrics[family],
+                        PRIMARY_EVALUATION_METRICS[family],
                         f"{100.0 * sum(family_scores) / len(family_scores):.2f}",
                         "",
                     )
@@ -1947,11 +2003,13 @@ class KnowledgeDistiller:
         sts = eval_sts_task(self.model_student, sts_tasks, self.tok_student)
         if split == "validation":
             self.pair_validation_thresholds = selected_thresholds
-        results = {
-            "classification": classification,
-            "pair": pair,
-            "sts": sts,
-        }
+        results = add_domain_averages(
+            {
+                "classification": classification,
+                "pair": pair,
+                "sts": sts,
+            }
+        )
         self.print_evaluation_table(split, results)
         return results
 
