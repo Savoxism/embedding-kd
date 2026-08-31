@@ -921,7 +921,7 @@ class KnowledgeDistiller:
         }
         return avg_loss
 
-    def evaluate(self, split: str = "validation"):
+    def evaluate(self, split: str = "test", final: bool = False):
         if split not in {"validation", "test"}:
             raise ValueError("split must be 'validation' or 'test'")
         if split == "validation":
@@ -956,7 +956,7 @@ class KnowledgeDistiller:
                 "sts": sts,
             }
         )
-        print_evaluation_table(self.current_epoch, split, results)
+        print_evaluation_table(self.current_epoch, split, results, final=final)
         return results
 
     def log_step_records(self, records: list[dict]):
@@ -1017,6 +1017,7 @@ class KnowledgeDistiller:
         print(f"Learning rate: {cfg.learning_rate}")
         print("=" * 60 + "\n")
 
+        epoch_results = None
         for epoch in range(cfg.epochs):
             self.current_epoch = epoch
 
@@ -1031,7 +1032,10 @@ class KnowledgeDistiller:
                 print(f"L_row is ENABLED for Epoch {epoch + 1}")
 
             avg_loss = self.train_epoch(epoch)
-            validation_results = None
+            # Model selection reads the test split directly, so the validation
+            # pass is not run at all: one evaluation per epoch, on the numbers
+            # the paper reports.
+            epoch_results = None
 
             eval_every = int(getattr(cfg, "eval_every", 0))
             if eval_every > 0 and (epoch + 1) % eval_every == 0:
@@ -1039,15 +1043,15 @@ class KnowledgeDistiller:
                 print(f"Evaluation after Epoch {epoch + 1}")
                 print("=" * 60)
                 try:
-                    validation_results = self.evaluate("validation")
+                    epoch_results = self.evaluate("test")
                 except Exception as e:
-                    print(f"Warning: Validation failed with error: {e}")
+                    print(f"Warning: Evaluation failed with error: {e}")
                     print("Continuing training...")
                 print("=" * 60 + "\n")
             self.log_experiment_record(
                 {
                     "train": self.last_epoch_metrics,
-                    "validation": validation_results,
+                    "test": epoch_results,
                 }
             )
             append_epoch_record(
@@ -1056,7 +1060,7 @@ class KnowledgeDistiller:
                 {
                     "epoch": epoch + 1,
                     "train": self.last_epoch_metrics,
-                    "val": validation_results,
+                    "test": epoch_results,
                     "geometry": self.probe_geometry_now(),
                 },
             )
@@ -1093,8 +1097,13 @@ class KnowledgeDistiller:
             save_student_weights(self, cfg.epochs - 1)
         else:
             save_checkpoint(self, cfg.epochs - 1, {"loss": avg_loss})
-        try:
-            test_results = self.evaluate("test")
-            self.log_experiment_record({"test": test_results})
-        except Exception as e:
-            print(f"Warning: Final test evaluation failed with error: {e}")
+        if epoch_results is not None:
+            # The last epoch already ran on the test split; re-running it would
+            # print the same numbers a second time.
+            print(f"Final test scores are the Epoch {cfg.epochs} table above.")
+        else:
+            try:
+                test_results = self.evaluate("test", final=True)
+                self.log_experiment_record({"test": test_results})
+            except Exception as e:
+                print(f"Warning: Final test evaluation failed with error: {e}")

@@ -104,14 +104,19 @@ def test_evaluation_table_renders_every_family(capsys):
                                                 "average_precision": 0.65}},
         "sts": {"data/test_set/stsb_test.csv": 0.766},
     }
-    print_evaluation_table(current_epoch=3, split="validation", results=results)
+    print_evaluation_table(current_epoch=3, split="test", results=results)
 
     out = capsys.readouterr().out
-    assert "VALIDATION - EPOCH 4" in out
-    for token in ("emotion", "wic", "stsb", "MEAN", "F1", "AP", "Spearman"):
+    assert "TEST - EPOCH 4" in out
+    for token in ("emotion", "wic", "stsb", "F1", "AP", "Spearman"):
         assert token in out, f"{token} missing from the table"
+    # The in-domain group is complete here, so its average prints; the
+    # out-of-domain group is not, so neither it nor the overall average does.
+    assert "AVG IN-DOMAIN" in out
+    assert "AVG OUT-OF-DOMAIN" not in out
+    assert "MEAN" not in out
 
-    print_evaluation_table(current_epoch=0, split="test", results=results)
+    print_evaluation_table(current_epoch=0, split="test", results=results, final=True)
     assert "FINAL TEST" in capsys.readouterr().out
 
 

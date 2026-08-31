@@ -87,16 +87,17 @@ def train(ctx) -> None:
     ctx.ma_window = deque(maxlen=50)
 
     ctx.current_stage = 2
+    epoch_results = None
     for epoch in range(cfg.epochs_stage2):
         avg_loss = ctx.train_epoch(epoch)
-        validation_results = None
+        epoch_results = None
 
         print("\n" + "=" * 60)
         print(f"Evaluation after Stage2 Epoch {epoch + 1}")
         print("=" * 60)
 
         try:
-            validation_results = ctx.evaluate("validation")
+            epoch_results = ctx.evaluate("test")
         except Exception as e:
             print(f"Warning: Evaluation failed with error: {e}")
             print("Continuing training...")
@@ -106,7 +107,7 @@ def train(ctx) -> None:
             {
                 "stage": 2,
                 "train": ctx.last_epoch_metrics,
-                "validation": validation_results,
+                "test": epoch_results,
             }
         )
 
@@ -118,11 +119,18 @@ def train(ctx) -> None:
     print("=" * 70)
 
     save_checkpoint(ctx, cfg.epochs_stage2 - 1, {"loss": avg_loss})
-    try:
-        test_results = ctx.evaluate("test")
-        ctx.log_experiment_record({"stage": 2, "test": test_results})
-    except Exception as e:
-        print(f"Warning: Final test evaluation failed with error: {e}")
+    if epoch_results is not None:
+        # The last stage-2 epoch already evaluated on the test split.
+        print(
+            "Final test scores are the Stage2 Epoch "
+            f"{cfg.epochs_stage2} table above."
+        )
+    else:
+        try:
+            test_results = ctx.evaluate("test", final=True)
+            ctx.log_experiment_record({"stage": 2, "test": test_results})
+        except Exception as e:
+            print(f"Warning: Final test evaluation failed with error: {e}")
 
     print("\n" + "=" * 70)
     print("Training completed successfully!")

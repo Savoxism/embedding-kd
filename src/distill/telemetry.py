@@ -11,7 +11,7 @@ the config, the git commit, the graph artifact and the environment.
 *Runs produced one number.* With `eval_every = 0` a five-epoch run reported a
 single score at the end, which is a poor trade when an epoch costs ~23 s: there
 was no way to see whether the model had converged, which epoch was best, or which
-benchmark an arm moved. `epochs.jsonl` records train means, validation scores and
+benchmark an arm moved. `epochs.jsonl` records train means, test scores and
 embedding geometry once per epoch, so a run answers those without being re-run.
 """
 
