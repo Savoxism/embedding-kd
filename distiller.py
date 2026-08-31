@@ -1,9 +1,7 @@
 import json
 import os
 import random
-import shutil
 import sys
-import tempfile
 import time
 from collections import deque
 from pathlib import Path
@@ -14,26 +12,12 @@ import pandas as pd
 import torch
 import torch.nn.functional as F
 from torch import nn, optim
-from torch.amp import GradScaler, autocast
+from torch.amp import GradScaler
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 from transformers import AutoModel, AutoTokenizer, get_scheduler
 from transformers import __version__ as transformers_version
 
-from src.distill.benchmarks import add_domain_averages, print_evaluation_table
-from src.distill.checkpointing import save_checkpoint, save_student_weights
-from src.distill.stella_trainer import train as stella_train
-from src.distill.steps.heatgeo import step as heatgeo_step
-from src.distill.steps.rkd import step as rkd_step
-from src.distill.steps.standard import step as standard_step
-from src.distill.steps.talas import step as talas_step
-from src.distill.numerics import (
-    MAX_GRAD_NORM,
-    assert_module_parameters_finite,
-    grads_are_finite,
-    is_finite,
-    nonfinite_details,
-)
 from src.cache_teacher import (
     cache_teacher_embeddings,
     load_cached_embeddings,
@@ -46,10 +30,7 @@ from src.criterions.heatgeo_distillation import HeatGeoDistillation
 from src.criterions.relational_kd import RelationalKnowledgeDistillation
 from src.criterions.stella_distillation import (
     StellaModel,
-    stella_stage1_loss,
-    stella_stage2_loss,
 )
-from src.criterions.teacher_anchor_kd import TeacherAnchorKD
 from src.data_utils import DualTokenizerCollate, TextPairRaw
 from src.data_utils.dataset_cache import (
     DualTokenizerCollateWithTeacher,
@@ -57,6 +38,18 @@ from src.data_utils.dataset_cache import (
     TextPairWithTeacher,
     TextPairWithTeacherAndHeatGeo,
 )
+from src.distill.benchmarks import add_domain_averages, print_evaluation_table
+from src.distill.checkpointing import save_checkpoint, save_student_weights
+from src.distill.geometry import build_probe_set, probe_geometry
+from src.distill.numerics import (
+    assert_module_parameters_finite,
+)
+from src.distill.stella_trainer import train as stella_train
+from src.distill.steps.heatgeo import step as heatgeo_step
+from src.distill.steps.rkd import step as rkd_step
+from src.distill.steps.standard import step as standard_step
+from src.distill.steps.talas import step as talas_step
+from src.distill.telemetry import append_epoch_record, new_run_id, write_run_manifest
 from src.evaluation.evaluation_automodel import (
     eval_classification_task,
     eval_cls_tasks,
@@ -70,17 +63,6 @@ from src.evaluation.evaluation_automodel import (
 )
 from src.heatgeo import HeatGeoCandidateSampler, build_or_load_heatgeo_artifact
 from src.loss import info_nce
-from src.pooling import last_token_pool
-
-
-
-
-
-
-
-
-
-
 
 
 class KnowledgeDistiller:
@@ -91,6 +73,11 @@ class KnowledgeDistiller:
         self.current_step = 0
         self._saved_checkpoint_epochs = set()
         self._saved_student_weight_epochs = set()
+        # Identifies every file this run writes. metrics.jsonl / step_metrics.jsonl
+        # / epochs.jsonl are all opened in append mode, so without it a save_dir
+        # reused across runs interleaves them with no way to separate the rows.
+        self.run_id = new_run_id()
+        self.probe_texts: list[str] = []
         self.setup_seed(config.seed)
         self.setup_devices()
         self.setup_models()
@@ -413,6 +400,16 @@ class KnowledgeDistiller:
         # HeatGeo is anchor-only: the teacher graph, the candidate pool and the
         # student forward all consume one string per row. Resolve that column once
         # and keep it, instead of each component re-deriving it from the frame.
+        # Fixed probe set for the geometry diagnostics. Sampled from the training
+        # corpus with a fixed seed so the numbers are comparable across epochs and
+        # across runs; a probe set that moves measures nothing.
+        probe_column = next(
+            (c for c in ("text", "anchor", "sentence1", "premise") if c in df.columns),
+            None,
+        )
+        if probe_column is not None:
+            self.probe_texts = build_probe_set(df, probe_column, size=2048, seed=0)
+
         self.heatgeo_anchor_column = None
         if cfg.distill_method == "heatgeo":
             self.heatgeo_anchor_column = self._resolve_heatgeo_anchor_column(df)
@@ -446,25 +443,19 @@ class KnowledgeDistiller:
                 print("Cache not found. Pre-computing teacher embeddings...")
                 os.makedirs(cache_path.parent, exist_ok=True)
 
-                # Create temporary dataset for caching
-                temp_ds = TextPairRaw(df, cfg.task_type)
-                temp_collate = DualTokenizerCollate(
-                    self.tok_student, self.tok_teacher, cfg.task_type, cfg.max_length
-                )
-                cache_loader = DataLoader(
-                    temp_ds,
-                    batch_size=cfg.batch_size,
-                    shuffle=False,  # Don't shuffle for caching
-                    collate_fn=temp_collate,
-                    pin_memory=True,
-                    num_workers=cfg.num_workers,
-                    persistent_workers=cfg.num_workers > 0,
-                )
+                # The first text of each sample -- exactly what the old caching
+                # collate fed the teacher. Taken from TextPairRaw rather than
+                # re-derived from the frame so the two cannot drift apart when a
+                # task type resolves its columns differently.
+                cache_texts = [
+                    sample[0] for sample in TextPairRaw(df, cfg.task_type).samples
+                ]
 
-                # Cache teacher embeddings
                 teacher_cls_list = cache_teacher_embeddings(
                     model_teacher=self.model_teacher,
-                    dataloader=cache_loader,
+                    texts=cache_texts,
+                    tokenizer=self.tok_teacher,
+                    max_length=cfg.max_length,
                     device=self.device_t,
                     pooling_method=cfg.pooling_method,
                     normalize=cfg.normalize_cache,
@@ -661,6 +652,28 @@ class KnowledgeDistiller:
             print(f"Checkpoints will be saved to: {cfg.save_dir}")
         print("Done setup_training")
 
+    def probe_geometry_now(self) -> dict[str, float] | None:
+        """Geometry of the student's space, or None if it cannot be measured.
+
+        Never fatal: a diagnostic that can end a training run is worse than no
+        diagnostic. Failures are reported once and the run continues.
+        """
+        if not self.probe_texts or self.tok_student is None:
+            return None
+        try:
+            return probe_geometry(
+                self.model_student,
+                self.tok_student,
+                self.probe_texts,
+                max_length=min(128, int(getattr(self.config, "max_length", 128))),
+                seed=0,
+            )
+        except Exception as error:
+            if not getattr(self, "_warned_geometry", False):
+                self._warned_geometry = True
+                print(f"Warning: geometry probe unavailable ({error})")
+            return None
+
     def sync_all(self):
         if torch.cuda.is_available():
             for i in range(torch.cuda.device_count()):
@@ -718,7 +731,6 @@ class KnowledgeDistiller:
 
         loss, _ = info_nce(student_cls1, student_cls2, temperature=cfg.temperature)
         return loss, {}
-
 
     def train_step(self, batch: dict) -> tuple[torch.Tensor, dict]:
         cfg = self.config
@@ -909,11 +921,6 @@ class KnowledgeDistiller:
         }
         return avg_loss
 
-
-
-
-
-
     def evaluate(self, split: str = "validation"):
         if split not in {"validation", "test"}:
             raise ValueError("split must be 'validation' or 'test'")
@@ -965,7 +972,10 @@ class KnowledgeDistiller:
         path = os.path.join(self.config.save_dir, "step_metrics.jsonl")
         with open(path, "a", encoding="utf-8") as handle:
             handle.writelines(
-                json.dumps(record, default=float, sort_keys=True) + "\n"
+                json.dumps(
+                    {"run_id": self.run_id, **record}, default=float, sort_keys=True
+                )
+                + "\n"
                 for record in records
             )
 
@@ -975,6 +985,7 @@ class KnowledgeDistiller:
         os.makedirs(self.config.save_dir, exist_ok=True)
         path = os.path.join(self.config.save_dir, "metrics.jsonl")
         payload = {
+            "run_id": self.run_id,
             "method": self.config.distill_method,
             "seed": self.config.seed,
             **record,
@@ -984,6 +995,12 @@ class KnowledgeDistiller:
 
     def train(self):
         cfg = self.config
+        write_run_manifest(
+            cfg.save_dir,
+            self.run_id,
+            cfg,
+            artifact=getattr(self, "heatgeo_artifact", None),
+        )
 
         if cfg.distill_method == "stella":
             stella_train(self)
@@ -1008,9 +1025,7 @@ class KnowledgeDistiller:
                 and cfg.row_weight > 0
                 and epoch + 1 >= cfg.row_start_epoch
             )
-            if self.criterion is not None and hasattr(
-                self.criterion, "use_row_loss"
-            ):
+            if self.criterion is not None and hasattr(self.criterion, "use_row_loss"):
                 self.criterion.use_row_loss = use_row
             if use_row:
                 print(f"L_row is ENABLED for Epoch {epoch + 1}")
@@ -1035,11 +1050,19 @@ class KnowledgeDistiller:
                     "validation": validation_results,
                 }
             )
+            append_epoch_record(
+                cfg.save_dir,
+                self.run_id,
+                {
+                    "epoch": epoch + 1,
+                    "train": self.last_epoch_metrics,
+                    "val": validation_results,
+                    "geometry": self.probe_geometry_now(),
+                },
+            )
 
             final_weights_only = bool(getattr(cfg, "final_weights_only", False))
-            should_save_final_weights = (
-                final_weights_only and epoch + 1 == cfg.epochs
-            )
+            should_save_final_weights = final_weights_only and epoch + 1 == cfg.epochs
             should_save_checkpoint = (
                 not final_weights_only and (epoch + 1) % cfg.save_every == 0
             )
@@ -1047,9 +1070,7 @@ class KnowledgeDistiller:
                 try:
                     if should_save_final_weights:
                         if not getattr(cfg, "weights_dir", None):
-                            raise ValueError(
-                                "final_weights_only requires weights_dir"
-                            )
+                            raise ValueError("final_weights_only requires weights_dir")
                         save_student_weights(self, epoch)
                     else:
                         save_checkpoint(self, epoch, {"loss": avg_loss})

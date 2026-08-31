@@ -1,5 +1,6 @@
 import os
 import warnings
+from contextlib import contextmanager
 from pathlib import Path
 
 import numpy as np
@@ -7,6 +8,7 @@ import pandas as pd
 import torch
 import torch.nn.functional as F
 from scipy.stats import spearmanr
+from sklearn.exceptions import ConvergenceWarning
 from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import (
     accuracy_score,
@@ -15,53 +17,121 @@ from sklearn.metrics import (
     precision_score,
     recall_score,
 )
-from torch.utils.data import DataLoader, Dataset
 from tqdm import tqdm
 
 BASE_DIR = Path(__file__).resolve().parent.parent.parent
 
+# Inference batch. 64 was the training batch size carried over; with a p95 length
+# of ~34 tokens it leaves the GPU idle on a forward-only pass.
+EVAL_BATCH_SIZE = 256
 
-class STSDataset(Dataset):
-    def __init__(self, file_path):
-        full_path = BASE_DIR / file_path if not os.path.isabs(file_path) else file_path
-        self.dataset = pd.read_csv(full_path)
+# Iterations for the linear probe. The probe is a measuring instrument, not part
+# of the method, and it converges well inside this; if it ever does not, the fit
+# is retried at the old ceiling rather than reported under-fit.
+CLASSIFIER_MAX_ITER = 200
+CLASSIFIER_MAX_ITER_FALLBACK = 1000
 
-    def __len__(self):
-        return len(self.dataset)
-
-    def __getitem__(self, idx):
-        # instruction = "Given a text, Retrieve semantically similar text: "
-        instruction = ""
-        return {
-            "sentence1": instruction + self.dataset.iloc[idx]["sentence1"],
-            "sentence2": instruction + self.dataset.iloc[idx]["sentence2"],
-            "label": torch.tensor(self.dataset.iloc[idx]["score"], dtype=torch.float),
-        }
+# Pre-tokenized, length-sorted batches, keyed by (file, tokenizer, max_len, batch).
+# Evaluation runs the same files every epoch against a changing student, so the
+# tokenization is identical every time and was being redone on the main thread --
+# where, with no DataLoader workers, it blocked the GPU.
+_BATCH_CACHE: dict[tuple, list[dict]] = {}
 
 
-def collate_fn(batch, tokenizer, max_len=128):
-    s1_list = [item["sentence1"] for item in batch]
-    s2_list = [item["sentence2"] for item in batch]
-    labels = torch.stack([item["label"] for item in batch])
-
-    enc1 = tokenizer(
-        s1_list,
-        truncation=True,
-        padding=True,  # chỉ pad theo câu dài nhất trong batch
-        max_length=max_len,
-        return_tensors="pt",
-    )
-    enc2 = tokenizer(
-        s2_list, truncation=True, padding=True, max_length=max_len, return_tensors="pt"
+def _tokenizer_key(tokenizer) -> tuple:
+    return (
+        type(tokenizer).__name__,
+        getattr(tokenizer, "name_or_path", None),
+        getattr(tokenizer, "vocab_size", None),
+        id(tokenizer),
     )
 
-    return {
-        "input_ids1": enc1["input_ids"],
-        "attention_mask1": enc1["attention_mask"],
-        "input_ids2": enc2["input_ids"],
-        "attention_mask2": enc2["attention_mask"],
-        "labels": labels,
-    }
+
+def _pad(rows: list[list[int]], pad_id: int) -> tuple[torch.Tensor, torch.Tensor]:
+    width = max(len(row) for row in rows)
+    ids = np.full((len(rows), width), pad_id, dtype=np.int64)
+    mask = np.zeros((len(rows), width), dtype=np.int64)
+    for position, row in enumerate(rows):
+        ids[position, : len(row)] = row
+        mask[position, : len(row)] = 1
+    return torch.from_numpy(ids), torch.from_numpy(mask)
+
+
+def _sorted_batches(
+    file_path: str,
+    text_columns: tuple[str, ...],
+    label_column: str,
+    label_dtype: torch.dtype,
+    tokenizer,
+    max_len: int,
+    batch_size: int = EVAL_BATCH_SIZE,
+) -> list[dict]:
+    """Tokenize once, sort by length, and batch.
+
+    Sorting cuts padding waste from ~2.8x to ~1.0x at these length distributions.
+    The order is never restored, and it does not need to be: every metric
+    downstream (Spearman, average precision, accuracy, F1, and the logistic probe)
+    is invariant to the order of examples, and labels travel inside the same
+    batches as the texts they belong to. With a correct attention mask the padding
+    width does not enter the encoder's output either, so this is a speed change
+    and not a numerical one.
+    """
+    key = (str(file_path), text_columns, _tokenizer_key(tokenizer), max_len, batch_size)
+    cached = _BATCH_CACHE.get(key)
+    if cached is not None:
+        return cached
+
+    full_path = BASE_DIR / file_path if not os.path.isabs(file_path) else file_path
+    frame = pd.read_csv(full_path)
+    pad_id = getattr(tokenizer, "pad_token_id", None) or 0
+
+    # One batched call per column: fast tokenizers parallelize this in Rust, which
+    # per-batch calls from a collate function never get to use.
+    encoded = [
+        tokenizer(
+            frame[column].astype(str).tolist(), truncation=True, max_length=max_len
+        )["input_ids"]
+        for column in text_columns
+    ]
+    labels = torch.tensor(frame[label_column].tolist(), dtype=label_dtype)
+
+    lengths = np.max([[len(row) for row in column] for column in encoded], axis=0)
+    order = np.argsort(lengths, kind="stable")
+
+    batches = []
+    for start in range(0, len(order), batch_size):
+        index = order[start : start + batch_size]
+        batch = {"labels": labels[index]}
+        for position, column in enumerate(encoded):
+            ids, mask = _pad([column[int(i)] for i in index], pad_id)
+            batch[f"input_ids{position + 1}"] = ids
+            batch[f"attention_mask{position + 1}"] = mask
+        batches.append(batch)
+
+    _BATCH_CACHE[key] = batches
+    return batches
+
+
+def clear_eval_cache() -> None:
+    """Drop the tokenization cache (a different tokenizer keys differently anyway)."""
+    _BATCH_CACHE.clear()
+
+
+@contextmanager
+def _evaluating(model):
+    """Put the model in eval mode and put it back the way it was found.
+
+    The three task functions used to end with an unconditional `model.train()`,
+    which is wrong for the final test evaluation -- the model is already in eval
+    mode there and has no business being switched back.
+    """
+    was_training = model.training
+    model.eval()
+    try:
+        yield
+    finally:
+        if was_training:
+            model.train()
 
 
 def eval_sts(model, eval_loader):
@@ -114,20 +184,25 @@ def eval_sts(model, eval_loader):
 
 
 def eval_sts_task(model, path_list, tokenizer):
-    model.eval()
     print(" eval_sts_task")
     results = {}
-    for path in path_list:
-        print(path)
-        eval_dataset = STSDataset(path)
-        eval_loader = DataLoader(
-            eval_dataset,
-            batch_size=64,
-            shuffle=False,
-            collate_fn=lambda x: collate_fn(x, tokenizer),
-        )
-        results[path] = eval_sts(model, eval_loader)
-    model.train()
+    # Restore whatever mode the caller had, rather than assuming training. The
+    # final test evaluation runs with the model already in eval mode, and putting
+    # it back into train mode there was silently wrong.
+    with _evaluating(model):
+        for path in path_list:
+            print(path)
+            results[path] = eval_sts(
+                model,
+                _sorted_batches(
+                    path,
+                    ("sentence1", "sentence2"),
+                    "score",
+                    torch.float,
+                    tokenizer,
+                    max_len=128,
+                ),
+            )
     return results
 
 
@@ -160,21 +235,6 @@ def eval_cls(model, eval_loader):
                 labels.extend(label.numpy())
 
     return preds, labels
-
-
-class ClasssifyDataset(Dataset):
-    def __init__(self, file_path):
-        full_path = BASE_DIR / file_path if not os.path.isabs(file_path) else file_path
-        self.dataset = pd.read_csv(full_path)
-
-    def __len__(self):
-        return len(self.dataset)
-
-    def __getitem__(self, idx):
-        return {
-            "text": self.dataset.iloc[idx]["text"],
-            "label": torch.tensor(self.dataset.iloc[idx]["label"], dtype=torch.long),
-        }
 
 
 def _normalized_text_keys(dataset):
@@ -214,88 +274,60 @@ def _validate_classification_pair(train_path, eval_path):
         )
 
 
-def clf_collate_fn(batch, tokenizer, max_len=512):
-    s1_list = [item["text"] for item in batch]
-    labels = torch.stack([item["label"] for item in batch])
-
-    enc1 = tokenizer(
-        s1_list,
-        truncation=True,
-        padding=True,  # chỉ pad theo câu dài nhất trong batch
-        max_length=max_len,
-        return_tensors="pt",
-    )
-
-    return {
-        "input_ids1": enc1["input_ids"],
-        "attention_mask1": enc1["attention_mask"],
-        "labels": labels,
-    }
-
-
 def eval_classification_task(model, path_list, tokenizer):
-    model.eval()
     print(" eval classifier")
 
     results = {}
-    for train_path, dev_path in path_list:
-        print(dev_path)
-        _validate_classification_pair(train_path, dev_path)
-        eval_dataset = ClasssifyDataset(dev_path)
-        eval_loader = DataLoader(
-            eval_dataset,
-            batch_size=64,
-            shuffle=False,
-            collate_fn=lambda x: clf_collate_fn(x, tokenizer),
-        )
+    with _evaluating(model):
+        for train_path, dev_path in path_list:
+            print(dev_path)
+            _validate_classification_pair(train_path, dev_path)
+            train_batches = _sorted_batches(
+                train_path, ("text",), "label", torch.long, tokenizer, max_len=512
+            )
+            eval_batches = _sorted_batches(
+                dev_path, ("text",), "label", torch.long, tokenizer, max_len=512
+            )
 
-        train_dataset = ClasssifyDataset(train_path)
-        train_loader = DataLoader(
-            train_dataset,
-            batch_size=64,
-            shuffle=False,
-            collate_fn=lambda x: clf_collate_fn(x, tokenizer),
-        )
+            X_train, y_train = eval_cls(model, train_batches)
+            X_test, y_test = eval_cls(model, eval_batches)
 
-        X_train, y_train = eval_cls(model, train_loader)
-        X_test, y_test = eval_cls(model, eval_loader)
+            # lbfgs on 77 classes was taking ~7 s per epoch at max_iter=1000, on
+            # the CPU, in series with the GPU work -- more than a third of the
+            # whole evaluation. The probe converges long before that; a warning is
+            # emitted if it genuinely does not, so a silently under-fit probe
+            # cannot be mistaken for a weaker student.
+            clf = LogisticRegression(
+                random_state=42,
+                max_iter=CLASSIFIER_MAX_ITER,
+                verbose=0,
+            )
+            with warnings.catch_warnings():
+                warnings.simplefilter("error", ConvergenceWarning)
+                try:
+                    clf.fit(X_train, y_train)
+                except ConvergenceWarning:
+                    print(
+                        f"  probe did not converge in {CLASSIFIER_MAX_ITER} iters "
+                        f"for {Path(dev_path).stem}; refitting at "
+                        f"{CLASSIFIER_MAX_ITER_FALLBACK}"
+                    )
+                    clf = LogisticRegression(
+                        random_state=42,
+                        max_iter=CLASSIFIER_MAX_ITER_FALLBACK,
+                        verbose=0,
+                    ).fit(X_train, y_train)
+            y_pred = clf.predict(X_test)
 
-        clf = LogisticRegression(
-            random_state=42,
-            max_iter=1000,
-            verbose=0,
-        )
-        clf.fit(X_train, y_train)
-        y_pred = clf.predict(X_test)
+            scores = {}
+            accuracy = accuracy_score(y_test, y_pred)
+            scores["accuracy"] = accuracy
+            f1 = f1_score(y_test, y_pred, average="macro")
+            scores["f1"] = f1
+            print(scores)
+            results[dev_path] = scores
 
-        scores = {}
-        accuracy = accuracy_score(y_test, y_pred)
-        scores["accuracy"] = accuracy
-        f1 = f1_score(y_test, y_pred, average="macro")
-        scores["f1"] = f1
-        print(scores)
-        results[dev_path] = scores
-
-    model.train()
     return results
-
-
-class PairDataset(Dataset):
-    def __init__(self, file_path):
-        full_path = BASE_DIR / file_path if not os.path.isabs(file_path) else file_path
-        self.dataset = pd.read_csv(full_path)
-
-    def __len__(self):
-        return len(self.dataset)
-
-    def __getitem__(self, idx):
-        # instruction = "Given a text, Retrieve semantically similar text: "
-        instruction = ""
-        return {
-            "sentence1": instruction + self.dataset.iloc[idx]["sentence1"],
-            "sentence2": instruction + self.dataset.iloc[idx]["sentence2"],
-            "label": torch.tensor(self.dataset.iloc[idx]["label"], dtype=torch.float),
-        }
 
 
 def eval_pair(model, eval_loader, threshold=None):
@@ -370,24 +402,24 @@ def get_metric_pair_classification(scores, labels, threshold=None):
 
 
 def eval_pair_task(model, path_list, tokenizer, thresholds=None):
-    model.eval()
     print(" eval_pair_task")
     results = {}
     selected_thresholds = {}
-    for index, path in enumerate(path_list):
-        print(path)
-        eval_dataset = PairDataset(path)
-        eval_loader = DataLoader(
-            eval_dataset,
-            batch_size=64,
-            shuffle=False,
-            collate_fn=lambda x: collate_fn(x, tokenizer),
-        )
-        threshold = None if thresholds is None else thresholds[index]
-        metric = eval_pair(model, eval_loader, threshold=threshold)
-        results[path] = metric
-        selected_thresholds[index] = metric["best_threshold"]
-    model.train()
+    with _evaluating(model):
+        for index, path in enumerate(path_list):
+            print(path)
+            batches = _sorted_batches(
+                path,
+                ("sentence1", "sentence2"),
+                "label",
+                torch.float,
+                tokenizer,
+                max_len=128,
+            )
+            threshold = None if thresholds is None else thresholds[index]
+            metric = eval_pair(model, batches, threshold=threshold)
+            results[path] = metric
+            selected_thresholds[index] = metric["best_threshold"]
     return results, selected_thresholds
 
 

@@ -125,9 +125,14 @@ class HeatGeoConfig(BaseConfig):
     learning_rate = 2e-5
     min_lr = 3e-6
     num_workers = 4
-    # Disable validation during tuning; final pair thresholds are selected
-    # directly on each test task by the final evaluation.
-    eval_every = 0
+    # Validate every epoch. This was 0, which made a five-epoch run report exactly
+    # one number at the end: no way to tell a converged arm from one still
+    # improving, which epoch was best, or which benchmark an arm moved. An epoch
+    # of training is ~23 s at this corpus, so a validation pass is the cheapest
+    # information in the loop by a wide margin. Final pair thresholds are still
+    # selected on each test task by the final evaluation, so this changes what is
+    # observed, not what is reported.
+    eval_every = 1
 
     train_data_path = "data/train_set/merged_3_data_5k_each.csv"
     # cache_teacher removed: nothing read it. Teacher caching is gated purely by

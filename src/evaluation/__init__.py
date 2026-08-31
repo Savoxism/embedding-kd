@@ -1,17 +1,13 @@
 # Evaluation utilities
 from .evaluation_automodel import (
-    ClasssifyDataset,
-    PairDataset,
-    STSDataset,
+    clear_eval_cache,
     eval_classification_task,
     eval_pair_task,
     eval_sts_task,
 )
 
 __all__ = [
-    "ClasssifyDataset",
-    "PairDataset",
-    "STSDataset",
+    "clear_eval_cache",
     "eval_classification_task",
     "eval_pair_task",
     "eval_sts_task",

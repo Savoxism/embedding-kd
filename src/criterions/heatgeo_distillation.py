@@ -507,6 +507,10 @@ class HeatGeoDistillation(nn.Module):
             "row_count": zero,
             "row_valid_ratio": zero,
             "row_exposed_mass": zero,
+            "row_kl_p50": zero,
+            "row_kl_p90": zero,
+            "row_exposed_mass_p10": zero,
+            "row_exposed_mass_p90": zero,
         }
         if self.row_neighbors is None or self.row_probs is None:
             return zero, empty_metrics
@@ -561,9 +565,7 @@ class HeatGeoDistillation(nn.Module):
             row_tau = self.row_temps.index_select(0, source_nodes).view(-1, 1)
         else:
             row_tau = self.graph_temp
-        logits = (
-            pool_norm.index_select(0, source_positions) @ pool_norm.t()
-        ) / row_tau
+        logits = (pool_norm.index_select(0, source_positions) @ pool_norm.t()) / row_tau
         logits = logits.masked_fill(~allowed, float("-inf"))
         log_probs = F.log_softmax(logits, dim=-1)
         log_target = torch.where(
@@ -589,6 +591,15 @@ class HeatGeoDistillation(nn.Module):
             # restricted target renormalizes over that fraction, so this is the size
             # of the truncation L_row accepts -- keep it visible.
             "row_exposed_mass": exposed_mass.mean(),
+            # Attribution, not just a mean. A batch mean cannot distinguish "every
+            # row is moderately wrong" from "a handful of rows carry the term", and
+            # those call for different fixes. Quantiles are taken per batch and
+            # averaged over the epoch by the caller, which is not the epoch-level
+            # quantile but tracks it closely enough to read a trend.
+            "row_kl_p50": row_kl.detach().quantile(0.50),
+            "row_kl_p90": row_kl.detach().quantile(0.90),
+            "row_exposed_mass_p10": exposed_mass.quantile(0.10),
+            "row_exposed_mass_p90": exposed_mass.quantile(0.90),
         }
         return loss_row, metrics
 
@@ -920,6 +931,34 @@ class HeatGeoDistillation(nn.Module):
         weighted_entropy = (target_entropy * weights.view(1, -1)).sum(dim=-1)
         row_zero = loss_row.new_zeros(())
 
+        # Per-anchor L_rel, before it is averaged away. `loss_rel` alone cannot say
+        # whether the objective is uniformly hard or dominated by a few anchors --
+        # and the graph build already warns that a handful sit in tiny components
+        # with a near one-hot r=1 target, which is exactly the shape that would show
+        # up here as a heavy tail.
+        per_anchor_rel = (kl_per_scale * weights.view(1, -1)).sum(dim=-1).detach()
+
+        # Do the diffusion scales say anything the sharpest one does not? The
+        # targets are matched at tau_r = sqrt(r) * tau_1, so the *student*
+        # distributions should differ across r; if this sits near zero the ladder is
+        # decorative and `diffusion_scales=(1,)` is the honest configuration. Mean
+        # symmetric KL between adjacent graph scales, over their shared column
+        # domain.
+        graph_log_probs = log_probs_per_scale[offset:]
+        if len(graph_log_probs) > 1:
+            divergences = []
+            for lower, upper in zip(graph_log_probs, graph_log_probs[1:]):
+                # Masked columns are -inf on both sides, and -inf minus -inf is
+                # NaN; every graph scale shares one column domain, so restricting
+                # to the finite entries is exact rather than an approximation.
+                live = torch.isfinite(lower) & torch.isfinite(upper)
+                p, q = lower.exp(), upper.exp()
+                term = torch.where(live, (p - q) * (lower - upper), torch.zeros_like(p))
+                divergences.append(term.sum(dim=-1).mean())
+            scale_divergence = torch.stack(divergences).mean().detach()
+        else:
+            scale_divergence = loss_rel.new_zeros(())
+
         # One ordered (name, tensor) list rather than two lists that must be kept
         # index-aligned by hand. The single device sync below is unchanged -- it is
         # the reason this function batches its scalars at all -- but a name can no
@@ -937,6 +976,20 @@ class HeatGeoDistillation(nn.Module):
             ("row_count", row_metrics.get("row_count", row_zero)),
             ("row_valid_ratio", row_metrics.get("row_valid_ratio", row_zero)),
             ("row_exposed_mass", row_metrics.get("row_exposed_mass", row_zero)),
+            ("row_kl_p50", row_metrics.get("row_kl_p50", row_zero)),
+            ("row_kl_p90", row_metrics.get("row_kl_p90", row_zero)),
+            (
+                "row_exposed_mass_p10",
+                row_metrics.get("row_exposed_mass_p10", row_zero),
+            ),
+            (
+                "row_exposed_mass_p90",
+                row_metrics.get("row_exposed_mass_p90", row_zero),
+            ),
+            ("loss_rel_p50", per_anchor_rel.quantile(0.50)),
+            ("loss_rel_p90", per_anchor_rel.quantile(0.90)),
+            ("loss_rel_max", per_anchor_rel.max()),
+            ("scale_divergence", scale_divergence),
             ("js_floor", js_floor.mean()),
             ("loss_excess", (loss_rel - js_floor.mean()).detach()),
             ("loss_cross_entropy", (loss_rel + weighted_entropy.mean()).detach()),
