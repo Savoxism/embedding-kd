@@ -544,7 +544,13 @@ class HeatGeoDistillation(nn.Module):
         unique_key, inverse = torch.unique(edge_key, sorted=False, return_inverse=True)
         n_edges = unique_key.numel()
 
-        directed_weight = selected_distribution.reshape(-1)[flat_selected]
+        # Graph targets are cached in fp16, while student similarities (and thus
+        # the scatter destination) are normally fp32.  In-place scatter_add_
+        # requires an exact dtype match; accumulate edge masses in the similarity
+        # dtype both for compatibility and for more stable summation.
+        directed_weight = selected_distribution.reshape(-1)[flat_selected].to(
+            dtype=similarity.dtype
+        )
         directed_similarity = similarity.reshape(-1)[flat_selected]
         edge_weight = similarity.new_zeros(n_edges)
         edge_similarity = similarity.new_zeros(n_edges)

@@ -441,6 +441,36 @@ def test_symmetric_geometry_loss_scores_each_unordered_edge_once():
     assert candidates.grad is not None and torch.isfinite(candidates.grad).all()
 
 
+def test_symmetric_geometry_loss_accepts_half_precision_cached_targets():
+    teacher_bank, anchor, candidates, teacher_probs, candidate_idx, anchor_idx = (
+        _geometry_loss_inputs()
+    )
+    anchor.requires_grad_()
+    candidates.requires_grad_()
+    criterion = HeatGeoDistillation(
+        student_dim=3,
+        teacher_dim=3,
+        teacher_embeddings=teacher_bank,
+        mass_weight=0.0,
+        geo_weight=0.0,
+        sym_weight=0.5,
+    )
+
+    total, metrics = criterion(
+        anchor_embeddings=anchor,
+        candidate_embeddings=candidates,
+        teacher_probs=teacher_probs.half(),
+        candidate_idx=candidate_idx,
+        anchor_idx=anchor_idx,
+    )
+
+    assert torch.isfinite(total)
+    assert np.isfinite(metrics["loss_sym"])
+    total.backward()
+    assert anchor.grad is not None and torch.isfinite(anchor.grad).all()
+    assert candidates.grad is not None and torch.isfinite(candidates.grad).all()
+
+
 def test_entropic_affinity_hits_the_requested_perplexity():
     rng = np.random.default_rng(0)
     scores = rng.normal(size=64) * 0.1 + 0.7
