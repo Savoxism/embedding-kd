@@ -1,0 +1,21 @@
+\section{Experiments}
+\label{sec:experiments}
+
+We first evaluate whether RIPPLE improves compact text embeddings across teacher--student pairs and downstream tasks. Section~\ref{sec:analysis} then tests the mechanisms proposed in Section~\ref{sec:method}.
+
+\subsection{Experimental Setup}
+
+\paragraph{Models and distillation data.}
+We evaluate three teacher$\rightarrow$student pairs: Qwen3-Embedding-4B $\rightarrow$ BERT-base (109M), BGE-M3 $\rightarrow$ MiniLMv2-H768 (66M), and Qwen3-Embedding-0.6B $\rightarrow$ MiniLMv2-H384 (22M). The teacher families are described by \citet{zhang2025qwen3embedding} and \citet{chen2024bgem3}. Following the TALAS protocol~\citep{dao2026talas}, the unlabeled distillation corpus contains approximately 15K sentences sampled evenly from Emotion, WiC, and STS-B. Teacher embeddings are cached once; training uses neither task labels nor online teacher inference.
+
+\paragraph{Evaluation.}
+The nine downstream datasets cover classification (Banking77, Tweet, Emotion), pair classification (MRPC, SciTail, WiC), and semantic textual similarity (SICK, STS12, STS-B). We report macro-F1, average precision, and Spearman correlation, respectively. Emotion, WiC, and STS-B are in-domain; the other six datasets are out-of-domain. ``Avg.'' is the unweighted mean of the nine primary metrics. Checkpoints and pair-classification thresholds are selected on validation data, and test data are evaluated once.
+
+\paragraph{Baselines and implementation.}
+We compare with the teacher, the undistilled student, SimCSE-unsup~\citep{gao2021simcse}, CDM~\citep{chen2025cdm}, DSKD~\citep{zhang2024dskd}, Jasper--Stella~\citep{zhang2024jasperstella}, DistillCSE~\citep{gao2021distilcse,xu2023distillcse}, EMO~\citep{truong2025emo}, and TALAS~\citep{dao2026talas}. We use one canonical RIPPLE configuration across downstream tasks and vary only the component named in each controlled comparison. Appendix~\ref{app:hyper} gives the implementation details.
+
+\subsection{Main Results}
+
+Table~\ref{tab:main_results} reports all nine datasets for the three teacher--student settings. RIPPLE obtains the best mean compact-student score in each setting: $78.09$, $77.99$, and $74.91$. The corresponding margins over the strongest baseline are $0.05$, $1.35$, and $1.45$ points; the first is small relative to run variation. The most consistent gains occur on semantic textual similarity. RIPPLE gives the best compact-student STS-B result in all three settings and leads all three STS datasets for both MiniLMv2 students. Pair classification is less uniform, including lower WiC scores. The table therefore supports RIPPLE's overall competitiveness, particularly on similarity-sensitive tasks, but does not by itself identify which mechanism produces the gains.
+
+\input{tables/main_results}

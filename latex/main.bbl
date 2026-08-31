@@ -1,4 +1,4 @@
-\begin{thebibliography}{28}
+\begin{thebibliography}{34}
 \providecommand{\natexlab}[1]{#1}
 \providecommand{\url}[1]{\texttt{#1}}
 \expandafter\ifx\csname urlstyle\endcsname\relax
@@ -22,6 +22,22 @@ Mikhail Belkin and Partha Niyogi.
   2003.
 \newblock \doi{10.1162/089976603321780317}.
 
+\bibitem[Chen et~al.(2024)Chen, Xiao, Zhang, Luo, Lian, and Liu]{chen2024bgem3}
+Jianlv Chen, Shitao Xiao, Peitian Zhang, Kun Luo, Defu Lian, and Zheng Liu.
+\newblock {BGE} {M3}-embedding: Multi-lingual, multi-functionality,
+  multi-granularity text embeddings through self-knowledge distillation.
+\newblock \emph{CoRR}, abs/2402.03216, 2024.
+\newblock \doi{10.48550/arXiv.2402.03216}.
+\newblock URL \url{https://arxiv.org/abs/2402.03216}.
+
+\bibitem[Chen et~al.(2025)Chen, Liu, Meng, Chen, Xu, and Zhou]{chen2025cdm}
+Yijie Chen, Yijin Liu, Fandong Meng, Yufeng Chen, Jinan Xu, and Jie Zhou.
+\newblock Enhancing cross-tokenizer knowledge distillation with contextual
+  dynamical mapping.
+\newblock \emph{CoRR}, abs/2502.11104, 2025.
+\newblock \doi{10.48550/arXiv.2502.11104}.
+\newblock URL \url{https://arxiv.org/abs/2502.11104}.
+
 \bibitem[Coifman \& Lafon(2006)Coifman and Lafon]{coifman2006diffusionmaps}
 Ronald~R. Coifman and St{\'e}phane Lafon.
 \newblock Diffusion maps.
@@ -37,15 +53,24 @@ Quoc~Phong Dao, Hoang~Son Nguyen, Khanh~Chi Pham, Linh Ngo~Van, Diep Thi-Ngoc
   sharpness-aware minimization for embedding distillation, 2026.
 \newblock Manuscript.
 
-\bibitem[Gao et~al.(2021)Gao, Wu, Wang, Wang, Zang, Wang, and
+\bibitem[Gao et~al.(2021{\natexlab{a}})Gao, Wu, Wang, Wang, Zang, Wang, and
   Hu]{gao2021distilcse}
 Chaochen Gao, Xing Wu, Peng Wang, Jue Wang, Liangjun Zang, Zhongyuan Wang, and
   Songlin Hu.
 \newblock {DistilCSE}: Effective knowledge distillation for contrastive
   sentence embeddings.
-\newblock \emph{CoRR}, abs/2112.05638, 2021.
+\newblock \emph{CoRR}, abs/2112.05638, 2021{\natexlab{a}}.
 \newblock \doi{10.48550/arXiv.2112.05638}.
 \newblock URL \url{https://arxiv.org/abs/2112.05638}.
+
+\bibitem[Gao et~al.(2021{\natexlab{b}})Gao, Yao, and Chen]{gao2021simcse}
+Tianyu Gao, Xingcheng Yao, and Danqi Chen.
+\newblock {SimCSE}: Simple contrastive learning of sentence embeddings.
+\newblock In \emph{Proceedings of the 2021 Conference on Empirical Methods in
+  Natural Language Processing}, pp.\  6894--6910. Association for Computational
+  Linguistics, 2021{\natexlab{b}}.
+\newblock \doi{10.18653/v1/2021.emnlp-main.552}.
+\newblock URL \url{https://aclanthology.org/2021.emnlp-main.552/}.
 
 \bibitem[Gou et~al.(2025)Gou, Xin, Yu, Song, Zhang, and Wan]{xin2025nrkd}
 Jianping Gou, Xiaomeng Xin, Baosheng Yu, Heping Song, Weiyong Zhang, and
@@ -131,6 +156,13 @@ Nikolaos Passalis, Maria Tzelepi, and Anastasios Tefas.
 \newblock \emph{IEEE Transactions on Neural Networks and Learning Systems},
   32\penalty0 (5):\penalty0 2030--2039, 2021.
 \newblock \doi{10.1109/TNNLS.2020.2995884}.
+
+\bibitem[Qian et~al.(2022)Qian, Li, and Hu]{qian2022fullkernel}
+Qi~Qian, Hao Li, and Juhua Hu.
+\newblock Improved knowledge distillation via full kernel matrix transfer.
+\newblock In \emph{Proceedings of the 2022 SIAM International Conference on
+  Data Mining (SDM)}, pp.\  612--620, 2022.
+\newblock \doi{10.1137/1.9781611977172.69}.
 
 \bibitem[Sanh et~al.(2019)Sanh, Debut, Chaumond, and Wolf]{sanh2019distilbert}
 Victor Sanh, Lysandre Debut, Julien Chaumond, and Thomas Wolf.
@@ -222,10 +254,11 @@ Chenxiao Yang, Qitian Wu, and Junchi Yan.
 \newblock In \emph{Advances in Neural Information Processing Systems},
   volume~35, pp.\  29761--29775, 2022.
 
-\bibitem[Zhang et~al.(2024)Zhang, Li, Zeng, and Wang]{zhang2024jasperstella}
+\bibitem[Zhang et~al.(2024{\natexlab{a}})Zhang, Li, Zeng, and
+  Wang]{zhang2024jasperstella}
 Dun Zhang, Jiacheng Li, Ziyang Zeng, and Fulong Wang.
 \newblock Jasper and stella: Distillation of {SOTA} embedding models.
-\newblock \emph{CoRR}, abs/2412.19048, 2024.
+\newblock \emph{CoRR}, abs/2412.19048, 2024{\natexlab{a}}.
 \newblock \doi{10.48550/arXiv.2412.19048}.
 \newblock URL \url{https://arxiv.org/abs/2412.19048}.
 
@@ -237,5 +270,26 @@ Shichang Zhang, Yozen Liu, Yizhou Sun, and Neil Shah.
   Representations, {ICLR} 2022, Virtual Event, April 25-29, 2022}.
   OpenReview.net, 2022.
 \newblock URL \url{https://openreview.net/forum?id=4p6\_5HBWPCw}.
+
+\bibitem[Zhang et~al.(2024{\natexlab{b}})Zhang, Zhang, Sun, Chen, and
+  Xu]{zhang2024dskd}
+Songming Zhang, Xue Zhang, Zengkui Sun, Yufeng Chen, and Jinan Xu.
+\newblock Dual-space knowledge distillation for large language models.
+\newblock In Yaser Al-Onaizan, Mohit Bansal, and Yun-Nung Chen (eds.),
+  \emph{Proceedings of the 2024 Conference on Empirical Methods in Natural
+  Language Processing}, pp.\  18164--18181, Miami, Florida, USA, November
+  2024{\natexlab{b}}. Association for Computational Linguistics.
+\newblock \doi{10.18653/v1/2024.emnlp-main.1010}.
+\newblock URL \url{https://aclanthology.org/2024.emnlp-main.1010/}.
+
+\bibitem[Zhang et~al.(2025)Zhang, Li, Long, Zhang, Lin, Yang, Xie, Yang, Liu,
+  Lin, Huang, and Zhou]{zhang2025qwen3embedding}
+Yanzhao Zhang, Mingxin Li, Dingkun Long, Xin Zhang, Huan Lin, Baosong Yang,
+  Pengjun Xie, An~Yang, Dayiheng Liu, Junyang Lin, Fei Huang, and Jingren Zhou.
+\newblock {Qwen3} embedding: Advancing text embedding and reranking through
+  foundation models.
+\newblock \emph{CoRR}, abs/2506.05176, 2025.
+\newblock \doi{10.48550/arXiv.2506.05176}.
+\newblock URL \url{https://arxiv.org/abs/2506.05176}.
 
 \end{thebibliography}

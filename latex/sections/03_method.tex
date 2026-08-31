@@ -1,0 +1,105 @@
+\section{RIPPLE: Teacher-Selected Global Relational Transfer}
+\label{sec:method}
+
+RIPPLE uses the teacher's global geometry to select informative corpus-level relations, rather than letting random mini-batch co-occurrence determine the supervision support. A cached teacher graph selects corpus relations and defines multi-hop targets. During training, each anchor receives a compact candidate set drawn from those targets; candidates are pooled across the mini-batch for encoding reuse. An additional row loss connects overlapping anchor neighborhoods. Figure~\ref{fig:motivation} summarizes the distinction from batch-selected relational KD.
+
+\subsection{Why Relation Selection Matters}
+\label{sec:relation-selection}
+
+Let $\mathcal D=\{x_i\}_{i=1}^{N}$ be an unlabeled corpus. The teacher and student produce unit-normalized embeddings $t_i$ and $s_i$. For each anchor $i$, let $p_i^T$ denote the teacher's relational distribution over the remaining corpus. For candidate support $C$, we call $p_i^T(C)$ its \emph{exposed teacher mass} and $1-p_i^T(C)$ its \emph{missed teacher mass}.
+
+Conventional relational KD constructs $C$ from examples that happen to share a mini-batch. The following proposition isolates the resulting limitation; its proof is given in Appendix~\ref{app:coverage-details}.
+
+\begin{proposition}[Target-agnostic mini-batch exposure]
+\label{prop:batch-exposure}
+Let $\mathcal O_i^{(T)}$ be the examples co-occurring with anchor $i$ over $T$ independent random reshuffles into batches of size $B$. Then, for any teacher relational distribution $p_i^T$,
+\begin{equation}
+\mathbb E[1-p_i^T(\mathcal O_i^{(T)})]
+=\left(1-\frac{B-1}{N-1}\right)^T.
+\label{eq:batch-exposure}
+\end{equation}
+\end{proposition}
+
+Expected exposure is independent of teacher relevance: important and irrelevant relations have the same inclusion probability. This motivates the central design rule of RIPPLE: teacher geometry selects supervision; mini-batches only organize computation.
+
+\subsection{Teacher-Selected Multi-Scale Targets}
+\label{sec:graph}
+
+We cache teacher embeddings and construct a mutual $k$-nearest-neighbor graph. Mutuality removes one-directional hub edges. Retained edges are weighted by teacher cosine similarity and row-normalized:
+\begin{equation}
+P^T_{ij}
+=\frac{\mathbf 1[j\in\mathcal M_k^T(i)]\exp(c^T_{ij}/\tau_i)}
+{\sum_{\ell\in\mathcal M_k^T(i)}\exp(c^T_{i\ell}/\tau_i)}.
+\label{eq:teacher-transition}
+\end{equation}
+Here $\mathcal M_k^T(i)$ is the mutual neighborhood of $i$. We choose the row temperature $\tau_i$ by matching a fixed target entropy; Appendix~\ref{app:entropic-bandwidth} gives the implementation. The teacher is not used after this graph is cached.
+
+Immediate neighbors capture local teacher geometry, while connected neighborhoods carry broader structure. With the lazy transition operator $\widetilde P^T=\tfrac12(I+P^T)$, RIPPLE uses
+\begin{equation}
+g^T_{i,1}=P_i^T,
+\qquad
+g^T_{i,r}=\left.e_i^\top(\widetilde P^T)^r\right|_{\mathcal D\setminus\{i\}},
+\quad r\in\mathcal R\setminus\{1\}.
+\label{eq:diffusion-targets}
+\end{equation}
+The one-step row represents direct teacher neighbors; larger $r$ summarizes corpus regions reachable from the anchor, following the diffusion-map view of manifold geometry~\citep{coifman2006diffusionmaps}. The student predicts each target with a cosine-softmax over the candidate texts rather than by constructing a student random walk.
+
+\subsection{Mass-Aware Relational Matching}
+\label{sec:candidates}
+
+Full-corpus scoring would defeat compact training. For each anchor and scale, RIPPLE retains the highest-mass relations, samples the remaining target quota in proportion to teacher mass, and adds hard and uniform negatives. Candidate sets are then pooled and deduplicated across the anchor batch, so each candidate text is encoded once while retaining anchor-specific targets.
+
+The selected-support loss matches teacher and student distributions within each anchor's candidates. Because this restricted comparison cannot reveal alternatives outside a high-mass support, RIPPLE also forms an ambient comparison from pooled hard and random negatives. Let $\mathcal R_0=\{0\}\cup\mathcal R$, where scale $0$ denotes this ambient comparison, and let $\Omega_{i,r}$ denote the corresponding candidate domain. The relational objective is
+\begin{equation}
+\mathcal L_{\mathrm{rel}}
+=\frac1{|B|}\sum_{i\in B}\sum_{r\in\mathcal R_0}
+\omega_rD_{\mathrm{KL}}
+\left(g^T_{i,r}|_{\Omega_{i,r}}\|g^S_{i,r}|_{\Omega_{i,r}}\right).
+\label{eq:relational-loss}
+\end{equation}
+The analysis reports retained teacher mass and student off-support mass alongside full-corpus divergence, rather than treating restricted KL as evidence of global matching by itself.
+
+\paragraph{Finite-epoch geometry approximation.}
+Let $C_i^{(T)}$ be the union of relations selected for anchor $i$ through epoch $T$, and define the bounded cosine distortion $\ell_{ij}^{(T)}=(c_{ij}^{S,(T)}-c_{ij}^T)^2/4$. Let $\epsilon_T=N^{-1}\sum_i\mathbb E_{j\sim p_i^T|_{C_i^{(T)}}}[\ell_{ij}^{(T)}]$ be the final student's selected-support error and $\bar\delta_T=N^{-1}\sum_i[1-p_i^T(C_i^{(T)})]$ the average missed teacher mass.
+
+\begin{proposition}[Finite-epoch global geometry approximation]
+\label{prop:global-geometry}
+The teacher-weighted global geometry distortion satisfies
+\begin{equation}
+\begin{aligned}
+\mathcal E_T
+&=\frac1N\sum_i\sum_{j\neq i}p_i^T(j)\ell_{ij}^{(T)}
+\leq\epsilon_T+\bar\delta_T,\\
+\mathbb E[\bar\delta_T]
+&\leq\frac1N\sum_i\sum_{j\neq i}
+p_i^T(j)(1-p_i^T(j))^{mT},
+\end{aligned}
+\label{eq:global-geometry-bound}
+\end{equation}
+provided RIPPLE includes at least $m$ teacher-proportional draws per anchor and epoch. Deterministic high-mass retention and additional negatives can only reduce missed mass.
+\end{proposition}
+
+Proposition~\ref{prop:global-geometry} separates optimization error from support error. When teacher mass is concentrated on $h$ relations and relational compute is matched, the RIPPLE residual decays on the scale of $h$, whereas Proposition~\ref{prop:batch-exposure} gives corpus-size dependence for mini-batch support. RIPPLE therefore has the tighter finite-epoch upper bound whenever its selected-support optimization error does not exceed the resulting coverage advantage.
+
+\subsection{Cross-Anchor Supervision and Training}
+\label{sec:walk}
+
+Candidate selection determines which columns are observed, but row-wise softmax matching still treats anchors independently. RIPPLE therefore samples additional rows with short non-backtracking walks over $P^T$. For every visited row $u$, it reuses candidates in the pooled batch that overlap with $u$'s teacher neighborhood. If $\Omega_u^w$ is this overlap and $\nu_B(u)$ its normalized visit frequency, the row loss is
+\begin{equation}
+\mathcal L_{\mathrm{row}}
+=\sum_u\nu_B(u)
+D_{\mathrm{KL}}\!\left(
+P_u^T|_{\Omega_u^w}\middle\|
+\operatorname{softmax}_{v\in\Omega_u^w}(c^S_{uv}/\tau_u)
+\right).
+\label{eq:row-loss}
+\end{equation}
+The walks select rows, not trajectory targets. Reciprocal overlaps reuse the same student cosine scores across anchor objectives, while most visited rows reuse already-pooled encodings.
+
+The complete training objective is
+\begin{equation}
+\mathcal L_{\mathrm{RIPPLE}}
+=\mathcal L_{\mathrm{rel}}+\lambda\mathcal L_{\mathrm{row}}.
+\label{eq:full-objective}
+\end{equation}
+Graph construction is offline and stores only sparse neighborhoods. Each update encodes the anchor batch and its deduplicated candidate pool. At inference, deployment uses only the distilled student encoder.

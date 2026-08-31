@@ -1,0 +1,30 @@
+\section{Proofs for Support Coverage and Geometry Approximation}
+\label{app:coverage-details}
+
+\subsection{Proof of Proposition~\ref{prop:batch-exposure}}
+
+\begin{proof}
+For a fixed anchor $i$ and column $j\neq i$, a uniformly shuffled batch of size $B$ includes $j$ with probability $(B-1)/(N-1)$. Independence across reshuffles therefore gives
+\begin{equation}
+\Pr[j\notin\mathcal O_i^{(T)}]
+=\left(1-\frac{B-1}{N-1}\right)^T.
+\end{equation}
+Weighting this event by $p_i^T(j)$ and summing over $j$ proves Eq.~\eqref{eq:batch-exposure}, because $\sum_jp_i^T(j)=1$.
+\end{proof}
+
+\subsection{Proof of Proposition~\ref{prop:global-geometry}}
+
+\begin{proof}
+For anchor $i$, write $C_i=C_i^{(T)}$, $\delta_i=1-p_i^T(C_i)$, and $\epsilon_i=\mathbb E_{j\sim p_i^T|_{C_i}}[\ell_{ij}^{(T)}]$. Splitting its global distortion over selected and unselected relations gives
+\begin{align}
+\sum_{j\neq i}p_i^T(j)\ell_{ij}^{(T)}
+&=p_i^T(C_i)\epsilon_i
++\sum_{j\notin C_i}p_i^T(j)\ell_{ij}^{(T)}\\
+&\leq \epsilon_i+\delta_i,
+\end{align}
+because $0\leq\ell_{ij}^{(T)}\leq1$. Averaging over anchors proves $\mathcal E_T\leq\epsilon_T+\bar\delta_T$.
+
+It remains to bound missed mass. A relation retained deterministically has zero miss probability. For any remaining relation $j$, proportional sampling without replacement selects $j$ at each draw with conditional probability at least $p_i^T(j)$, because removing other entries can only decrease the remaining normalizer. Thus its probability of being missed by at least $mT$ proportional draws is at most $(1-p_i^T(j))^{mT}$. Multiplying by teacher mass, summing over relations and anchors, and taking expectation proves the second line of Eq.~\eqref{eq:global-geometry-bound}.
+\end{proof}
+
+When $B$ is small relative to $N$, Proposition~\ref{prop:batch-exposure} requires $\Theta(N\log(1/\epsilon))$ batch relations per anchor to reduce expected missed mass below $\epsilon$. If $p_i^T$ is uniform on $h$ relevant relations, the residual term in Proposition~\ref{prop:global-geometry} is at most $(1-1/h)^{mT}$, requiring $\Theta(h\log(1/\epsilon))$ teacher-proportional draws. This yields the factor-$\Theta(N/h)$ separation used in the paper, but only for the concentrated-support regime.
