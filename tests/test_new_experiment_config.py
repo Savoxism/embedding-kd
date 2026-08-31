@@ -8,6 +8,7 @@ import torch.nn.functional as F
 
 import main
 from distiller import KnowledgeDistiller, add_domain_averages
+from src.distill.checkpointing import save_student_weights
 from src.criterions.heatgeo_distillation import HeatGeoDistillation
 from src.heatgeo.candidate_sampler import HeatGeoCandidateSampler
 from src.heatgeo.graph_builder import _entropic_affinity, _mass_prefix, _softmax_at
@@ -88,6 +89,28 @@ def test_heatgeo_cli_overrides(monkeypatch):
     assert config.pooling_method == "last_token"
     assert config.weights_dir == "weights"
     assert config.final_weights_only is True
+
+
+def test_evaluation_table_renders_every_family(capsys):
+    """Nothing called this before, so a broken signature stayed invisible."""
+    from src.distill.benchmarks import print_evaluation_table
+
+    results = {
+        "classification": {"data/test_set/emotion_test.csv": {"accuracy": 0.7,
+                                                              "f1": 0.62}},
+        "pair": {"data/test_set/wic_test.csv": {"accuracy": 0.62,
+                                                "average_precision": 0.65}},
+        "sts": {"data/test_set/stsb_test.csv": 0.766},
+    }
+    print_evaluation_table(current_epoch=3, split="validation", results=results)
+
+    out = capsys.readouterr().out
+    assert "VALIDATION - EPOCH 4" in out
+    for token in ("emotion", "wic", "stsb", "MEAN", "F1", "AP", "Spearman"):
+        assert token in out, f"{token} missing from the table"
+
+    print_evaluation_table(current_epoch=0, split="test", results=results)
+    assert "FINAL TEST" in capsys.readouterr().out
 
 
 def test_domain_averages_follow_the_paper_metric_protocol():
@@ -752,8 +775,8 @@ def test_final_student_weights_are_idempotent(tmp_path):
     distiller.model_student = torch.nn.Linear(2, 2)
     distiller._saved_student_weight_epochs = set()
 
-    distiller.save_student_weights(4)
-    distiller.save_student_weights(4)
+    save_student_weights(distiller, 4)
+    save_student_weights(distiller, 4)
 
     files = list((tmp_path / "weights").glob("*.pt"))
     assert [path.name for path in files] == ["student_epoch_5.pt"]

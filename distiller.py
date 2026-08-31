@@ -20,15 +20,20 @@ from tqdm import tqdm
 from transformers import AutoModel, AutoTokenizer, get_scheduler
 from transformers import __version__ as transformers_version
 
-try:
-    from pytorch_optimizer import SAM
-
-    SAM_AVAILABLE = True
-except ImportError:
-    SAM_AVAILABLE = False
-    print(
-        "Warning: pytorch_optimizer not installed. SAM optimizer unavailable for TALAS."
-    )
+from src.distill.benchmarks import add_domain_averages, print_evaluation_table
+from src.distill.checkpointing import save_checkpoint, save_student_weights
+from src.distill.stella_trainer import train as stella_train
+from src.distill.steps.heatgeo import step as heatgeo_step
+from src.distill.steps.rkd import step as rkd_step
+from src.distill.steps.standard import step as standard_step
+from src.distill.steps.talas import step as talas_step
+from src.distill.numerics import (
+    MAX_GRAD_NORM,
+    assert_module_parameters_finite,
+    grads_are_finite,
+    is_finite,
+    nonfinite_details,
+)
 from src.cache_teacher import (
     cache_teacher_embeddings,
     load_cached_embeddings,
@@ -67,128 +72,15 @@ from src.heatgeo import HeatGeoCandidateSampler, build_or_load_heatgeo_artifact
 from src.loss import info_nce
 from src.pooling import last_token_pool
 
-# Global gradient-norm ceiling, applied after `scaler.unscale_`. Not configuration:
-# 1.0 is the standard convention for transformer fine-tuning (Devlin et al., 2019;
-# it is also the HuggingFace `Trainer` default), applied here without modification.
-# The step used to have no ceiling at all -- only a finiteness check that skipped
-# the update outright -- so a single anchor whose softmax sat at a per-row bandwidth
-# near tau_min could take an arbitrarily large step, and the only evidence of it
-# would be the loss curve afterwards.
-MAX_GRAD_NORM = 1.0
-
-PRIMARY_EVALUATION_METRICS = {
-    "classification": "f1",
-    "pair": "average_precision",
-    "sts": "spearman",
-}
-IN_DOMAIN_BENCHMARKS = ("emotion", "wic", "stsb")
-OUT_DOMAIN_BENCHMARKS = (
-    "banking77",
-    "tweet",
-    "mrpc",
-    "scitail",
-    "sick",
-    "sts12",
-)
-ALL_BENCHMARKS = IN_DOMAIN_BENCHMARKS + OUT_DOMAIN_BENCHMARKS
 
 
-def add_domain_averages(results: dict[str, Any]) -> dict[str, Any]:
-    """Add paper-protocol averages while preserving all detailed metrics.
-
-    Classification contributes F1, pair classification contributes average
-    precision, and STS contributes Spearman. The three aggregate values use the
-    paper's [0, 100] percentage-point scale; detailed metrics remain unchanged.
-    """
-    scores: dict[str, float] = {}
-    for family, metric_name in PRIMARY_EVALUATION_METRICS.items():
-        for path, raw_values in results.get(family, {}).items():
-            benchmark = Path(path).stem
-            for suffix in ("_validation", "_test"):
-                benchmark = benchmark.removesuffix(suffix)
-            if family == "sts":
-                score = float(raw_values)
-            else:
-                score = float(raw_values[metric_name])
-            scores[benchmark] = score
-
-    missing = sorted(set(ALL_BENCHMARKS) - scores.keys())
-    if missing:
-        raise ValueError(
-            "Cannot compute domain averages; missing primary metrics for: "
-            + ", ".join(missing)
-        )
-
-    enriched = dict(results)
-    enriched["avg_in"] = round(
-        100.0
-        * sum(scores[name] for name in IN_DOMAIN_BENCHMARKS)
-        / len(IN_DOMAIN_BENCHMARKS),
-        2,
-    )
-    enriched["avg_out"] = round(
-        100.0
-        * sum(scores[name] for name in OUT_DOMAIN_BENCHMARKS)
-        / len(OUT_DOMAIN_BENCHMARKS),
-        2,
-    )
-    enriched["avg"] = round(
-        100.0 * sum(scores[name] for name in ALL_BENCHMARKS) / len(ALL_BENCHMARKS),
-        2,
-    )
-    return enriched
 
 
-def is_finite(x: torch.Tensor) -> bool:
-    return torch.is_tensor(x) and torch.isfinite(x).all().item()
 
 
-def nonfinite_details(name: str, tensor: torch.Tensor) -> str:
-    if not torch.is_tensor(tensor):
-        return f"{name}: expected tensor, got {type(tensor).__name__}"
-    if tensor.is_floating_point() or tensor.is_complex():
-        nan_count = int(torch.isnan(tensor).sum().item())
-        inf_count = int(torch.isinf(tensor).sum().item())
-    else:
-        nan_count = 0
-        inf_count = 0
-    return (
-        f"{name}: shape={tuple(tensor.shape)}, dtype={tensor.dtype}, "
-        f"device={tensor.device}, nan_count={nan_count}, inf_count={inf_count}"
-    )
 
 
-def assert_module_parameters_finite(module: nn.Module, module_name: str) -> None:
-    finite_status = None
-    for parameter in module.parameters():
-        current = torch.isfinite(parameter).all()
-        finite_status = current if finite_status is None else finite_status & current
 
-    if finite_status is None or bool(finite_status.item()):
-        return
-
-    for name, parameter in module.named_parameters():
-        if not bool(torch.isfinite(parameter).all().item()):
-            raise RuntimeError(
-                f"{module_name} parameters became NaN/Inf: "
-                f"{nonfinite_details(name, parameter)}"
-            )
-
-
-def grads_are_finite(optim) -> bool:
-    # Accumulated on device and read back once. Testing each gradient in a Python
-    # `if` forces a host sync per parameter, which is ~200 stalls per step on a
-    # BERT-base student -- for a check that is almost always True.
-    finite_status = None
-    for group in optim.param_groups:
-        for p in group["params"]:
-            if p.grad is None:
-                continue
-            current = torch.isfinite(p.grad).all()
-            finite_status = (
-                current if finite_status is None else finite_status & current
-            )
-    return finite_status is None or bool(finite_status.item())
 
 
 class KnowledgeDistiller:
@@ -827,677 +719,22 @@ class KnowledgeDistiller:
         loss, _ = info_nce(student_cls1, student_cls2, temperature=cfg.temperature)
         return loss, {}
 
-    def _sam_restore_without_update(self) -> int:
-        """Undo ``SAM.first_step`` when the second pass is abandoned.
-
-        ``first_step`` moves the weights to ``w + eps(w)`` and stashes ``w`` in the
-        optimizer state; only ``second_step`` puts them back, and it also applies the
-        wrapped update. A pass-2 skip must restore *without* updating -- otherwise
-        training silently continues from adversarially perturbed weights for the
-        remainder of the run.
-        """
-        restored = 0
-        for group in self.optimizer.param_groups:
-            for p in group["params"]:
-                old = self.optimizer.state.get(p, {}).get("old_p")
-                if old is not None:
-                    p.data.copy_(old)
-                    restored += 1
-        if restored == 0:
-            print(
-                "Warning: SAM skip restored no weights (no 'old_p' in optimizer "
-                "state); training may continue from perturbed weights."
-            )
-        return restored
 
     def train_step(self, batch: dict) -> tuple[torch.Tensor, dict]:
         cfg = self.config
         method = cfg.distill_method
 
         if method == "heatgeo":
-            batch_s = {}
-            for k, v in batch.items():
-                if not torch.is_tensor(v):
-                    continue
-                if k.endswith("_stu") or k in {
-                    "labels",
-                    "idx",
-                    "candidate_idx",
-                    "candidate_inverse",
-                    "teacher_probs",
-                }:
-                    batch_s[k] = v.to(self.device_s, non_blocking=True)
-
-            self.optimizer.zero_grad(set_to_none=True)
-
-            with autocast("cuda", enabled=torch.cuda.is_available()):
-                s_out1 = self.model_student(
-                    input_ids=batch_s["input_ids1_stu"],
-                    attention_mask=batch_s["attention_mask1_stu"],
-                    return_dict=True,
-                    output_hidden_states=False,
-                )
-
-                # Check curriculum for SimCSE
-                run_simcse = (getattr(cfg, "lambda_simcse", 0) > 0) and (
-                    getattr(self, "current_epoch", 0)
-                    >= getattr(cfg, "simcse_start_epoch", 2)
-                )
-
-                if run_simcse:
-                    s_out2 = self.model_student(
-                        input_ids=batch_s["input_ids1_stu"],
-                        attention_mask=batch_s["attention_mask1_stu"],
-                        return_dict=True,
-                        output_hidden_states=False,
-                    )
-
-                # Candidates arrive deduplicated and grouped by length, so each chunk
-                # pads to its own longest member. `candidate_inverse` expands the
-                # encoded rows back to the flat [batch_size * candidate_size] layout
-                # the criterion expects; the gather is differentiable, so a candidate
-                # shared by several anchors accumulates all of their gradient.
-
-                chunk_embeddings_single = []
-
-                for chunk in batch["candidate_chunks"]:
-                    chunk_out = self.model_student(
-                        input_ids=chunk["input_ids"].to(
-                            self.device_s, non_blocking=True
-                        ),
-                        attention_mask=chunk["attention_mask"].to(
-                            self.device_s, non_blocking=True
-                        ),
-                        return_dict=True,
-                        output_hidden_states=False,
-                    )
-
-                    chunk_embeddings_single.append(chunk_out.last_hidden_state[:, 0, :])
-
-                S_cls1 = s_out1.last_hidden_state[:, 0, :]
-                S_candidates = torch.cat(chunk_embeddings_single, dim=0).index_select(
-                    0, batch_s["candidate_inverse"]
-                )
-
-                loss, metrics = self.criterion(
-                    anchor_embeddings=S_cls1,
-                    candidate_embeddings=S_candidates,
-                    teacher_probs=batch_s["teacher_probs"],
-                    candidate_idx=batch_s.get("candidate_idx"),
-                    anchor_idx=batch_s.get("idx"),
-                )
-                loss = loss.float()
-
-            if not is_finite(loss):
-                raise RuntimeError(
-                    f"HeatGeo loss NaN/Inf at epoch={self.current_epoch} step={self.current_step}"
-                )
-
-            self.scaler.scale(loss).backward()
-            self.scaler.unscale_(self.optimizer)
-            if not grads_are_finite(self.optimizer):
-                self.optimizer.zero_grad(set_to_none=True)
-                self.scaler.update()
-                # Advance the schedule even on a skipped update: it was built for
-                # len(train_loader) * epochs steps, so returning early here leaves
-                # the LR permanently behind the cosine curve it was sized for.
-                self.scheduler.step()
-                return loss, {**metrics, "skip": "grad_inf"}
-
-            # Every parameter the optimizer will move, not just the student's: the
-            # multi-layer branch adds `proj_s2t` at 2x the learning rate, and a
-            # ceiling that skips it is not a ceiling.
-            clipped = [
-                p
-                for group in self.optimizer.param_groups
-                for p in group["params"]
-                if p.grad is not None
-            ]
-            grad_norm = torch.nn.utils.clip_grad_norm_(clipped, MAX_GRAD_NORM)
-            metrics["grad_norm"] = float(grad_norm)
-            self.scaler.step(self.optimizer)
-            self.scaler.update()
-            assert_module_parameters_finite(
-                self.model_student,
-                f"HeatGeo student after optimizer step "
-                f"(epoch={self.current_epoch}, step={self.current_step})",
-            )
-            self.scheduler.step()
-
-            return loss, metrics
+            return heatgeo_step(self, batch)
 
         if method == "rkd":
-            batch_s = {
-                key: value.to(self.device_s, non_blocking=True)
-                for key, value in batch.items()
-                if torch.is_tensor(value)
-                and (key.endswith("_stu") or key in {"labels", "teacher_cls"})
-            }
-            self.optimizer.zero_grad(set_to_none=True)
-
-            with autocast("cuda", enabled=torch.cuda.is_available()):
-                student_output = self.model_student(
-                    input_ids=batch_s["input_ids1_stu"],
-                    attention_mask=batch_s["attention_mask1_stu"],
-                    return_dict=True,
-                )
-                student_cls = student_output.last_hidden_state[:, 0, :]
-
-                task_loss = None
-                if cfg.w_task > 0:
-                    if "input_ids2_stu" not in batch_s:
-                        raise ValueError(
-                            "RKD with w_task > 0 requires a second text view"
-                        )
-                    student_output2 = self.model_student(
-                        input_ids=batch_s["input_ids2_stu"],
-                        attention_mask=batch_s["attention_mask2_stu"],
-                        return_dict=True,
-                    )
-                    student_cls2 = student_output2.last_hidden_state[:, 0, :]
-                    task_loss, _ = info_nce(
-                        student_cls,
-                        student_cls2,
-                        temperature=cfg.temperature,
-                    )
-
-                loss, metrics = self.criterion(
-                    student=student_cls,
-                    teacher=batch_s["teacher_cls"],
-                    task_loss=task_loss,
-                )
-                loss = loss.float()
-
-            if not is_finite(loss):
-                raise RuntimeError(
-                    f"RKD loss NaN/Inf at epoch={self.current_epoch} "
-                    f"step={self.current_step}"
-                )
-
-            self.scaler.scale(loss).backward()
-            self.scaler.unscale_(self.optimizer)
-            if not grads_are_finite(self.optimizer):
-                self.optimizer.zero_grad(set_to_none=True)
-                self.scaler.update()
-                self.scheduler.step()
-                return loss, {**metrics, "skip": "grad_inf"}
-
-            self.scaler.step(self.optimizer)
-            self.scaler.update()
-            self.scheduler.step()
-            return loss, metrics
+            return rkd_step(self, batch)
 
         if method == "talas":
-            batch_s = {}
-            for k, v in batch.items():
-                if not torch.is_tensor(v):
-                    continue
-                if k.endswith("_stu") or k == "labels" or k == "teacher_cls":
-                    batch_s[k] = v.to(self.device_s, non_blocking=True)
-
-            # ========== FIRST PASS ==========
-            with autocast("cuda", enabled=torch.cuda.is_available()):
-                teacher_cls = batch_s["teacher_cls"]
-
-                s_out1 = self.model_student(
-                    input_ids=batch_s["input_ids1_stu"],
-                    attention_mask=batch_s["attention_mask1_stu"],
-                    output_hidden_states=True,
-                    return_dict=True,
-                )
-                s_out2 = self.model_student(
-                    input_ids=batch_s["input_ids2_stu"],
-                    attention_mask=batch_s["attention_mask2_stu"],
-                    output_hidden_states=False,
-                    return_dict=True,
-                )
-
-                S_last1 = s_out1.last_hidden_state
-                S_last2 = s_out2.last_hidden_state
-                S_cls1 = S_last1[:, 0, :]
-                S_cls2 = S_last2[:, 0, :]
-
-                loss_task, _ = info_nce(S_cls1, S_cls2, temperature=cfg.temperature)
-
-                # Initialize TALAS criterion if needed
-                if self.criterion is None:
-                    d_s = self.model_student.config.hidden_size
-                    d_t = teacher_cls.shape[-1]
-
-                    # BERT-base has 13 layers: embedding + 12 transformer layers
-                    num_layers = len(s_out1.hidden_states)
-
-                    self.criterion = TeacherAnchorKD(
-                        student_dim=d_s,
-                        teacher_dim=d_t,
-                        num_layers=num_layers,
-                        last_layer_idx=cfg.last_layer_idx,
-                        start_rkd=cfg.start_rkd,
-                        w_task=cfg.w_task,
-                        w_kd=cfg.w_kd,
-                        w_struct=cfg.w_struct,
-                        eps_norm=cfg.eps_norm,
-                    ).to(self.device_s)
-
-                    # Initialize SAM optimizer with both student and criterion parameters
-                    if not SAM_AVAILABLE:
-                        raise RuntimeError(
-                            "SAM optimizer not available. Install pytorch_optimizer."
-                        )
-
-                    base_optimizer = optim.AdamW
-                    self.optimizer = SAM(
-                        [
-                            {
-                                "params": self.model_student.parameters(),
-                                "lr": cfg.learning_rate,
-                                "weight_decay": 0.01,
-                            },
-                            {
-                                "params": self.criterion.parameters(),
-                                "lr": cfg.learning_rate,
-                                "weight_decay": 0.01,
-                            },
-                        ],
-                        base_optimizer,
-                        rho=getattr(cfg, "rho", 0.05),
-                        adaptive=True,
-                    )
-
-                    # Initialize scheduler
-                    num_steps = len(self.train_loader)
-                    total_steps = num_steps * cfg.epochs
-                    min_lr_rate = cfg.min_lr / cfg.learning_rate
-                    self.scheduler = get_scheduler(
-                        name="cosine_with_min_lr",
-                        optimizer=self.optimizer,
-                        num_warmup_steps=int(total_steps * cfg.warmup_ratio),
-                        num_training_steps=total_steps,
-                        scheduler_specific_kwargs={"min_lr_rate": min_lr_rate},
-                    )
-
-                    print(
-                        f"Initialized TeacherAnchorKD: {d_s} -> {d_t}, num_layers={num_layers}, last_layer_idx={cfg.last_layer_idx}, start_rkd={cfg.start_rkd}"
-                    )
-                    print(
-                        f"Initialized SAM optimizer with rho={getattr(cfg, 'rho', 0.05)}"
-                    )
-                    print(
-                        f"Initialized scheduler: {total_steps} steps, warmup={int(total_steps * cfg.warmup_ratio)}"
-                    )
-
-                # Now safe to call criterion with initialized projection heads
-                student_outputs = {
-                    "hidden_states": s_out1.hidden_states,
-                    "last_hidden_state": S_last1,
-                }
-
-                loss, metrics = self.criterion(
-                    student_outputs=student_outputs,
-                    teacher_cls=teacher_cls,
-                    task_loss=loss_task,
-                )
-
-                loss = loss.float()
-
-            # Backward pass 1 (this will init gradients for first_step)
-            self.scaler.scale(loss).backward()
-
-            # Check gradients
-            self.scaler.unscale_(self.optimizer)
-            if not grads_are_finite(self.optimizer):
-                self.optimizer.zero_grad(set_to_none=True)
-                self.scaler.update()
-                self.scheduler.step()
-                return loss, {**metrics, "skip": "grad_inf_p1"}
-
-            # SAM first step
-            self.optimizer.first_step(zero_grad=True)
-
-            # ========== SECOND PASS ==========
-            with autocast("cuda", enabled=torch.cuda.is_available()):
-                s_out1_2 = self.model_student(
-                    input_ids=batch_s["input_ids1_stu"],
-                    attention_mask=batch_s["attention_mask1_stu"],
-                    output_hidden_states=True,
-                    return_dict=True,
-                )
-                s_out2_2 = self.model_student(
-                    input_ids=batch_s["input_ids2_stu"],
-                    attention_mask=batch_s["attention_mask2_stu"],
-                    output_hidden_states=False,
-                    return_dict=True,
-                )
-
-                S_last1_2 = s_out1_2.last_hidden_state
-                S_last2_2 = s_out2_2.last_hidden_state
-                S_cls1_2 = S_last1_2[:, 0, :]
-                S_cls2_2 = S_last2_2[:, 0, :]
-
-                loss_task_2, _ = info_nce(
-                    S_cls1_2, S_cls2_2, temperature=cfg.temperature
-                )
-
-                student_outputs_2 = {
-                    "hidden_states": s_out1_2.hidden_states,
-                    "last_hidden_state": S_last1_2,
-                }
-
-                loss_2, _ = self.criterion(
-                    student_outputs=student_outputs_2,
-                    teacher_cls=teacher_cls,
-                    task_loss=loss_task_2,
-                )
-
-                loss_2 = loss_2.float()
-
-            if not is_finite(loss_2):
-                raise RuntimeError(
-                    f"loss_2 NaN/Inf at epoch={self.current_epoch} step={self.current_step}"
-                )
-
-            # Backward pass 2 - IMPORTANT: Do NOT scale (plain backward)
-            loss_2.backward()
-
-            # Check gradients again
-            if not grads_are_finite(self.optimizer):
-                # first_step() already perturbed the weights; put them back before
-                # abandoning the step.
-                self._sam_restore_without_update()
-                self.optimizer.zero_grad(set_to_none=True)
-                self.scaler.update()
-                # Same policy as the heatgeo skip path: the schedule was sized for
-                # len(train_loader) * epochs steps, so a skipped update must still
-                # advance it or the LR runs permanently behind its own curve.
-                self.scheduler.step()
-                return loss, {**metrics, "skip": "grad_inf_p2"}
-
-            # SAM second step
-            self.optimizer.second_step(zero_grad=True)
-            # `second_step()` performs the wrapped AdamW update directly, so
-            # PyTorch's scheduler wrapper never observes an `optimizer.step()` call.
-            # Mark the real update before advancing the schedule; otherwise it emits
-            # a false "scheduler before optimizer" warning on the first TALAS step.
-            self.optimizer._opt_called = True
-            self.scaler.update()
-            self.scheduler.step()
-
-            # Clean up
-            del s_out1, s_out2, s_out1_2, s_out2_2
-            del student_outputs, student_outputs_2
-
-            return loss, metrics
+            return talas_step(self, batch)
 
         # Standard distillation methods with teacher inference
-        batch_s, batch_t = {}, {}
-        for k, v in batch.items():
-            if not torch.is_tensor(v):
-                continue
-            if k.endswith("_stu") or k == "labels":
-                batch_s[k] = v.to(self.device_s, non_blocking=True)
-            if k.endswith("_tea"):
-                batch_t[k] = v.to(self.device_t, non_blocking=True)
-
-        self.optimizer.zero_grad(set_to_none=True)
-
-        with autocast("cuda", enabled=torch.cuda.is_available()):
-            need_atts = method == "emo"
-            with torch.inference_mode():
-                t_out1 = self.model_teacher(
-                    input_ids=batch_t["input_ids1_tea"],
-                    attention_mask=batch_t["attention_mask1_tea"],
-                    output_attentions=need_atts,
-                    return_dict=True,
-                )
-                T_last1 = t_out1.last_hidden_state
-                T_cls1 = last_token_pool(T_last1, batch_t["attention_mask1_tea"])
-
-                T_last1 = T_last1.to(self.device_s, non_blocking=True)
-                T_cls1 = T_cls1.to(self.device_s, non_blocking=True)
-
-                if need_atts:
-                    T_atts = tuple(
-                        att.to(self.device_s, non_blocking=True)
-                        for att in t_out1.attentions
-                    )
-                    T_last2 = None
-                    T_atts2 = None
-                    if "input_ids2_tea" in batch_t:
-                        t_out2 = self.model_teacher(
-                            input_ids=batch_t["input_ids2_tea"],
-                            attention_mask=batch_t["attention_mask2_tea"],
-                            output_attentions=True,
-                            return_dict=True,
-                        )
-                        T_last2 = t_out2.last_hidden_state.to(
-                            self.device_s, non_blocking=True
-                        )
-                        T_atts2 = tuple(
-                            attention.to(self.device_s, non_blocking=True)
-                            for attention in t_out2.attentions
-                        )
-
-            # Different models have different forward signatures
-            if method == "stella":
-                # StellaModel doesn't accept output_attentions or return_dict
-                s_out1 = self.model_student(
-                    input_ids=batch_s["input_ids1_stu"],
-                    attention_mask=batch_s["attention_mask1_stu"],
-                )
-                s_out2 = self.model_student(
-                    input_ids=batch_s["input_ids2_stu"],
-                    attention_mask=batch_s["attention_mask2_stu"],
-                )
-            elif method == "emo":
-                # EMO needs attentions
-                s_out1 = self.model_student(
-                    input_ids=batch_s["input_ids1_stu"],
-                    attention_mask=batch_s["attention_mask1_stu"],
-                    output_attentions=True,
-                    return_dict=True,
-                )
-                s_out2 = None
-                if "input_ids2_stu" in batch_s:
-                    s_out2 = self.model_student(
-                        input_ids=batch_s["input_ids2_stu"],
-                        attention_mask=batch_s["attention_mask2_stu"],
-                        output_attentions=True,
-                        return_dict=True,
-                    )
-            else:
-                # CDM, DSKD - standard transformers models
-                s_out1 = self.model_student(
-                    input_ids=batch_s["input_ids1_stu"],
-                    attention_mask=batch_s["attention_mask1_stu"],
-                    return_dict=True,
-                )
-                s_out2 = self.model_student(
-                    input_ids=batch_s["input_ids2_stu"],
-                    attention_mask=batch_s["attention_mask2_stu"],
-                    return_dict=True,
-                )
-            if method != "stella":
-                S_last1 = s_out1.last_hidden_state
-                S_last2 = None if s_out2 is None else s_out2.last_hidden_state
-                S_cls1 = S_last1[:, 0, :]
-                S_cls2 = None if S_last2 is None else S_last2[:, 0, :]
-            else:
-                S_cls1 = s_out1["pooled"]
-                S_cls2 = s_out2["pooled"]
-
-            if method == "emo":
-                loss_task, task_metrics = self._compute_task_loss(
-                    S_cls1, S_cls2, batch_s
-                )
-            else:
-                loss_task, _ = info_nce(S_cls1, S_cls2, temperature=cfg.temperature)
-                task_metrics = {}
-
-            # ========== Method-specific KD loss ==========
-            if method == "cdm":
-                keep_s1 = batch_s["attention_mask1_stu"].bool() & (
-                    ~batch_s["special_tokens_mask1_stu"].bool()
-                )
-                keep_t1 = batch_t["attention_mask1_tea"].to(self.device_s).bool() & (
-                    ~batch_t["special_tokens_mask1_tea"].to(self.device_s).bool()
-                )
-
-                kd_dtw = self.criterion.compute_cdm_loss(
-                    S_last=S_last1,
-                    T_last=T_last1,
-                    batch_input_ids_stu=batch["input_ids1_stu"],
-                    batch_input_ids_tea=batch["input_ids1_tea"],
-                    keep_mask_stu=keep_s1,
-                    keep_mask_tea=keep_t1,
-                    proj_s2t=self.proj_s2t,
-                    device_s=self.device_s,
-                    epoch=self.current_epoch,
-                    step=self.current_step,
-                )
-
-                S_proj_cls1 = self.proj_s2t(S_cls1)
-                S_proj_cls1_norm = F.normalize(S_proj_cls1, p=2, dim=-1)
-                T_cls1_norm = F.normalize(T_cls1, p=2, dim=-1)
-                kd_cls = F.mse_loss(S_proj_cls1_norm, T_cls1_norm)
-
-                loss = (
-                    cfg.w_task * loss_task
-                    + cfg.alpha_dtw * kd_dtw * 100
-                    + cfg.w_cls * kd_cls
-                )
-
-                metrics = {
-                    "loss_total": loss.item(),
-                    "loss_task": loss_task.item(),
-                    "loss_kd_dtw": kd_dtw.item()
-                    if isinstance(kd_dtw, torch.Tensor)
-                    else kd_dtw,
-                    "loss_kd_cls": kd_cls.item(),
-                }
-
-            elif method == "dskd":
-                mask_s1 = batch_s["attention_mask1_stu"]
-                mask_t1 = batch_t["attention_mask1_tea"].to(self.device_s)
-
-                spec_s1 = batch_s.get("special_tokens_mask1_stu", None)
-                spec_t1 = batch_t.get("special_tokens_mask1_tea", None)
-                if spec_t1 is not None:
-                    spec_t1 = spec_t1.to(self.device_s)
-
-                loss, metrics = self.criterion.compute_dskd_loss(
-                    S_last=S_last1,
-                    T_last=T_last1,
-                    S_cls=S_cls1,
-                    T_cls=T_cls1,
-                    mask_student=mask_s1,
-                    mask_teacher=mask_t1,
-                    task_loss=loss_task,
-                    special_tokens_mask_student=spec_s1,
-                    special_tokens_mask_teacher=spec_t1,
-                    device=self.device_s,
-                )
-
-            elif method == "emo":
-
-                class TeacherOutput:
-                    def __init__(self, last_hidden_state, attentions):
-                        self.last_hidden_state = last_hidden_state
-                        self.attentions = attentions
-
-                class StudentOutput:
-                    def __init__(self, last_hidden_state, attentions):
-                        self.last_hidden_state = last_hidden_state
-                        self.attentions = attentions
-
-                teacher_outputs = TeacherOutput(T_last1, T_atts)
-                student_outputs = StudentOutput(S_last1, s_out1.attentions)
-
-                att_loss_weight = getattr(cfg, "att_loss_weight", 0.1)
-                ot_loss_weight = getattr(cfg, "ot_loss_weight", 1.0)
-
-                kd_loss, kd_metrics = self.criterion.compute_emo_loss(
-                    teacher_outputs=teacher_outputs,
-                    student_outputs=student_outputs,
-                    input_ids_tea=batch_t["input_ids1_tea"].to(self.device_s),
-                    input_ids_stu=batch_s["input_ids1_stu"],
-                    attention_mask_tea=batch_t["attention_mask1_tea"].to(self.device_s),
-                    attention_mask_stu=batch_s["attention_mask1_stu"],
-                    tok_teacher=self.tok_teacher,
-                    tok_student=self.tok_student,
-                    att_loss_weight=att_loss_weight,
-                    ot_loss_weight=ot_loss_weight,
-                )
-                if S_last2 is not None and T_last2 is not None:
-                    teacher_outputs2 = TeacherOutput(T_last2, T_atts2)
-                    student_outputs2 = StudentOutput(S_last2, s_out2.attentions)
-                    kd_loss2, kd_metrics2 = self.criterion.compute_emo_loss(
-                        teacher_outputs=teacher_outputs2,
-                        student_outputs=student_outputs2,
-                        input_ids_tea=batch_t["input_ids2_tea"].to(self.device_s),
-                        input_ids_stu=batch_s["input_ids2_stu"],
-                        attention_mask_tea=batch_t["attention_mask2_tea"].to(
-                            self.device_s
-                        ),
-                        attention_mask_stu=batch_s["attention_mask2_stu"],
-                        tok_teacher=self.tok_teacher,
-                        tok_student=self.tok_student,
-                        att_loss_weight=att_loss_weight,
-                        ot_loss_weight=ot_loss_weight,
-                    )
-                    kd_loss = 0.5 * (kd_loss + kd_loss2)
-                    kd_metrics = {
-                        key: 0.5 * (kd_metrics[key] + kd_metrics2[key])
-                        for key in kd_metrics
-                    }
-
-                w_task = getattr(cfg, "w_task", 0.5)
-                alpha_kd = getattr(cfg, "alpha_kd", 0.5)
-                loss = w_task * loss_task + alpha_kd * kd_loss
-
-                metrics = {
-                    "loss_total": loss.item(),
-                    "loss_task": loss_task.item(),
-                    **task_metrics,
-                    **kd_metrics,
-                }
-
-            elif method == "stella":
-                if self.current_stage == 1:
-                    S_emb = s_out1["fc1"]
-                    loss, metrics = stella_stage1_loss(
-                        S_emb,
-                        T_cls1,
-                        w_cos=getattr(cfg, "w_cos_stage1", 10.0),
-                        w_sim=getattr(cfg, "w_sim_stage1", 200.0),
-                        w_tri=getattr(cfg, "w_tri_stage1", 20.0),
-                    )
-                else:
-                    loss, metrics = stella_stage2_loss(
-                        S_cls1,
-                        S_cls2,
-                        s_out1["fc1"],
-                        s_out1["fc2"],
-                        s_out1["fc3"],
-                        s_out1["fc4"],
-                        T_cls1,
-                        temperature=cfg.temperature,
-                        w_task=cfg.w_task,
-                        w_cos=getattr(cfg, "w_cos_stage2", 10.0),
-                        w_sim=getattr(cfg, "w_sim_stage2", 200.0),
-                        w_tri=getattr(cfg, "w_tri_stage2", 20.0),
-                    )
-
-            else:
-                raise ValueError(f"Unknown distillation method: {method}")
-
-            loss = loss.float()
-
-        self.scaler.scale(loss).backward()
-        self.scaler.step(self.optimizer)
-        self.scaler.update()
-        self.scheduler.step()
-
-        return loss, metrics
+        return standard_step(self, batch)
 
     def train_epoch(self, epoch: int):
         self.model_student.train()
@@ -1672,182 +909,10 @@ class KnowledgeDistiller:
         }
         return avg_loss
 
-    def save_checkpoint(self, epoch: int, metrics: dict | None = None):
-        cfg = self.config
-        if not cfg.save_dir:
-            return
-        if epoch in self._saved_checkpoint_epochs:
-            print(
-                f"Checkpoint for epoch {epoch + 1} already saved; skipping duplicate."
-            )
-            return
-        os.makedirs(cfg.save_dir, exist_ok=True)
 
-        checkpoint = {
-            "epoch": epoch,
-            "model_state_dict": self.model_student.state_dict(),
-            "optimizer_state_dict": self.optimizer.state_dict(),
-            "scheduler_state_dict": self.scheduler.state_dict(),
-            "config": cfg.to_dict() if hasattr(cfg, "to_dict") else cfg,
-        }
 
-        if self.proj_s2t is not None:
-            checkpoint["proj_s2t_state_dict"] = self.proj_s2t.state_dict()
 
-        if self.criterion is not None and hasattr(self.criterion, "state_dict"):
-            checkpoint["criterion_state_dict"] = self.criterion.state_dict()
-        if self.task_head is not None:
-            checkpoint["task_head_state_dict"] = self.task_head.state_dict()
 
-        if metrics:
-            checkpoint["metrics"] = metrics
-
-        path = os.path.join(cfg.save_dir, f"checkpoint_epoch_{epoch + 1}.pt")
-        torch.save(checkpoint, path)
-        print(f"Checkpoint saved: {path}")
-        print(f"Done save_checkpoint for epoch {epoch + 1}")
-
-        if cfg.save_best and metrics and "loss" in metrics:
-            if not hasattr(self, "best_loss") or metrics["loss"] < self.best_loss:
-                self.best_loss = metrics["loss"]
-                best_path = os.path.join(cfg.save_dir, "best_model.pt")
-                torch.save(checkpoint, best_path)
-                print(f"Best model saved: {best_path}")
-
-        self.save_student_weights(epoch)
-        self._saved_checkpoint_epochs.add(epoch)
-
-    def save_student_weights(self, epoch: int):
-        weights_dir = getattr(self.config, "weights_dir", None)
-        if not weights_dir:
-            return
-        if epoch in self._saved_student_weight_epochs:
-            print(
-                f"Student weights for epoch {epoch + 1} already saved; "
-                "skipping duplicate."
-            )
-            return
-
-        destination_dir = Path(weights_dir)
-        destination_dir.mkdir(parents=True, exist_ok=True)
-        destination = destination_dir / f"student_epoch_{epoch + 1}.pt"
-        destination_tmp = destination.with_suffix(".pt.tmp")
-        payload = {
-            "epoch": epoch + 1,
-            "student_model_name": self.config.student_model_name,
-            "teacher_model_name": self.config.teacher_model_name,
-            "model_state_dict": self.model_student.state_dict(),
-        }
-
-        local_dir = Path(self.config.save_dir)
-        local_dir.mkdir(parents=True, exist_ok=True)
-        file_descriptor, local_tmp_name = tempfile.mkstemp(
-            prefix=f".student_epoch_{epoch + 1}_",
-            suffix=".pt",
-            dir=local_dir,
-        )
-        os.close(file_descriptor)
-        local_tmp = Path(local_tmp_name)
-
-        try:
-            torch.save(payload, local_tmp)
-            shutil.copy2(local_tmp, destination_tmp)
-            os.replace(destination_tmp, destination)
-            if not destination.is_file() or destination.stat().st_size == 0:
-                raise OSError(
-                    f"Saved student weights are missing or empty: {destination}"
-                )
-        finally:
-            local_tmp.unlink(missing_ok=True)
-            destination_tmp.unlink(missing_ok=True)
-
-        print(f"Student weights saved: {destination}")
-        self._saved_student_weight_epochs.add(epoch)
-
-    @staticmethod
-    def _benchmark_name(path: str, split: str) -> str:
-        name = Path(path).stem
-        suffix = f"_{split}"
-        return name.removesuffix(suffix)
-
-    @staticmethod
-    def _metric_details(values: dict[str, Any]) -> str:
-        labels = {
-            "accuracy": "Acc",
-            "f1": "F1",
-            "precision": "P",
-            "recall": "R",
-            "average_precision": "AP",
-            "spearman": "Spearman",
-        }
-        details = []
-        for key, label in labels.items():
-            value = values.get(key)
-            if isinstance(value, (int, float)):
-                details.append(f"{label}={100.0 * float(value):.2f}")
-        return " ".join(details)
-
-    def print_evaluation_table(
-        self,
-        split: str,
-        results: dict[str, Any],
-    ) -> None:
-        rows = []
-        for family in ("classification", "pair", "sts"):
-            family_scores = []
-            for path, raw_values in results.get(family, {}).items():
-                values = (
-                    {"spearman": raw_values} if family == "sts" else dict(raw_values)
-                )
-                metric_name = PRIMARY_EVALUATION_METRICS[family]
-                score = float(values[metric_name])
-                family_scores.append(score)
-                rows.append(
-                    (
-                        family,
-                        self._benchmark_name(path, split),
-                        metric_name,
-                        f"{100.0 * score:.2f}",
-                        self._metric_details(values),
-                    )
-                )
-            if family_scores:
-                rows.append(
-                    (
-                        family,
-                        "MEAN",
-                        PRIMARY_EVALUATION_METRICS[family],
-                        f"{100.0 * sum(family_scores) / len(family_scores):.2f}",
-                        "",
-                    )
-                )
-
-        title = (
-            f"VALIDATION - EPOCH {self.current_epoch + 1}"
-            if split == "validation"
-            else "FINAL TEST"
-        )
-        headers = ("Family", "Benchmark", "Primary metric", "Score", "Details")
-        widths = [
-            max([len(headers[index]), *(len(row[index]) for row in rows)])
-            for index in range(len(headers))
-        ]
-        separator = "-+-".join("-" * width for width in widths)
-
-        print("\n" + "=" * len(separator))
-        print(title)
-        print("=" * len(separator))
-        print(
-            " | ".join(
-                headers[index].ljust(widths[index]) for index in range(len(headers))
-            )
-        )
-        print(separator)
-        for row in rows:
-            print(
-                " | ".join(row[index].ljust(widths[index]) for index in range(len(row)))
-            )
-        print("=" * len(separator) + "\n")
 
     def evaluate(self, split: str = "validation"):
         if split not in {"validation", "test"}:
@@ -1884,7 +949,7 @@ class KnowledgeDistiller:
                 "sts": sts,
             }
         )
-        self.print_evaluation_table(split, results)
+        print_evaluation_table(self.current_epoch, split, results)
         return results
 
     def log_step_records(self, records: list[dict]):
@@ -1921,199 +986,94 @@ class KnowledgeDistiller:
         cfg = self.config
 
         if cfg.distill_method == "stella":
-            print("\n" + "=" * 70)
-            print("Starting Stella 2-Stage Training...")
-            print("=" * 70)
-            print(f"Student: {cfg.student_model_name}")
-            print(f"Teacher: {cfg.teacher_model_name}")
-            print(f"Stage 1 epochs: {cfg.epochs_stage1}")
-            print(f"Stage 2 epochs: {cfg.epochs_stage2}")
-            print(f"Batch size: {cfg.batch_size}")
-            print(f"Learning rate: {cfg.learning_rate}")
-            print("=" * 70 + "\n")
+            stella_train(self)
+            return
 
-            print("\n" + "=" * 70)
-            print("STAGE 1: Freeze backbone + fc2,3,4, train fc1 only")
-            print("=" * 70)
+        print("\n" + "=" * 60)
+        print("Starting training...")
+        print("=" * 60)
+        print(f"Method: {cfg.distill_method}")
+        print(f"Student: {cfg.student_model_name}")
+        print(f"Teacher: {cfg.teacher_model_name}")
+        print(f"Epochs: {cfg.epochs}")
+        print(f"Batch size: {cfg.batch_size}")
+        print(f"Learning rate: {cfg.learning_rate}")
+        print("=" * 60 + "\n")
 
-            for p in self.model_student.backbone.parameters():
-                p.requires_grad = False
-            for head in [
-                self.model_student.fc2,
-                self.model_student.fc3,
-                self.model_student.fc4,
-            ]:
-                for p in head.parameters():
-                    p.requires_grad = False
+        for epoch in range(cfg.epochs):
+            self.current_epoch = epoch
 
-            print("Frozen: backbone, fc2, fc3, fc4")
-            print("Trainable: fc1")
-
-            self.current_stage = 1
-            for epoch in range(cfg.epochs_stage1):
-                avg_loss = self.train_epoch(epoch)
-                self.log_experiment_record(
-                    {"stage": 1, "train": self.last_epoch_metrics}
-                )
-
-                if (epoch + 1) % cfg.save_every == 0:
-                    self.save_checkpoint(epoch, {"loss": avg_loss})
-
-            print("\n" + "=" * 70)
-            print("STAGE 1 COMPLETED!")
-            print("=" * 70 + "\n")
-
-            print("\n" + "=" * 70)
-            print("STAGE 2: Unfreeze all, train full model")
-            print("=" * 70)
-
-            for p in self.model_student.parameters():
-                p.requires_grad = True
-
-            print("Unfrozen: all parameters")
-            print("Trainable: backbone, fc1, fc2, fc3, fc4")
-
-            self.optimizer = optim.AdamW(
-                self.model_student.parameters(), lr=cfg.learning_rate
+            use_row = (
+                cfg.distill_method == "heatgeo"
+                and cfg.row_weight > 0
+                and epoch + 1 >= cfg.row_start_epoch
             )
-            self.scheduler = get_scheduler(
-                "cosine",
-                optimizer=self.optimizer,
-                num_warmup_steps=int(len(self.train_loader) * cfg.warmup_ratio),
-                num_training_steps=len(self.train_loader) * cfg.epochs_stage2,
-            )
+            if self.criterion is not None and hasattr(
+                self.criterion, "use_row_loss"
+            ):
+                self.criterion.use_row_loss = use_row
+            if use_row:
+                print(f"L_row is ENABLED for Epoch {epoch + 1}")
 
-            self.step_times = []
-            self.ma_window = deque(maxlen=50)
+            avg_loss = self.train_epoch(epoch)
+            validation_results = None
 
-            self.current_stage = 2
-            for epoch in range(cfg.epochs_stage2):
-                avg_loss = self.train_epoch(epoch)
-                validation_results = None
-
+            eval_every = int(getattr(cfg, "eval_every", 0))
+            if eval_every > 0 and (epoch + 1) % eval_every == 0:
                 print("\n" + "=" * 60)
-                print(f"Evaluation after Stage2 Epoch {epoch + 1}")
+                print(f"Evaluation after Epoch {epoch + 1}")
                 print("=" * 60)
-
                 try:
                     validation_results = self.evaluate("validation")
                 except Exception as e:
-                    print(f"Warning: Evaluation failed with error: {e}")
+                    print(f"Warning: Validation failed with error: {e}")
+                    print("Continuing training...")
+                print("=" * 60 + "\n")
+            self.log_experiment_record(
+                {
+                    "train": self.last_epoch_metrics,
+                    "validation": validation_results,
+                }
+            )
+
+            final_weights_only = bool(getattr(cfg, "final_weights_only", False))
+            should_save_final_weights = (
+                final_weights_only and epoch + 1 == cfg.epochs
+            )
+            should_save_checkpoint = (
+                not final_weights_only and (epoch + 1) % cfg.save_every == 0
+            )
+            if should_save_final_weights or should_save_checkpoint:
+                try:
+                    if should_save_final_weights:
+                        if not getattr(cfg, "weights_dir", None):
+                            raise ValueError(
+                                "final_weights_only requires weights_dir"
+                            )
+                        save_student_weights(self, epoch)
+                    else:
+                        save_checkpoint(self, epoch, {"loss": avg_loss})
+                except Exception as e:
+                    if getattr(cfg, "weights_dir", None):
+                        raise RuntimeError(
+                            f"Required epoch {epoch + 1} weights could not be saved"
+                        ) from e
+                    print(f"Warning: Saving checkpoint failed with error: {e}")
                     print("Continuing training...")
 
-                print("=" * 60 + "\n")
-                self.log_experiment_record(
-                    {
-                        "stage": 2,
-                        "train": self.last_epoch_metrics,
-                        "validation": validation_results,
-                    }
-                )
+        print("\n" + "=" * 60)
+        print("Training completed!")
+        print("=" * 60)
+        print("Done train()")
 
-                if (epoch + 1) % cfg.save_every == 0:
-                    self.save_checkpoint(epoch, {"loss": avg_loss})
-
-            print("\n" + "=" * 70)
-            print("STAGE 2 COMPLETED!")
-            print("=" * 70)
-
-            self.save_checkpoint(cfg.epochs_stage2 - 1, {"loss": avg_loss})
-            try:
-                test_results = self.evaluate("test")
-                self.log_experiment_record({"stage": 2, "test": test_results})
-            except Exception as e:
-                print(f"Warning: Final test evaluation failed with error: {e}")
-
-            print("\n" + "=" * 70)
-            print("Training completed successfully!")
-            print("=" * 70)
-
+        if getattr(cfg, "final_weights_only", False):
+            if not getattr(cfg, "weights_dir", None):
+                raise ValueError("final_weights_only requires weights_dir")
+            save_student_weights(self, cfg.epochs - 1)
         else:
-            print("\n" + "=" * 60)
-            print("Starting training...")
-            print("=" * 60)
-            print(f"Method: {cfg.distill_method}")
-            print(f"Student: {cfg.student_model_name}")
-            print(f"Teacher: {cfg.teacher_model_name}")
-            print(f"Epochs: {cfg.epochs}")
-            print(f"Batch size: {cfg.batch_size}")
-            print(f"Learning rate: {cfg.learning_rate}")
-            print("=" * 60 + "\n")
-
-            for epoch in range(cfg.epochs):
-                self.current_epoch = epoch
-
-                use_row = (
-                    cfg.distill_method == "heatgeo"
-                    and cfg.row_weight > 0
-                    and epoch + 1 >= cfg.row_start_epoch
-                )
-                if self.criterion is not None and hasattr(
-                    self.criterion, "use_row_loss"
-                ):
-                    self.criterion.use_row_loss = use_row
-                if use_row:
-                    print(f"L_row is ENABLED for Epoch {epoch + 1}")
-
-                avg_loss = self.train_epoch(epoch)
-                validation_results = None
-
-                eval_every = int(getattr(cfg, "eval_every", 0))
-                if eval_every > 0 and (epoch + 1) % eval_every == 0:
-                    print("\n" + "=" * 60)
-                    print(f"Evaluation after Epoch {epoch + 1}")
-                    print("=" * 60)
-                    try:
-                        validation_results = self.evaluate("validation")
-                    except Exception as e:
-                        print(f"Warning: Validation failed with error: {e}")
-                        print("Continuing training...")
-                    print("=" * 60 + "\n")
-                self.log_experiment_record(
-                    {
-                        "train": self.last_epoch_metrics,
-                        "validation": validation_results,
-                    }
-                )
-
-                final_weights_only = bool(getattr(cfg, "final_weights_only", False))
-                should_save_final_weights = (
-                    final_weights_only and epoch + 1 == cfg.epochs
-                )
-                should_save_checkpoint = (
-                    not final_weights_only and (epoch + 1) % cfg.save_every == 0
-                )
-                if should_save_final_weights or should_save_checkpoint:
-                    try:
-                        if should_save_final_weights:
-                            if not getattr(cfg, "weights_dir", None):
-                                raise ValueError(
-                                    "final_weights_only requires weights_dir"
-                                )
-                            self.save_student_weights(epoch)
-                        else:
-                            self.save_checkpoint(epoch, {"loss": avg_loss})
-                    except Exception as e:
-                        if getattr(cfg, "weights_dir", None):
-                            raise RuntimeError(
-                                f"Required epoch {epoch + 1} weights could not be saved"
-                            ) from e
-                        print(f"Warning: Saving checkpoint failed with error: {e}")
-                        print("Continuing training...")
-
-            print("\n" + "=" * 60)
-            print("Training completed!")
-            print("=" * 60)
-            print("Done train()")
-
-            if getattr(cfg, "final_weights_only", False):
-                if not getattr(cfg, "weights_dir", None):
-                    raise ValueError("final_weights_only requires weights_dir")
-                self.save_student_weights(cfg.epochs - 1)
-            else:
-                self.save_checkpoint(cfg.epochs - 1, {"loss": avg_loss})
-            try:
-                test_results = self.evaluate("test")
-                self.log_experiment_record({"test": test_results})
-            except Exception as e:
-                print(f"Warning: Final test evaluation failed with error: {e}")
+            save_checkpoint(self, cfg.epochs - 1, {"loss": avg_loss})
+        try:
+            test_results = self.evaluate("test")
+            self.log_experiment_record({"test": test_results})
+        except Exception as e:
+            print(f"Warning: Final test evaluation failed with error: {e}")
