@@ -19,7 +19,11 @@ from .policy import (
 # 8: restore padded transition rows required by L_row. Version 7 diffusion targets
 #    remain mathematically valid, but do not contain the arrays needed to sample and
 #    supervise non-anchor rows, so those caches must be rebuilt once.
-ARTIFACT_VERSION = 8
+# 9: DIFFUSION_ROW_CAP raised 4096 -> 16384. At the 13553-item corpus the old cap
+#    bound before the tolerance on 2346 rows (17.3%) at r=4, so their targets
+#    violated the stated truncation guarantee. The cap is not in the cache
+#    metadata, so the version bump is what forces those caches to rebuild.
+ARTIFACT_VERSION = 9
 
 # Anchors diffused per sparse matrix product. The intermediate X @ P holds up to
 # block_size * keep_topk * max_degree nonzeros, so this trades memory for the
@@ -32,7 +36,7 @@ DIFFUSION_BLOCK = 256
 # these only bound the arrays while that decision is being made, and the build
 # reports pool_capped_rows / diffusion_capped_rows if either ever binds first -- at
 # which point the tolerance is no longer a guarantee and the number must go up.
-DIFFUSION_ROW_CAP = 4096
+DIFFUSION_ROW_CAP = 16384
 POOL_ROW_CAP = 2048
 # Anchors per block in `_target_sharpness_stats`. Pure memory control: the stats
 # are per-anchor reductions, so the block size cannot change any reported number.
