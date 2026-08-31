@@ -27,6 +27,8 @@ def test_heatgeo_cli_overrides(monkeypatch):
             "main.py",
             "--method",
             "heatgeo",
+            "--row_mode",
+            "walk",
             "--row_weight",
             "0.8",
             "--num_walks",
@@ -59,6 +61,7 @@ def test_heatgeo_cli_overrides(monkeypatch):
     config = main.get_config(args.method, args)
 
     assert config.row_weight == 0.8
+    assert config.row_mode == "walk"
     assert config.num_walks == 3
     assert config.walk_length == 5
     assert config.row_start_epoch == 2
@@ -576,8 +579,13 @@ def test_closure_without_a_graph_is_an_error_not_a_silent_zero():
 def test_closure_mode_drops_the_walk_hyperparameters():
     from config import HeatGeoConfig
 
-    walk = HeatGeoConfig()
-    assert walk.row_mode == "walk" and walk.num_walks > 0
+    # closure_u is the default: it held the walk's benchmark (74.86 vs 74.88) with
+    # neither walk hyperparameter, which is the whole point of the mode.
+    assert HeatGeoConfig().row_mode == "closure_u"
+    assert HeatGeoConfig().num_walks == 0
+
+    walk = HeatGeoConfig(row_mode="walk")
+    assert walk.num_walks > 0 and walk.walk_length > 0
 
     for mode in ("closure_u", "closure_m"):
         config = HeatGeoConfig(row_mode=mode, num_walks=4, walk_length=4)

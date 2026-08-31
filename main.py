@@ -236,9 +236,26 @@ def get_config(method: str, args):
         value = getattr(args, name)
         if value is not None:
             setattr(config, name, value)
-    # The loop above is plain setattr, so it bypasses HeatGeoConfig.__init__. Re-run
-    # the row-mode policy or `--row_mode closure_m` would leave num_walks at its
-    # config default and the sampler would keep drawing walks.
+    # A closure mode owns no walk, so resolve_row_mode() below forces num_walks to
+    # 0. Doing that to a value the user typed would be a silent override of an
+    # explicit request -- and since the default row mode is a closure mode, the
+    # request that gets swallowed is exactly `--num_walks N` on its own.
+    if getattr(config, "row_mode", "walk") != "walk":
+        typed = [
+            f"--{name}"
+            for name in ("num_walks", "walk_length")
+            if getattr(args, name) is not None
+        ]
+        if typed:
+            parser_error = (
+                f"{', '.join(typed)} only applies to --row_mode walk; row_mode is "
+                f"{config.row_mode!r}, which selects rows from the candidate pool "
+                f"and draws no walks. Pass --row_mode walk to use them."
+            )
+            raise SystemExit(f"error: {parser_error}")
+    # The override loop above is plain setattr, so it bypasses
+    # HeatGeoConfig.__init__. Re-run the row-mode policy or a closure mode would
+    # leave num_walks at its config default and the sampler would keep drawing walks.
     if hasattr(config, "resolve_row_mode"):
         config.resolve_row_mode()
 

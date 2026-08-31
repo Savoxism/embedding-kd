@@ -76,7 +76,19 @@ class HeatGeoConfig(BaseConfig):
     # isolates the weighting. Under a closure mode num_walks is forced to 0 below,
     # which also stops walk-visited nodes from displacing uniform negatives in the
     # candidate draw -- the one way the walk changes L_rel as well as L_row.
-    row_mode = "walk"
+    #
+    # Measured on Qwen3-0.6B -> MiniLMv2-H384, row_weight 1.0, seed 42:
+    # walk 74.88, closure_u 74.86, closure_m 74.76. closure_u holds the walk's
+    # result to within noise while costing zero walk hyperparameters, so it is the
+    # default. closure_m loses 0.10: a row with high exposed mass sits deep inside
+    # some anchor's neighbourhood, which is exactly where its transition row most
+    # nearly duplicates the r=1 target L_rel already gives that anchor, so weighting
+    # by mass concentrates nu on the redundant rows. `row_eff_count` in the epoch
+    # log measures that concentration directly.
+    #
+    # "walk" is kept because it is the ablation this replaced, not because it is
+    # reachable by default.
+    row_mode = "closure_u"
     num_walks = 4
     walk_length = 4
     row_weight = 0.5
