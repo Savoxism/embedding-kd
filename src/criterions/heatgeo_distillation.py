@@ -395,7 +395,16 @@ class HeatGeoDistillation(nn.Module):
         self.register_buffer("scale_sqrt", sqrt_r)
         temps = self.graph_temp * sqrt_r
         self.register_buffer("scale_temps", temps)
-        self.temps_tied = bool(temps.numel() == 1 or torch.allclose(temps, temps[0]))
+        # Whether `loss_excess` is an exact statement rather than an upper bound:
+        # js_floor bounds the graph-scale group only under one shared student
+        # temperature. Fixed for the run, so it is resolved here instead of costing
+        # a device sync inside every _diagnostics call. (The ambient scale sits at
+        # index 0 of the runtime stack and is excluded there; on this ladder the
+        # diffusion scales are the whole of `temps`.)
+        self._excess_is_exact = bool(
+            row_temps is None
+            and (temps.numel() <= 1 or torch.allclose(temps, temps[0]))
+        )
 
     def _resolved(self, buffer: torch.Tensor, n_scales: int) -> torch.Tensor:
         if buffer.numel() < n_scales:
@@ -839,8 +848,18 @@ class HeatGeoDistillation(nn.Module):
         k = min(self.diag_topk, target.size(-1))
 
         def _distribution_stats(
-            log_probs: torch.Tensor, scale_target: torch.Tensor, mask: torch.Tensor
-        ) -> tuple[torch.Tensor, ...]:
+            log_probs: torch.Tensor,
+            scale_target: torch.Tensor,
+            mask: torch.Tensor,
+            suffix: str = "",
+        ) -> list[tuple[str, torch.Tensor]]:
+            """The six per-scale distribution stats, already carrying their names.
+
+            Returning bare tuples meant every caller had to re-list the names in the
+            same order somewhere else; the two lists then had to be kept aligned by
+            hand across three append sites, and a mismatch bound every metric to the
+            wrong number in silence rather than raising.
+            """
             probs_student = log_probs.exp()
             student_entropy = -(
                 probs_student
@@ -851,14 +870,23 @@ class HeatGeoDistillation(nn.Module):
             n_columns = (~mask).sum(dim=-1).float()
             uniform_entropy = n_columns.clamp_min(2.0).log()
             teacher_top = scale_target.topk(k, dim=-1).indices
-            return (
-                student_entropy.mean(),
-                (student_entropy / uniform_entropy).mean(),
-                probs_student.max(dim=-1).values.mean(),
-                scale_target.max(dim=-1).values.mean(),
-                probs_student.gather(-1, teacher_top).sum(dim=-1).mean(),
-                n_columns.mean(),
-            )
+            return [
+                (f"student_entropy{suffix}", student_entropy.mean()),
+                (
+                    f"student_entropy_ratio{suffix}",
+                    (student_entropy / uniform_entropy).mean(),
+                ),
+                (f"student_top1{suffix}", probs_student.max(dim=-1).values.mean()),
+                (f"target_top1{suffix}", scale_target.max(dim=-1).values.mean()),
+                (
+                    f"student_mass_on_teacher_top{k}{suffix}",
+                    probs_student.gather(-1, teacher_top).sum(dim=-1).mean(),
+                ),
+                (
+                    "candidates_per_anchor" if not suffix else "pool_columns_amb",
+                    n_columns.mean(),
+                ),
+            ]
 
         # Irreducible floor of the graph-scale group (neighbor plus diffusion):
         # sum_r w_r KL(p_r||q) >= W * JS_v(p_r), with W the group's total weight
@@ -892,106 +920,70 @@ class HeatGeoDistillation(nn.Module):
         weighted_entropy = (target_entropy * weights.view(1, -1)).sum(dim=-1)
         row_zero = loss_row.new_zeros(())
 
-        scalars = [
-            total_loss.detach(),
-            loss_rel.detach(),
-            loss_amb.detach(),
-            loss_nbr.detach(),
-            loss_diff.detach(),
-            loss_row.detach(),
-            (self.row_weight * loss_row).detach(),
-            row_metrics.get("row_teacher_entropy", row_zero).detach(),
-            row_metrics.get("row_eff_denom", row_zero).detach(),
-            row_metrics.get("row_count", row_zero).detach(),
-            row_metrics.get("row_valid_ratio", row_zero).detach(),
-
-            row_metrics.get("row_exposed_mass", row_zero).detach(),
-
-            js_floor.mean(),
-            (loss_rel - js_floor.mean()).detach(),
-            (loss_rel + weighted_entropy.mean()).detach(),
-            weighted_entropy.mean(),
+        # One ordered (name, tensor) list rather than two lists that must be kept
+        # index-aligned by hand. The single device sync below is unchanged -- it is
+        # the reason this function batches its scalars at all -- but a name can no
+        # longer drift away from the value it labels.
+        entries: list[tuple[str, torch.Tensor]] = [
+            ("loss_total", total_loss.detach()),
+            ("loss_rel", loss_rel.detach()),
+            ("loss_amb", loss_amb.detach()),
+            ("loss_nbr", loss_nbr.detach()),
+            ("loss_diff", loss_diff.detach()),
+            ("loss_row", loss_row.detach()),
+            ("loss_row_weighted", (self.row_weight * loss_row).detach()),
+            ("row_teacher_entropy", row_metrics.get("row_teacher_entropy", row_zero)),
+            ("row_eff_denom", row_metrics.get("row_eff_denom", row_zero)),
+            ("row_count", row_metrics.get("row_count", row_zero)),
+            ("row_valid_ratio", row_metrics.get("row_valid_ratio", row_zero)),
+            ("row_exposed_mass", row_metrics.get("row_exposed_mass", row_zero)),
+            ("js_floor", js_floor.mean()),
+            ("loss_excess", (loss_rel - js_floor.mean()).detach()),
+            ("loss_cross_entropy", (loss_rel + weighted_entropy.mean()).detach()),
+            ("target_entropy", weighted_entropy.mean()),
             # `target_entropy` above is the whole weighted stack, because that is what
             # loss_cross_entropy needs. It is therefore the one metric here that is not
             # scoped to the sharpest diffusion scale, and comparing it against
             # student_entropy compares two different column domains. This is the
             # teacher entropy that student_entropy is actually the counterpart of.
-            target_entropy[:, offset].mean(),
+            ("teacher_entropy_scale", target_entropy[:, offset].mean()),
             *_distribution_stats(
                 log_probs_per_scale[offset], target[:, offset, :], diffusion_mask
             ),
         ]
-        names = [
-            "loss_total",
-            "loss_rel",
-            "loss_amb",
-            "loss_nbr",
-            "loss_diff",
-            "loss_row",
-            "loss_row_weighted",
-            "row_teacher_entropy",
-            "row_eff_denom",
-            "row_count",
-            "row_valid_ratio",
-            "row_exposed_mass",
-            "js_floor",
-            "loss_excess",
-            "loss_cross_entropy",
-            "target_entropy",
-            "teacher_entropy_scale",
-            "student_entropy",
-            "student_entropy_ratio",
-            "student_top1",
-            "target_top1",
-            f"student_mass_on_teacher_top{k}",
-            "candidates_per_anchor",
-        ]
         if offset:
-            scalars.append(target_entropy[:, 0].mean())
-            scalars.extend(
-                _distribution_stats(log_probs_per_scale[0], target[:, 0, :], self_mask)
-            )
-            names.extend(
-                [
-                    "teacher_entropy_amb",
-                    "student_entropy_amb",
-                    "student_entropy_ratio_amb",
-                    "student_top1_amb",
-                    "target_top1_amb",
-                    f"student_mass_on_teacher_top{k}_amb",
-                    "pool_columns_amb",
-                ]
+            entries.append(("teacher_entropy_amb", target_entropy[:, 0].mean()))
+            entries.extend(
+                _distribution_stats(
+                    log_probs_per_scale[0], target[:, 0, :], self_mask, suffix="_amb"
+                )
             )
 
-        per_scale = list(kl_per_scale.mean(dim=0).detach())
-        # One device sync for all logged scalars instead of one sync per scalar.
-        values = torch.stack(
-            [value.float().reshape(()) for value in scalars + per_scale]
-        ).tolist()
-        metrics = dict(zip(names, values[: len(names)]))
-
-        per_scale_values = values[len(names) :]
+        # Per-scale KLs carry positional names, so they are labelled here and joined
+        # to the same stack -- still one sync for everything logged.
+        per_scale_names = []
         if offset:
-            metrics["kl_amb"] = per_scale_values[0]
-        for scale_idx, value in enumerate(per_scale_values[offset:]):
+            per_scale_names.append("kl_amb")
+        for scale_idx in range(kl_per_scale.size(1) - offset):
             scale = (
                 self.diffusion_scales[scale_idx]
                 if scale_idx < len(self.diffusion_scales)
                 else scale_idx + 1
             )
-            key = "kl_nbr" if scale == 1 else f"kl_diff_r{scale}"
-            metrics[key] = value
+            per_scale_names.append("kl_nbr" if scale == 1 else f"kl_diff_r{scale}")
+        entries.extend(zip(per_scale_names, kl_per_scale.mean(dim=0).detach()))
+
+        values = torch.stack(
+            [value.detach().float().reshape(()) for _, value in entries]
+        ).tolist()
+        metrics = {name: value for (name, _), value in zip(entries, values)}
         # js_floor bounds the graph-scale group (neighbor plus diffusion), and only
         # under a tied student temperature. With distinct tau_r the true minimum is
         # lower, so loss_excess is an upper bound on what is left to learn -- it
         # reaching 0 means the objective is spent, but it can also go negative.
-        metrics["excess_is_exact"] = float(
-            bool(
-                self.row_temps is None
-                and (
-                    temps.numel() - offset <= 1
-                    or torch.allclose(temps[offset:], temps[offset])
-                )
-            )
-        )
+        # Computed once in __init__ rather than per step: it depends only on
+        # row_temps and the derived ladder, both fixed for the run, and the
+        # `torch.allclose` it used to run here forced a second device sync right
+        # after the batched one above.
+        metrics["excess_is_exact"] = float(self._excess_is_exact)
         return metrics

@@ -316,6 +316,48 @@ def test_sampler_returns_candidates_and_targets_only():
     assert not hasattr(sampler, "transition_neighbors")
 
 
+def test_sampler_mixture_row_matches_the_weighted_pool_and_feeds_the_spill():
+    """The scale mixture is computed per anchor instead of being precomputed.
+
+    It used to be an (n_items, width) float64 array -- 224 MB at the production
+    shape, in every DataLoader worker -- serving only the rare spill branch of
+    `_select_support`. This pins both the value and that the branch still works.
+    """
+    n_items, width = 12, 6
+    pool_probs = torch.zeros(2, n_items, width)
+    pool_probs[0, :, 0] = 0.4
+    pool_probs[0, :, 1] = 0.3
+    pool_probs[0, :, 2] = 0.2
+    pool_probs[0, :, 3] = 0.1
+    # Scale 1 only covers columns the sharper scale takes first, so its quota
+    # cannot be filled and the spill has to make up the deficit.
+    pool_probs[1, :, 0] = 0.5
+    pool_probs[1, :, 1] = 0.5
+    artifact = {
+        "pool_indices": torch.stack([torch.arange(width) for _ in range(n_items)]),
+        "pool_probs": pool_probs,
+        "hard_neg_indices": torch.full((n_items, 1), -1, dtype=torch.long),
+        "metadata": {"diffusion_scales": (1, 2)},
+    }
+    sampler = HeatGeoCandidateSampler(
+        artifact=artifact, diffusion_quota=5, hard_neg_k=0, random_neg_k=1,
+        deterministic_topm=1, seed=0,
+    )
+
+    weights = np.array([1.0, 0.5])
+    weights = weights / weights.sum()
+    expected = (pool_probs[:, 0, :].numpy() * weights.reshape(-1, 1)).sum(axis=0)
+    # Bit-exact, not approximate: same operands, same order over the scale axis.
+    assert np.array_equal(sampler._mixture_row(0), expected)
+    assert not hasattr(sampler, "mixture"), "the precomputed array must be gone"
+
+    _, positions = sampler._select_support(0, sampler._rng(0, 0))
+    # Both scales together can supply at most 4 distinct columns; reaching 4 means
+    # the spill branch ran and used the mixture.
+    assert len(positions) == 4
+    assert sorted(positions.tolist()) == [0, 1, 2, 3]
+
+
 def _closure_graph() -> dict:
     """Five nodes, three teacher neighbours each; node 4 is kept out of the pool.
 

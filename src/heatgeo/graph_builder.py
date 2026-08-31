@@ -34,6 +34,9 @@ DIFFUSION_BLOCK = 256
 # which point the tolerance is no longer a guarantee and the number must go up.
 DIFFUSION_ROW_CAP = 4096
 POOL_ROW_CAP = 2048
+# Anchors per block in `_target_sharpness_stats`. Pure memory control: the stats
+# are per-anchor reductions, so the block size cannot change any reported number.
+ANCHOR_STATS_CHUNK = 4096
 
 
 def _as_tuple(values: Sequence[int]) -> tuple[int, ...]:
@@ -143,24 +146,62 @@ def _fingerprint(embeddings: torch.Tensor) -> str:
 
 
 def _compute_topk_cosine(
-    embeddings: torch.Tensor, k: int, chunk_size: int = 1024
+    embeddings: torch.Tensor,
+    k: int,
+    chunk_size: int = 1024,
+    device: torch.device | None = None,
 ) -> tuple[np.ndarray, np.ndarray]:
-    embeddings = F.normalize(embeddings.float(), p=2, dim=-1).cpu()
-    n_items = embeddings.size(0)
-    k_eff = min(k + 1, n_items)
-    all_indices = []
-    all_scores = []
+    """Top-k cosine neighbours, on the accelerator when there is one.
 
-    for start in tqdm(range(0, n_items, chunk_size), desc="HeatGeo top-k cosine"):
-        end = min(start + chunk_size, n_items)
-        sims = embeddings[start:end] @ embeddings.T
-        row_ids = torch.arange(start, end)
-        sims[torch.arange(end - start), row_ids] = -float("inf")
-        scores, indices = torch.topk(sims, k=k_eff, dim=-1)
-        all_indices.append(indices[:, :k].cpu().numpy().astype(np.int64))
-        all_scores.append(scores[:, :k].cpu().numpy().astype(np.float32))
+    This is an O(n^2 d) matmul -- ~6e11 FLOPs at n=15k, d=2560 -- and it used to be
+    pinned to the CPU on a machine that had just finished running the teacher on a
+    GPU, which made a cold graph build take minutes to tens of minutes. Only the
+    per-chunk top-k results come back to host memory, so the resident cost is the
+    embeddings plus one `chunk_size x n_items` score block.
 
-    return np.concatenate(all_indices, axis=0), np.concatenate(all_scores, axis=0)
+    TF32 is disabled for the duration: on Ampere and later it would silently drop
+    the matmul to ~10 mantissa bits, and these cosines decide graph membership and
+    feed the entropic-affinity bandwidths. The remaining CPU/GPU difference is
+    reduction order alone, but that is still enough to reorder near-ties in the
+    top-k, so an artifact built on one device is not bit-identical to one built on
+    the other.
+    """
+    if device is None:
+        device = (
+            torch.device("cuda") if torch.cuda.is_available() else embeddings.device
+        )
+
+    def _run(target: torch.device) -> tuple[np.ndarray, np.ndarray]:
+        normalized = F.normalize(embeddings.float(), p=2, dim=-1).to(target)
+        n_items = normalized.size(0)
+        k_eff = min(k + 1, n_items)
+        all_indices = []
+        all_scores = []
+        for start in tqdm(range(0, n_items, chunk_size), desc="HeatGeo top-k cosine"):
+            end = min(start + chunk_size, n_items)
+            sims = normalized[start:end] @ normalized.T
+            row_ids = torch.arange(start, end, device=target)
+            sims[torch.arange(end - start, device=target), row_ids] = -float("inf")
+            scores, indices = torch.topk(sims, k=k_eff, dim=-1)
+            all_indices.append(indices[:, :k].cpu().numpy().astype(np.int64))
+            all_scores.append(scores[:, :k].cpu().numpy().astype(np.float32))
+        return (
+            np.concatenate(all_indices, axis=0),
+            np.concatenate(all_scores, axis=0),
+        )
+
+    previous_tf32 = torch.backends.cuda.matmul.allow_tf32
+    torch.backends.cuda.matmul.allow_tf32 = False
+    try:
+        return _run(device)
+    except torch.cuda.OutOfMemoryError:
+        # n_items x d plus one score block did not fit. Falling back is far better
+        # than failing a build that used to work.
+        print(f"HeatGeo top-k cosine: out of memory on {device}, falling back to CPU")
+        torch.cuda.empty_cache()
+        return _run(torch.device("cpu"))
+    finally:
+        torch.backends.cuda.matmul.allow_tf32 = previous_tf32
 
 
 def _build_transition(
@@ -733,52 +774,79 @@ def _target_sharpness_stats(
     distribution, so it is the number the training loss can never go below.
     """
     stats: dict[str, float] = {}
-    valid = pool_indices >= 0
-    probs = np.clip(pool_probs.astype(np.float64), 0.0, None)
-    probs = np.where(valid[None, :, :], probs, 0.0)
+    n_scales, n_items, _ = pool_probs.shape
 
-    entropies = np.zeros((len(scales), pool_indices.shape[0]), dtype=np.float64)
+    # Every quantity below is a reduction along the candidate axis, so the anchor
+    # axis can be walked in blocks. Materializing the whole float64 copy of
+    # pool_probs -- plus the renormalized `clamped` copy -- costs hundreds of
+    # megabytes at corpus scale (>2 GB peak measured) purely to compute
+    # diagnostics. The per-anchor result vectors kept here are n_items floats
+    # each, and the final reductions run over the full vectors exactly as before,
+    # so the reported numbers are unchanged rather than merely close.
+    supp_size = np.zeros((n_scales, n_items), dtype=np.float64)
+    entropies = np.zeros((n_scales, n_items), dtype=np.float64)
+    top1 = np.zeros((n_scales, n_items), dtype=np.float64)
+    mixture_entropy = np.zeros(n_items, dtype=np.float64)
+    mixture_top1 = np.zeros(n_items, dtype=np.float64)
+    cross_kl = np.zeros((max(n_scales - 1, 0), n_items), dtype=np.float64)
+
+    for start in range(0, n_items, ANCHOR_STATS_CHUNK):
+        block = slice(start, min(start + ANCHOR_STATS_CHUNK, n_items))
+        valid = pool_indices[block] >= 0
+        probs = np.clip(pool_probs[:, block, :].astype(np.float64), 0.0, None)
+        probs = np.where(valid[None, :, :], probs, 0.0)
+
+        for scale_idx in range(n_scales):
+            p = probs[scale_idx]
+            mask = p > 0
+            supp_size[scale_idx, block] = mask.sum(axis=-1)
+            safe = np.where(mask, p, 1.0)
+            entropies[scale_idx, block] = -(np.where(mask, p * np.log(safe), 0.0)).sum(
+                axis=-1
+            )
+            top1[scale_idx, block] = p.max(axis=-1)
+
+        mixture = (probs * weights.reshape(-1, 1, 1)).sum(axis=0)
+        mask = mixture > 0
+        safe = np.where(mask, mixture, 1.0)
+        mixture_entropy[block] = -(np.where(mask, mixture * np.log(safe), 0.0)).sum(
+            axis=-1
+        )
+        mixture_top1[block] = mixture.max(axis=-1)
+
+        clamped = np.clip(probs, 1e-12, None)
+        clamped = clamped / clamped.sum(axis=-1, keepdims=True)
+        for scale_idx in range(n_scales - 1):
+            a, b = clamped[scale_idx], clamped[scale_idx + 1]
+            cross_kl[scale_idx, block] = (a * (np.log(a) - np.log(b))).sum(axis=-1)
+
     for scale_idx, scale in enumerate(scales):
-        p = probs[scale_idx]
-        mask = p > 0
-        supp_size = mask.sum(axis=-1).astype(np.float64)
-        safe = np.where(mask, p, 1.0)
-        entropy = -(np.where(mask, p * np.log(safe), 0.0)).sum(axis=-1)
-        entropies[scale_idx] = entropy
-        kl_uniform = np.log(np.maximum(supp_size, 1.0)) - entropy
-        stats[f"target_support_r{scale}"] = float(supp_size.mean())
+        kl_uniform = (
+            np.log(np.maximum(supp_size[scale_idx], 1.0)) - entropies[scale_idx]
+        )
+        stats[f"target_support_r{scale}"] = float(supp_size[scale_idx].mean())
         stats[f"target_kl_uniform_r{scale}"] = float(kl_uniform.mean())
-        stats[f"target_top1_r{scale}"] = float(p.max(axis=-1).mean())
+        stats[f"target_top1_r{scale}"] = float(top1[scale_idx].mean())
 
-    mixture = (probs * weights.reshape(-1, 1, 1)).sum(axis=0)
-    mask = mixture > 0
-    safe = np.where(mask, mixture, 1.0)
-    mixture_entropy = -(np.where(mask, mixture * np.log(safe), 0.0)).sum(axis=-1)
     js = mixture_entropy - (entropies * weights.reshape(-1, 1)).sum(axis=0)
     stats["target_js_floor"] = float(js.mean())
     stats["target_js_floor_p90"] = float(np.percentile(js, 90))
     stats["target_mixture_entropy"] = float(mixture_entropy.mean())
-    stats["target_mixture_top1"] = float(mixture.max(axis=-1).mean())
+    stats["target_mixture_top1"] = float(mixture_top1.mean())
 
     # Anchors whose sharpest-scale target is (near) one-hot. These sit in tiny
     # connected components: the lazy walk never leaves them, so every scale returns
     # the same point mass, JS_omega is 0, and the loss reduces to "drive this one
     # cosine to 1" at the sharpest temperature against every negative in the batch.
     # That is a memorization signal, not geometry, so it is worth counting.
-    degenerate = probs[0].max(axis=-1) > 0.99
+    degenerate = top1[0] > 0.99
     stats["target_degenerate_count"] = float(degenerate.sum())
     stats["target_degenerate_rate"] = float(degenerate.mean())
-    stats["target_min_support_r%d" % scales[0]] = float(
-        (probs[0] > 0).sum(axis=-1).min()
-    )
+    stats["target_min_support_r%d" % scales[0]] = float(supp_size[0].min())
 
-    clamped = np.clip(probs, 1e-12, None)
-    clamped = clamped / clamped.sum(axis=-1, keepdims=True)
     for scale_idx in range(len(scales) - 1):
-        a, b = clamped[scale_idx], clamped[scale_idx + 1]
-        cross = (a * (np.log(a) - np.log(b))).sum(axis=-1)
         stats[f"target_cross_kl_r{scales[scale_idx]}_r{scales[scale_idx + 1]}"] = float(
-            cross.mean()
+            cross_kl[scale_idx].mean()
         )
     return stats
 
@@ -885,7 +953,17 @@ def build_or_load_heatgeo_artifact(
     # Hard-negative storage is derived from graph width. Retrieval must still cover
     # both the graph pool and that derived hard-negative pool.
     topk_for_graph = min(n_items - 1, max(graph_k, hard_neg_pool + graph_k))
-    top_indices, top_scores = _compute_topk_cosine(teacher_embeddings, k=topk_for_graph)
+    topk_device = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
+    top_indices, top_scores = _compute_topk_cosine(
+        teacher_embeddings, k=topk_for_graph, device=topk_device
+    )
+    # Recorded but deliberately NOT in _METADATA_KEYS. The teacher fingerprint
+    # cannot see this: the same embeddings top-k'd on CPU and on GPU give the same
+    # hash but slightly different neighbour lists, because the two reduction orders
+    # break near-ties differently. Validating on it would invalidate every existing
+    # cache; storing it means a graph whose numbers look odd can at least be traced
+    # to the device that built it.
+    metadata["topk_device"] = topk_device.type
     (
         row_neighbors,
         row_probs,
@@ -982,7 +1060,10 @@ def _print_graph_summary(
                 f"diffusion_truncation={graph_stats.get(f'diffusion_truncation_cum_r{scale}', 0.0):.2e}"
             )
     worst_truncation = max(
-        (graph_stats.get(f"diffusion_truncation_cum_r{scale}", 0.0) for scale in scales),
+        (
+            graph_stats.get(f"diffusion_truncation_cum_r{scale}", 0.0)
+            for scale in scales
+        ),
         default=0.0,
     )
     tolerance = graph_stats.get("truncation_tolerance", 0.0)

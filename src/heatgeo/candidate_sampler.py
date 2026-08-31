@@ -60,8 +60,19 @@ class HeatGeoCandidateSampler:
                     f"per target tensor; got scales={scales}, n_scales={self.n_scales}"
                 )
         self.weights = normalized_diffusion_weights(scales)
-        self.mixture = (self.pool_probs * self.weights.reshape(-1, 1, 1)).sum(axis=0)
         self.epoch = 0
+
+    def _mixture_row(self, idx: int) -> np.ndarray:
+        """Scale-mixture of anchor ``idx``'s diffusion pool, in float64.
+
+        This used to be a precomputed ``(n_items, width)`` array. ``pool_probs`` is
+        float32 and the weights are float64, so the product promoted the whole
+        thing: 224 MB at the production shape, duplicated into every DataLoader
+        worker, to serve one rarely-taken branch of ``_select_support``. Computing
+        the single row on demand is the same arithmetic in the same order over the
+        scale axis, so the values are identical, not merely close.
+        """
+        return (self.pool_probs[:, idx, :] * self.weights.reshape(-1, 1)).sum(axis=0)
 
     def set_epoch(self, epoch: int) -> None:
         self.epoch = int(epoch)
@@ -86,7 +97,6 @@ class HeatGeoCandidateSampler:
     ) -> tuple[np.ndarray, np.ndarray]:
         pool = self.pool_indices[idx]
         valid = pool >= 0
-        mixture = np.where(valid, self.mixture[idx], 0.0).astype(np.float64)
         quotas = self._scale_quotas(self.diffusion_quota)
         head_per_scale = max(1, self.deterministic_topm)
         taken = np.zeros(pool.size, dtype=bool)
@@ -115,7 +125,9 @@ class HeatGeoCandidateSampler:
             deficit = need - chosen.size
 
         if deficit > 0:
-            spill = mixture.copy()
+            # Only this branch ever needed the mixture, and it is the rare one: the
+            # per-scale quotas normally fill from the scales themselves.
+            spill = np.where(valid, self._mixture_row(idx), 0.0)
             spill[taken] = 0.0
             extra = np.argsort(-spill)[:deficit]
             extra = extra[spill[extra] > 0]
