@@ -2,7 +2,7 @@ from .base_config import BaseConfig
 
 # Kept next to the config rather than imported from the criterion so that
 # `main.py --row_mode` can validate an override without constructing a module.
-ROW_MODES = ("walk", "closure_u", "closure_m")
+ROW_MODES = ("walk", "closure_u", "closure_m", "closure_ht")
 
 
 class HeatGeoConfig(BaseConfig):
@@ -71,6 +71,12 @@ class HeatGeoConfig(BaseConfig):
     #                their transition row as its r=1 target. No walk knobs.
     #   "closure_m"  the same rows, weighted by the teacher mass the pool exposes
     #                for each, m_B(j) = P^T_j(Omega_j). No walk knobs.
+    #   "closure_ht" the same rows, weighted by 1/c_B(j) (inverse inclusion count).
+    #                The bias ladder: selection is already mass-proportional, so
+    #                closure_m squares the hub bias (measured -0.10), closure_u
+    #                keeps it linear, closure_ht approximately cancels it -- the
+    #                epoch-level row measure approaches uniform over the corpus.
+    #                No walk knobs.
     #
     # closure_u is the control for closure_m: identical row sets, so the pair
     # isolates the weighting. Under a closure mode num_walks is forced to 0 below,
@@ -89,12 +95,33 @@ class HeatGeoConfig(BaseConfig):
     # "walk" is kept because it is the ablation this replaced, not because it is
     # reachable by default.
     row_mode = "closure_u"
+    # Experiment flag, to be resolved into always-on or deleted: give every
+    # promoted row an ambient r=0 term over the shared pool, mirroring the anchor
+    # stack (weight tied omega_amb = omega_1, temperature direct_temp on both
+    # sides -- no new free parameter). Motivated by row_exposed_mass = 0.44: the
+    # restricted row target renormalizes less than half of each row's true
+    # transition mass, in a method whose every other truncation is held to 1%.
+    row_ambient = False
     num_walks = 4
     walk_length = 4
-    row_weight = 0.5
-    # Human-facing, one-based epoch number. 2 reproduces the original curriculum:
-    # learn anchor geometry for one epoch, then enable non-anchor row matching.
-    row_start_epoch = 2
+    # 1.0 matches the selected arm: the tuning table is monotone in row_weight
+    # (0.5 -> 74.63, 1.0 -> 74.88) and was never probed above 1.0 -- values > 1
+    # are an open experiment, not a tuned optimum.
+    row_weight = 1.0
+    # Human-facing, one-based epoch number. At 1 the knob is inert: L_row is on for
+    # every epoch, and the curriculum disappears along with the parameter.
+    #
+    # The warm-up existed because the walk produced stochastic, noisy auxiliary rows
+    # that were worth withholding for an epoch. Closure does not: its rows are the
+    # candidate columns L_rel already selected, and the epoch-1 diagnostics of the
+    # start-at-1 run show the same 843 rows at the same 0.44 exposed mass as every
+    # later epoch, with loss_rel ending *lower* than the start-at-2 run (0.6502 vs
+    # 0.6686). Measured at row_weight 1.0, seed 42: closure_u 74.86 starting at 2,
+    # 74.82 starting at 1 -- inside single-seed noise, against a walk baseline of
+    # 74.88.
+    #
+    # Set to 2 to restore the curriculum; the walk mode is the arm that wants it.
+    row_start_epoch = 1
 
     # ---- Truncation ----------------------------------------------------------
     # Every capacity in the build is the same operation: keep a subset S of a
@@ -130,7 +157,7 @@ class HeatGeoConfig(BaseConfig):
     heatgeo_source_column = "source"
 
     # ---- Training Setup ------------------------------------------------------
-    batch_size = 32
+    batch_size = 64
     epochs = 5
     learning_rate = 2e-5
     min_lr = 3e-6

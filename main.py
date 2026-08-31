@@ -80,8 +80,20 @@ def parse_args():
         help=(
             "How L_row selects rows: 'walk' uses non-backtracking teacher walks "
             "(num_walks/walk_length apply); 'closure_u' and 'closure_m' promote the "
-            "teacher-selected pool columns to rows, weighted uniformly or by the "
-            "teacher mass the pool exposes, and take no walk arguments"
+            "teacher-selected pool columns to rows -- weighted uniformly, by "
+            "exposed teacher mass, or by inverse inclusion count (closure_ht) -- "
+            "and take no walk arguments"
+        ),
+    )
+    parser.add_argument(
+        "--row_ambient",
+        type=int,
+        default=None,
+        choices=(0, 1),
+        help=(
+            "1 gives every supervised row an ambient r=0 term over the shared "
+            "pool (teacher dense-similarity target at direct_temp, weight tied "
+            "to the restricted row term); 0 disables"
         ),
     )
     parser.add_argument("--num_walks", type=int, default=None)
@@ -219,6 +231,7 @@ def get_config(method: str, args):
         "graph_k",
         "truncation_tolerance",
         "row_mode",
+        "row_ambient",
         "num_walks",
         "walk_length",
         "row_weight",

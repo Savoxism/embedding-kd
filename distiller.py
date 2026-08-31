@@ -297,6 +297,7 @@ class KnowledgeDistiller:
                         direct_temp=config.direct_temp,
                         row_weight=config.row_weight,
                         row_mode=getattr(config, "row_mode", "walk"),
+                        row_ambient=bool(getattr(config, "row_ambient", False)),
                         row_temps=getattr(self, "heatgeo_artifact", {}).get(
                             "row_temps"
                         ),
@@ -335,6 +336,7 @@ class KnowledgeDistiller:
                     direct_temp=config.direct_temp,
                     row_weight=config.row_weight,
                     row_mode=getattr(config, "row_mode", "walk"),
+                    row_ambient=bool(getattr(config, "row_ambient", False)),
                     row_temps=getattr(self, "heatgeo_artifact", {}).get("row_temps"),
                     transition_neighbors=getattr(self, "heatgeo_artifact", {}).get(
                         "transition_neighbors"
@@ -1878,6 +1880,7 @@ class KnowledgeDistiller:
                 "row_count",
                 "row_eff_count",
                 "row_exposed_mass",
+                "row_amb_kl",
                 "row_valid_ratio",
                 "row_node_hit_ratio",
                 "js_floor",

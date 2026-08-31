@@ -152,10 +152,36 @@ class HeatGeoDistillation(nn.Module):
       mass is a badly conditioned target and is weighted accordingly. Visit counts
       carry no such information: two nodes visited once each get equal weight
       whether the pool exposes 85% or 8% of their neighbourhood.
+    * ``"closure_ht"``: the same rows, weighted by 1/c_B(j) with c_B(j) the number
+      of anchors whose draw selected column j. The three closure weights form a
+      selection-bias ladder. A node's chance of being promoted at all is already
+      proportional to the teacher mass anchors put on it, so across an epoch a hub
+      near many anchors is supervised in many more batches than a boundary node.
+      Weighting by exposed mass on top of that squares the bias (closure_m, measured
+      -0.10); uniform keeps it linear (closure_u); 1/c_B(j) is a Horvitz-Thompson
+      style plug-in that approximately cancels it, making the epoch-level row
+      measure approach uniform over the corpus -- E[c_B(j)] is exactly the expected
+      inclusion count, so nu_B(j) proportional to 1/c_B(j) is inverse-inclusion
+      weighting with the batch's own count as the estimate.
 
     The closure modes are not free of stochasticity -- candidate selection is still a
     sampling procedure -- but they add no traversal process of their own, and their
     row set is a deterministic function of the pool.
+
+    **Ambient scale for rows** (``row_ambient=True``). The restricted row target
+    renormalizes the exposed neighbour mass to 1, and the pool exposes only ~44% of
+    a promoted row's transition mass on the production graph -- a 56% truncation in
+    a method whose every other cut is built to a 1% tolerance. The columns outside
+    Omega_j get no gradient at all from the restricted term, so nothing calibrates
+    row j against the shared pool the way scale r=0 calibrates anchors. With
+    ``row_ambient`` each promoted row also matches the teacher's dense similarity
+    profile over every pool column at ``direct_temp`` -- the exact r=0 construction,
+    applied to rows. The two row terms share weight equally, the same omega_0 =
+    omega_1 tie the anchor stack uses, so this adds no free parameter; the cosine
+    matrix is already computed at full pool width, so it adds one softmax. Under
+    this flag every encoded node, anchor or row, receives the same treatment:
+    transition matching at its own bandwidth plus ambient calibration at
+    direct_temp.
 
     **Temperature ties.** The temperatures are not free parameters and are
     therefore not constructor arguments:
@@ -195,7 +221,7 @@ class HeatGeoDistillation(nn.Module):
     Passing removed or derived knobs raises rather than being silently absorbed.
     """
 
-    _ROW_MODES = ("walk", "closure_u", "closure_m")
+    _ROW_MODES = ("walk", "closure_u", "closure_m", "closure_ht")
 
     _TIED_KNOBS = {
         "scale_weights": "derived from diffusion_scales by omega_r = 1/r",
@@ -237,6 +263,7 @@ class HeatGeoDistillation(nn.Module):
         row_weight: float = 0.5,
         row_temps: torch.Tensor | None = None,
         row_mode: str = "walk",
+        row_ambient: bool = False,
         **kwargs,
     ):
         super().__init__()
@@ -298,7 +325,14 @@ class HeatGeoDistillation(nn.Module):
                 )
         self._warned_row_needs_sharing = False
 
+        self.row_ambient = bool(row_ambient)
         self.use_direct = teacher_embeddings is not None
+        if self.row_ambient and not self.use_direct:
+            raise ValueError(
+                "row_ambient needs the cached teacher embeddings (the ambient row "
+                "target is the teacher's dense similarity profile); pass "
+                "teacher_embeddings or disable row_ambient"
+            )
         if self.use_direct:
             if direct_temp <= 0.0:
                 raise ValueError("direct_temp must be positive")
@@ -476,7 +510,10 @@ class HeatGeoDistillation(nn.Module):
         return positions, counts.float(), considered, counts.sum()
 
     def _closure_sources(
-        self, selected_columns: torch.Tensor, anchor_columns: torch.Tensor
+        self,
+        selected_columns: torch.Tensor,
+        anchor_columns: torch.Tensor,
+        support_counts: torch.Tensor | None,
     ) -> tuple[torch.Tensor, torch.Tensor, int, torch.Tensor] | None:
         """Pool columns the teacher selected, promoted to rows.
 
@@ -487,19 +524,29 @@ class HeatGeoDistillation(nn.Module):
         their transition row as its r=1 target.
 
         Every returned row is in the pool by construction, so unlike the walk path
-        there is nothing to miss: the hit ratio is 1 and the selection weight is
-        uniform. ``closure_m`` replaces that uniform weight with exposed mass in
-        ``_compute_row_loss``; keeping the two apart is what makes the U/M pair an
-        ablation of the *weight* alone.
+        there is nothing to miss: the hit ratio is 1. The selection weight is
+        uniform except under ``closure_ht``, where it is 1/c_B(j) with c_B(j) the
+        number of anchors whose draw selected j -- inverse-inclusion weighting, so
+        the epoch-level row measure approaches uniform over the corpus instead of
+        being tilted toward hubs that appear in many batches. ``closure_m``
+        replaces the weight with exposed mass later, in ``_compute_row_loss``;
+        keeping the variants apart here is what makes them an ablation of the
+        weight alone.
         """
         eligible = selected_columns & ~anchor_columns
         positions = eligible.nonzero(as_tuple=True)[0]
         if positions.numel() == 0:
             return None
-        weights = torch.ones(
-            positions.numel(), dtype=torch.float32, device=positions.device
-        )
-        return positions, weights, positions.numel(), weights.sum()
+        if self.row_mode == "closure_ht" and support_counts is not None:
+            weights = 1.0 / support_counts.index_select(0, positions).clamp_min(1.0)
+        else:
+            weights = torch.ones(
+                positions.numel(), dtype=torch.float32, device=positions.device
+            )
+        # `reached` counts rows, not selection weight: every eligible closure row is
+        # in the pool, so the hit ratio must read 1.0 under every closure weighting.
+        reached = weights.new_tensor(float(positions.numel()))
+        return positions, weights, positions.numel(), reached
 
     def _compute_row_loss(
         self,
@@ -508,6 +555,7 @@ class HeatGeoDistillation(nn.Module):
         row_paths: torch.Tensor | None = None,
         selected_columns: torch.Tensor | None = None,
         anchor_columns: torch.Tensor | None = None,
+        support_counts: torch.Tensor | None = None,
     ) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
         """Match transition rows at non-anchor nodes present in the shared pool."""
         zero = pool_norm.new_zeros(())
@@ -519,6 +567,7 @@ class HeatGeoDistillation(nn.Module):
             "row_node_hit_ratio": zero,
             "row_exposed_mass": zero,
             "row_eff_count": zero,
+            "row_amb_kl": zero,
         }
         if self.row_neighbors is None or self.row_probs is None:
             return zero, empty_metrics
@@ -531,7 +580,9 @@ class HeatGeoDistillation(nn.Module):
         else:
             if selected_columns is None or anchor_columns is None:
                 return zero, empty_metrics
-            sources = self._closure_sources(selected_columns, anchor_columns)
+            sources = self._closure_sources(
+                selected_columns, anchor_columns, support_counts
+            )
         if sources is None:
             return zero, empty_metrics
         source_positions, select_weights, considered, reached = sources
@@ -581,8 +632,8 @@ class HeatGeoDistillation(nn.Module):
             row_tau = self.row_temps.index_select(0, source_nodes).view(-1, 1)
         else:
             row_tau = self.graph_temp
-        logits = (pool_norm.index_select(0, source_positions) @ pool_norm.t()) / row_tau
-        logits = logits.masked_fill(~allowed, float("-inf"))
+        cosine = pool_norm.index_select(0, source_positions) @ pool_norm.t()
+        logits = (cosine / row_tau).masked_fill(~allowed, float("-inf"))
         log_probs = F.log_softmax(logits, dim=-1)
         log_target = torch.where(
             target > 0, target.clamp_min(1e-12).log(), torch.zeros_like(target)
@@ -593,6 +644,41 @@ class HeatGeoDistillation(nn.Module):
             torch.zeros_like(target),
         ).sum(dim=1)
         nu = row_weights / row_weights.sum().clamp_min(1e-12)
+
+        amb_kl_mean = zero
+        if self.row_ambient and self.teacher_bank is not None:
+            # Scale r=0 for rows: the teacher's dense similarity profile over every
+            # pool column, at the same temperature on both sides. This is what
+            # calibrates a row against the columns its restricted target says
+            # nothing about -- outside Omega_j the restricted term has zero
+            # gradient, and Omega_j carries only ~44% of the row's true mass.
+            row_self = column_idx.view(1, -1) == source_nodes.view(-1, 1)
+            with torch.no_grad():
+                t_rows = self.teacher_bank.index_select(0, source_nodes).float()
+                t_cols = self.teacher_bank.index_select(0, column_idx).float()
+                amb_teacher_logits = (t_rows @ t_cols.t()) / self.direct_temp
+                amb_target = F.softmax(
+                    amb_teacher_logits.masked_fill(row_self, float("-inf")), dim=-1
+                )
+            amb_log_student = F.log_softmax(
+                (cosine / self.direct_temp).masked_fill(row_self, float("-inf")),
+                dim=-1,
+            )
+            amb_log_target = torch.where(
+                amb_target > 0,
+                amb_target.clamp_min(1e-12).log(),
+                torch.zeros_like(amb_target),
+            )
+            amb_kl = torch.where(
+                amb_target > 0,
+                amb_target * (amb_log_target - amb_log_student),
+                torch.zeros_like(amb_target),
+            ).sum(dim=1)
+            amb_kl_mean = (amb_kl * nu).sum()
+            # omega_amb = omega_1, the anchor stack's own tie, normalized within
+            # the two-term row stack.
+            row_kl = 0.5 * (row_kl + amb_kl)
+
         loss_row = (row_kl * nu).sum()
 
         row_entropy = -(target * log_target).sum(dim=1)
@@ -600,7 +686,13 @@ class HeatGeoDistillation(nn.Module):
             "row_teacher_entropy": (row_entropy * nu).sum(),
             "row_eff_denom": live_columns[usable].float().mean(),
             "row_count": usable.sum().float(),
-            "row_valid_ratio": select_weights.sum() / considered,
+            # Walk: visit mass landing in usable rows / total visits. Closure: usable
+            # rows / eligible rows -- a count, so it stays comparable across the
+            # closure weightings (a 1/c_B weight must not read as a lost row).
+            "row_valid_ratio": (
+                select_weights.sum() if self.row_mode == "walk" else usable.sum()
+            ).float()
+            / considered,
             "row_node_hit_ratio": reached.float() / considered,
             # Mean exposed teacher mass *as the loss sees it*. Under closure_m this
             # is the mass-weighted mean and sits above the closure_u value by
@@ -612,6 +704,7 @@ class HeatGeoDistillation(nn.Module):
             # to watch -- mass weighting favours rows deep inside some anchor's
             # neighbourhood, where the supervision most nearly duplicates L_rel.
             "row_eff_count": 1.0 / nu.pow(2).sum().clamp_min(1e-12),
+            "row_amb_kl": amb_kl_mean,
         }
         return loss_row, metrics
 
@@ -673,7 +766,11 @@ class HeatGeoDistillation(nn.Module):
             # would look selected. A column is teacher-selected if some anchor's draw
             # gave it positive diffusion mass; hard and uniform negatives do not
             # qualify. Anchors are tracked separately so they can be excluded.
-            selected_columns = target.sum(dim=1).sum(dim=0) > 0
+            support_any = target.sum(dim=1) > 0
+            selected_columns = support_any.any(dim=0)
+            # c_B(j): how many anchors' draws selected column j. closure_ht turns
+            # this into inverse-inclusion row weights.
+            support_counts = support_any.float().sum(dim=0)
             anchor_columns = self_mask.any(dim=0)
         else:
             similarity = similarity_own
@@ -801,6 +898,7 @@ class HeatGeoDistillation(nn.Module):
                     row_paths=row_paths,
                     selected_columns=selected_columns,
                     anchor_columns=anchor_columns,
+                    support_counts=support_counts,
                 )
             elif not self._warned_row_needs_sharing:
                 self._warned_row_needs_sharing = True
@@ -944,6 +1042,7 @@ class HeatGeoDistillation(nn.Module):
             row_metrics.get("row_node_hit_ratio", row_zero).detach(),
             row_metrics.get("row_exposed_mass", row_zero).detach(),
             row_metrics.get("row_eff_count", row_zero).detach(),
+            row_metrics.get("row_amb_kl", row_zero).detach(),
             js_floor.mean(),
             (loss_rel - js_floor.mean()).detach(),
             (loss_rel + weighted_entropy.mean()).detach(),
@@ -973,6 +1072,7 @@ class HeatGeoDistillation(nn.Module):
             "row_node_hit_ratio",
             "row_exposed_mass",
             "row_eff_count",
+            "row_amb_kl",
             "js_floor",
             "loss_excess",
             "loss_cross_entropy",

@@ -76,9 +76,38 @@ Lưu ý khi đọc bảng: bỏ walk cũng khôi phục các uniform negative m�
 node từng thay thế trong candidate draw, nên `L_rel` cũng đổi nhẹ — so sánh
 không hoàn toàn isolated.
 
-### Còn lại
+## Bỏ nốt `row_start_epoch`
 
-`row_start_epoch=2` là hyperparameter cuối cùng của `L_row`. Closure không tạo
-row ngẫu nhiên nên có thể không cần warm-up; chạy `closure_u` với
-`row_start_epoch=1` để kiểm tra. Nếu ngang bằng thì `L_row` chỉ còn đúng một
-knob là `row_weight`.
+Warm-up tồn tại vì walk sinh ra auxiliary row ngẫu nhiên và nhiễu, đáng để giữ
+lại một epoch. Closure thì không: row của nó chính là các candidate column mà
+`L_rel` đã chọn. Chạy `closure_u` với `row_start_epoch=1`:
+
+| `row_mode` | `row_start_epoch` | Avg-In | Avg-Out | Avg |
+|---|---:|---:|---:|---:|
+| `walk` | 2 | 68.13 | 78.25 | 74.88 |
+| `closure_u` | 2 | — | — | 74.86 |
+| `closure_u` | 1 | 67.94 | 78.26 | 74.82 |
+
+Chênh 0.04 so với start-at-2, nằm trong nhiễu single-seed. Diagnostics epoch 1
+của run start-at-1 giống hệt các epoch sau — `row_count=844`,
+`row_exposed_mass=0.4407`, `row_eff_count=row_count` — nên không có dấu hiệu
+"row supervision quá sớm gây nhiễu". `loss_rel` cuối còn *thấp hơn* run
+start-at-2 (0.6502 so với 0.6686).
+
+**`row_start_epoch=1` là default mới**, tức knob này trở nên inert.
+
+$$
+\boxed{L_{\text{row}} \text{ chỉ còn đúng một hyperparameter: } \lambda = \texttt{row\_weight}}
+$$
+
+### Cảnh báo khi đọc ba con số
+
+74.88 → 74.86 → 74.82 đều nằm trong nhiễu **nếu xét từng bước một**, nhưng ba
+bước cùng chiều đi xuống. Với single seed không phân biệt được "nhiễu" và "chi
+phí nhỏ tích lũy". Trade 0.06 để bỏ ba hyperparameter là rõ ràng đáng, nhưng
+**trước khi chốt số cho paper phải chạy 3 seed** cho `closure_u` + start-1 và so
+với 3 seed của walk. Đây là điều kiện duy nhất còn thiếu.
+
+Ghi chú vận hành: `RUN_TAG` ban đầu chỉ mang `ROW_MODE` và `SEED` nên run
+start-at-1 đã **ghi đè** thư mục của run start-at-2. Đã sửa để `RUN_TAG` mang cả
+`ROW_WEIGHT` và `ROW_START_EPOCH`.

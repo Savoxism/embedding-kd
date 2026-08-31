@@ -472,6 +472,101 @@ def test_closure_mass_weights_rows_by_exposed_teacher_mass():
     assert loss_m.item() != pytest.approx(0.0, abs=1e-8)
 
 
+def test_closure_ht_weights_rows_by_inverse_inclusion_count():
+    """The bias ladder's third rung: nu(j) proportional to 1/c_B(j)."""
+    torch.manual_seed(0)
+    pool = F.normalize(torch.randn(4, 3), dim=-1)
+    criterion = _closure_criterion("closure_ht")
+    # Node 1 was selected by two anchors, nodes 2 and 3 by one each.
+    support_counts = torch.tensor([3.0, 2.0, 1.0, 1.0])
+    loss_ht, metrics_ht = criterion._compute_row_loss(
+        pool_norm=pool,
+        column_idx=torch.arange(4),
+        selected_columns=torch.ones(4, dtype=torch.bool),
+        anchor_columns=torch.tensor([True, False, False, False]),
+        support_counts=support_counts,
+    )
+
+    rows = _expected_closure_rows(pool)
+    inv = {1: 0.5, 2: 1.0, 3: 1.0}
+    total = sum(inv.values())
+    expected = sum(inv[node] * rows[node] for node in rows) / total
+    assert loss_ht.item() == pytest.approx(expected.item(), rel=1e-5)
+    assert metrics_ht["row_count"].item() == 3.0
+    # A hub is down-weighted, so the effective count drops below the row count.
+    assert metrics_ht["row_eff_count"].item() < 3.0
+
+    # Without counts the mode degrades to uniform rather than failing.
+    loss_u, _ = criterion._compute_row_loss(
+        pool_norm=pool,
+        column_idx=torch.arange(4),
+        selected_columns=torch.ones(4, dtype=torch.bool),
+        anchor_columns=torch.tensor([True, False, False, False]),
+    )
+    expected_u = sum(rows.values()) / 3
+    assert loss_u.item() == pytest.approx(expected_u.item(), rel=1e-5)
+
+
+def test_row_ambient_adds_the_dense_pool_term_with_tied_weight():
+    """Each row's stack becomes (ambient, restricted) at 1/2 each -- the anchor
+    stack's omega_amb = omega_1 tie."""
+    torch.manual_seed(1)
+    pool = F.normalize(torch.randn(4, 3), dim=-1)
+    teacher_bank = F.normalize(torch.randn(4, 3), dim=-1)
+    graph = _closure_graph()
+
+    def build(row_ambient):
+        return HeatGeoDistillation(
+            student_dim=3,
+            teacher_dim=3,
+            transition_neighbors=graph["transition_neighbors"],
+            transition_probs=graph["transition_probs"],
+            teacher_embeddings=teacher_bank,
+            direct_temp=0.10,
+            row_temps=torch.full((5,), 0.2),
+            row_weight=1.0,
+            row_mode="closure_u",
+            row_ambient=row_ambient,
+        )
+
+    kwargs = dict(
+        pool_norm=pool,
+        column_idx=torch.arange(4),
+        selected_columns=torch.ones(4, dtype=torch.bool),
+        anchor_columns=torch.tensor([True, False, False, False]),
+    )
+    loss_restricted, _ = build(False)._compute_row_loss(**kwargs)
+    loss_combined, metrics = build(True)._compute_row_loss(**kwargs)
+
+    # Hand-compute the ambient KL for the three promoted rows {1, 2, 3}.
+    bank = F.normalize(teacher_bank, dim=-1)
+    amb_total = 0.0
+    for node in (1, 2, 3):
+        cols = [c for c in range(4) if c != node]
+        t_logits = torch.tensor([bank[node] @ bank[c] for c in cols]) / 0.10
+        target = t_logits.softmax(dim=0)
+        s_logits = torch.tensor([pool[node] @ pool[c] for c in cols]) / 0.10
+        amb_total += (target * (target.log() - s_logits.log_softmax(dim=0))).sum()
+    amb_mean = amb_total / 3
+
+    expected = 0.5 * (loss_restricted + amb_mean)
+    assert loss_combined.item() == pytest.approx(expected.item(), rel=1e-4)
+    assert metrics["row_amb_kl"].item() == pytest.approx(amb_mean.item(), rel=1e-4)
+
+
+def test_row_ambient_requires_the_teacher_bank():
+    graph = _closure_graph()
+    with pytest.raises(ValueError, match="teacher"):
+        HeatGeoDistillation(
+            student_dim=3,
+            teacher_dim=3,
+            transition_neighbors=graph["transition_neighbors"],
+            transition_probs=graph["transition_probs"],
+            row_mode="closure_u",
+            row_ambient=True,
+        )
+
+
 def test_closure_ignores_columns_without_teacher_mass():
     """Hard and uniform negatives are columns, not teacher-selected relations."""
     torch.manual_seed(0)
