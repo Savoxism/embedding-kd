@@ -2,6 +2,7 @@ import json
 import os
 import random
 import shutil
+import sys
 import tempfile
 import time
 from collections import deque
@@ -1677,7 +1678,14 @@ class KnowledgeDistiller:
         # file write per epoch rather than one per step.
         step_records: list[dict] = []
 
-        pbar = tqdm(self.train_loader, desc=f"Epoch {epoch + 1}/{self.config.epochs}")
+        interactive_progress = sys.stderr.isatty()
+        pbar = tqdm(
+            self.train_loader,
+            desc=f"Epoch {epoch + 1}/{self.config.epochs}",
+            disable=not interactive_progress,
+        )
+        total_steps = len(self.train_loader)
+        log_interval = max(1, total_steps // 10)
 
         for step, batch in enumerate(pbar):
             self.current_step = step
@@ -1736,30 +1744,53 @@ class KnowledgeDistiller:
                 peak_memory_mb = max(peak_memory_mb, mem_alloc)
                 mem_info[f"gpu{dev_id}"] = f"{mem_alloc:.0f}/{mem_reserved:.0f}MB"
 
+            postfix = {"avg_loss": f"{avg_loss:.4f}", **mem_info}
             if step >= self.warmup_steps:
                 self.step_times.append(dt)
                 self.ma_window.append(dt)
                 avg_step = sum(self.step_times) / len(self.step_times)
                 ma_step = sum(self.ma_window) / len(self.ma_window)
 
-                postfix = {
-                    "avg_loss": f"{avg_loss:.4f}",
-                    "ms/step": f"{avg_step * 1000:.1f}",
-                    "ms/step(ma)": f"{ma_step * 1000:.1f}",
-                    "it/s": f"{1.0 / ma_step:.2f}",
-                    **mem_info,
-                }
+                postfix.update(
+                    {
+                        "ms/step": f"{avg_step * 1000:.1f}",
+                        "it/s": f"{1.0 / ma_step:.2f}",
+                    }
+                )
 
-                for k, v in metrics.items():
-                    if k != "loss_total":
-                        # Format only if v is numeric (not string like 'skip': 'grad_inf_p1')
-                        postfix[k] = (
-                            f"{v:.4f}" if isinstance(v, (int, float)) else str(v)
-                        )
+            concise_metrics = (
+                ("rel", "loss_diff", True),
+                (
+                    "mass",
+                    "loss_mass_weighted",
+                    getattr(self.config, "mass_weight", 0.0) > 0,
+                ),
+                (
+                    "geo",
+                    "loss_geo_weighted",
+                    getattr(self.config, "geo_weight", 0.0) > 0,
+                ),
+                (
+                    "sym",
+                    "loss_sym_weighted",
+                    getattr(self.config, "sym_weight", 0.0) > 0,
+                ),
+                ("grad", "grad_norm", True),
+            )
+            for label, key, enabled in concise_metrics:
+                value = metrics.get(key)
+                if enabled and isinstance(value, (int, float)):
+                    postfix[label] = f"{value:.4f}"
 
+            if interactive_progress:
                 pbar.set_postfix(postfix)
-            else:
-                pbar.set_postfix({"avg_loss": f"{avg_loss:.4f}", **mem_info})
+            elif (step + 1) % log_interval == 0 or step + 1 == total_steps:
+                details = "  ".join(f"{key}={value}" for key, value in postfix.items())
+                print(
+                    f"[Epoch {epoch + 1}/{self.config.epochs}] "
+                    f"step {step + 1}/{total_steps}  {details}",
+                    flush=True,
+                )
 
         if len(self.step_times) > 0:
             epoch_avg = sum(self.step_times) / len(self.step_times)
@@ -1778,7 +1809,8 @@ class KnowledgeDistiller:
         # have nothing to do with training. Print the example-weighted epoch means.
         if epoch_means:
             headline = [
-                "loss_diff", "js_floor", "loss_excess", "target_entropy",
+                "loss_diff", "loss_mass_weighted", "loss_geo_weighted",
+                "loss_sym_weighted", "js_floor", "loss_excess", "target_entropy",
                 "student_entropy", "student_entropy_ratio", "student_top1",
                 "target_top1", "candidates_per_anchor",
             ]
@@ -2193,11 +2225,11 @@ class KnowledgeDistiller:
                 avg_loss = self.train_epoch(epoch)
                 validation_results = None
 
-                print("\n" + "=" * 60)
-                print(f"Evaluation after Epoch {epoch + 1}")
-                print("=" * 60)
-
-                if (epoch + 1) % cfg.eval_every == 0:
+                eval_every = int(getattr(cfg, "eval_every", 0))
+                if eval_every > 0 and (epoch + 1) % eval_every == 0:
+                    print("\n" + "=" * 60)
+                    print(f"Evaluation after Epoch {epoch + 1}")
+                    print("=" * 60)
                     try:
                         validation_results = self.evaluate("validation")
                         if (
@@ -2212,8 +2244,7 @@ class KnowledgeDistiller:
                     except Exception as e:
                         print(f"Warning: Validation failed with error: {e}")
                         print("Continuing training...")
-
-                print("=" * 60 + "\n")
+                    print("=" * 60 + "\n")
                 self.log_experiment_record(
                     {
                         "train": self.last_epoch_metrics,
@@ -2260,6 +2291,9 @@ class KnowledgeDistiller:
             else:
                 self.save_checkpoint(cfg.epochs - 1, {"loss": avg_loss})
             try:
+                if getattr(self, "pair_validation_thresholds", None) is None:
+                    print("Selecting pair thresholds on validation data before final test...")
+                    self.evaluate("validation")
                 test_results = self.evaluate("test")
                 if (
                     getattr(self, "use_wandb", False)

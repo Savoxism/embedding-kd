@@ -59,6 +59,7 @@ def test_heatgeo_cli_overrides(monkeypatch):
     assert config.mass_weight == 0.8
     assert config.geo_weight == 0.3
     assert config.sym_weight == 0.4
+    assert config.eval_every == 0
     assert not hasattr(config, "walk_temp")
     assert config.perplexity == 45
     assert (
