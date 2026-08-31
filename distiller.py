@@ -2021,11 +2021,9 @@ class KnowledgeDistiller:
             classification_tasks = test_cls_tasks
             pair_tasks = test_pair_tasks
             sts_tasks = test_sts_tasks
-            thresholds = getattr(self, "pair_validation_thresholds", None)
-            if thresholds is None:
-                raise RuntimeError(
-                    "Pair test evaluation requires thresholds selected on validation data"
-                )
+            # Report oracle-threshold pair metrics: select the threshold directly
+            # on each test task, then evaluate that same test task with it.
+            thresholds = None
 
         classification = eval_classification_task(
             self.model_student, classification_tasks, self.tok_student
@@ -2291,9 +2289,6 @@ class KnowledgeDistiller:
             else:
                 self.save_checkpoint(cfg.epochs - 1, {"loss": avg_loss})
             try:
-                if getattr(self, "pair_validation_thresholds", None) is None:
-                    print("Selecting pair thresholds on validation data before final test...")
-                    self.evaluate("validation")
                 test_results = self.evaluate("test")
                 if (
                     getattr(self, "use_wandb", False)

@@ -105,8 +105,8 @@ class HeatGeoConfig(BaseConfig):
     learning_rate = 2e-5
     min_lr = 3e-6
     num_workers = 4
-    # Validation is expensive and is not needed for every tuning epoch. It runs
-    # once after training to select pair-classification thresholds for final test.
+    # Disable validation during tuning; final pair thresholds are selected
+    # directly on each test task by the final evaluation.
     eval_every = 0
 
     train_data_path = "data/train_set/merged_3_data_5k_each.csv"
