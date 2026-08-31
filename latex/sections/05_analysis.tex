@@ -1,55 +1,56 @@
 \section{Analysis}
 \label{sec:analysis}
 
-We organize the analysis in the same causal order as the method: support coverage, teacher-selected adjacency, multi-hop targets, row supervision, and candidate efficiency. Aggregate downstream changes are interpreted together with full-corpus relational diagnostics; they are not used alone as evidence for a mechanism.
+The analysis follows the method's causal chain: whether teacher-defined locality improves the support, whether diffusion transfers structure beyond one hop, and how much sparse realization costs. We interpret downstream scores together with full-corpus relational diagnostics rather than using task performance alone as evidence for a mechanism.
 
-\subsection{Batch-Selected Teacher-Mass Exposure}
+\subsection{Does Teacher-Defined Locality Matter?}
 
-To test Proposition~\ref{prop:batch-exposure}, we track exposed teacher mass against relation opportunities for batch- and teacher-selected support. During batch-local training, we compare in-batch KL with full-corpus JS divergence and teacher-neighbor recall. Coverage-only probes at multiple corpus sizes test the predicted dependence on corpus scale without confounding it with student optimization.
-
-The relevant empirical question is whether teacher-selected candidates capture substantially more mass at the same number of scored relations. If an empirical teacher target is diffuse, the retained-mass curve---rather than the concentrated-support special case---determines the strength of this advantage.
-
-\subsection{Matched-Compute Support Selection}
-
-The core comparison uses batch-local KD, random corpus support, RIPPLE one-step support, RIPPLE with diffusion, full RIPPLE with row supervision, and a degree-preserving random graph. Batch $\rightarrow$ random corpus tests broader exposure; random corpus $\rightarrow$ RIPPLE one-step tests teacher relevance at a matched number of anchor--column scores. The remaining variants isolate diffusion, row supervision, and generic graph regularization. All variants share the student initialization, optimizer, schedule, seeds, and scored-pair budget; Appendix~\ref{app:ablation-protocol} specifies the controls.
+Our primary matched-compute comparison is
+\begin{equation}
+\text{batch-local support}
+\;\longrightarrow\;
+\text{random corpus support}
+\;\longrightarrow\;
+\text{mutual-$k$NN support}.
+\end{equation}
+The first transition asks whether broader corpus exposure alone is sufficient; the second asks whether the teacher's local geometry matters when the number of anchor--column scores is held fixed. We report downstream average, full-corpus JS divergence, and retained teacher mass. All variants share the student initialization, optimizer, schedule, seeds, and scored-pair budget; Appendix~\ref{app:ablation-protocol} specifies the controls.
 
 \begin{figure}[t]
     \centering
     \IfFileExists{figures/figure2_core_ablation.pdf}{%
         \includegraphics[width=\linewidth]{figures/figure2_core_ablation.pdf}%
     }{%
-        \fbox{\parbox[c][0.18\textheight][c]{0.95\linewidth}{\centering
-        \textbf{Matched-compute analysis.}\\[2mm]
-        Batch-local, random corpus, RIPPLE one-step, RIPPLE diffusion,\\
-        full RIPPLE, and a degree-preserving random graph.\\[1mm]
-        Downstream Avg.$\uparrow$ \quad Full-corpus JS$\downarrow$ \quad Held-out $E_8\downarrow$.}}
+        \fbox{\parbox[c][0.15\textheight][c]{0.95\linewidth}{\centering
+        \textbf{Matched-compute locality analysis.}\\[2mm]
+        Batch-local $\rightarrow$ random corpus $\rightarrow$ mutual-$k$NN.\\[1mm]
+        Downstream Avg.$\uparrow$ \quad Full-corpus JS$\downarrow$ \quad Retained mass$\uparrow$.}}
     }
-    \caption{\textbf{Matched-compute analysis of RIPPLE.} Random corpus support controls for broader exposure and the number of comparisons; one-step RIPPLE isolates teacher-selected adjacency; diffusion and row-supervision variants test the remaining components; the random graph controls for generic graph regularization. Bars report mean $\pm$ standard deviation over seeds.}
+    \caption{\textbf{Does teacher-defined locality matter?} Random corpus support controls for broader exposure, while mutual-$k$NN support tests whether teacher relevance improves geometry preservation at matched relational compute. Bars report mean $\pm$ standard deviation over seeds.}
     \label{fig:core-ablation}
 \end{figure}
 
-\subsection{Multi-Hop Transfer and Row Supervision}
+\subsection{Does Diffusion Recover Broader Geometry?}
 
-Diffusion should improve relations beyond the directly supervised one-hop band rather than merely increase neighborhood coverage. We therefore evaluate held-out diffusion errors at broader scales together with teacher--student JS in fixed teacher-rank bands. Varying only graph width tests whether additional teacher support improves these fixed bands.
+We compare one-hop RIPPLE with the same model augmented by diffusion targets. The main evidence is teacher--student error on held-out broader-rank relations, full-corpus relational divergence, and downstream performance. Improvement outside the immediate mutual-$k$NN support would show that diffusion transfers broader geometry rather than merely reweighting direct neighbors.
 
-For row supervision, we compare diffusion-only training, an injection-only control with $\lambda_{\mathrm{row}}=0$, and full RIPPLE. We report distinct visited rows, row hit rate, effective row denominator, and transition-row KL. The injection control separates the loss from the changed candidate composition.
+Cross-anchor row supervision appears as an additional row in the component ablation rather than a separate main-paper study. The fuller controls---including injection-only supervision, graph-width sweeps, fixed rank bands, row-overlap disagreement, and a degree-preserving random graph---are reported in Appendix~\ref{app:additional-analysis}.
 
-\subsection{Coverage, Calibration, and Efficiency}
+\subsection{Accuracy--Efficiency Trade-off}
 
-We vary the candidate budget and measure retained teacher mass, row hit rate, effective row denominator, downstream quality, step time, and peak memory. To test Proposition~\ref{prop:global-geometry}, we additionally track selected-support cosine distortion $\epsilon_T$, missed teacher mass $\bar\delta_T$, their bound $\epsilon_T+\bar\delta_T$, and full-corpus distortion $\mathcal E_T$ over training epochs. Saturation at a small candidate budget before cost approaches full scoring is the evidence required for concentration-adaptive computation.
+We vary the candidate budget and jointly report retained teacher mass, downstream average, full-corpus JS divergence, step time, and peak memory. This reveals whether the local targets saturate before the cost approaches full-corpus scoring. The same sweep also tracks the two terms in Proposition~\ref{prop:global-geometry}: selected-support distortion $\bar\epsilon$ and missed teacher mass $\bar\delta$.
 
 \begin{figure}[t]
     \centering
     \IfFileExists{figures/figure3_mechanisms.pdf}{%
         \includegraphics[width=\linewidth]{figures/figure3_mechanisms.pdf}%
     }{%
-        \fbox{\parbox[c][0.16\textheight][c]{0.95\linewidth}{\centering
-        \textbf{Mechanism and efficiency diagnostics.}\\[2mm]
-        (a) graph width vs. retained mass and fixed rank-band JS.\\
-        (b) candidate budget vs. usable row coverage, time, and memory.}}
+        \fbox{\parbox[c][0.14\textheight][c]{0.95\linewidth}{\centering
+        \textbf{Accuracy--efficiency analysis.}\\[2mm]
+        Candidate budget vs. retained mass, downstream quality,\\
+        full-corpus JS, step time, and peak memory.}}
     }
-    \caption{\textbf{Coverage, row supervision, and efficiency.} Left: graph width is evaluated on fixed teacher-rank bands to distinguish broader transfer from trivially increased support. Right: candidate budget is evaluated through target coverage, usable transition rows, downstream quality, and computational cost.}
+    \caption{\textbf{Accuracy--efficiency trade-off.} Candidate budgets are evaluated through target coverage, relational preservation, downstream quality, and computational cost.}
     \label{fig:mechanisms}
 \end{figure}
 
-The controlled settings are summarized in Appendix~\ref{app:diagnostic-protocols}. Until these mechanism diagnostics are populated, the main table supports effectiveness but not a causal attribution to relation selection, diffusion, or row supervision.
+Until these mechanism diagnostics are populated, Table~\ref{tab:main_results} supports effectiveness but not a causal attribution to locality, diffusion, or row supervision.

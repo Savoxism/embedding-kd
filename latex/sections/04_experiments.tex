@@ -12,7 +12,7 @@ We evaluate three teacher$\rightarrow$student pairs: Qwen3-Embedding-4B $\righta
 The nine downstream datasets cover classification (Banking77, Tweet, Emotion), pair classification (MRPC, SciTail, WiC), and semantic textual similarity (SICK, STS12, STS-B). We report macro-F1, average precision, and Spearman correlation, respectively. Emotion, WiC, and STS-B are in-domain; the other six datasets are out-of-domain. ``Avg.'' is the unweighted mean of the nine primary metrics. Checkpoints and pair-classification thresholds are selected on validation data, and test data are evaluated once.
 
 \paragraph{Baselines and implementation.}
-We compare with the teacher, the undistilled student, SimCSE-unsup~\citep{gao2021simcse}, CDM~\citep{chen2025cdm}, DSKD~\citep{zhang2024dskd}, Jasper--Stella~\citep{zhang2024jasperstella}, DistillCSE~\citep{gao2021distilcse,xu2023distillcse}, EMO~\citep{truong2025emo}, and TALAS~\citep{dao2026talas}. We use one canonical RIPPLE configuration across downstream tasks and vary only the component named in each controlled comparison. Appendix~\ref{app:hyper} gives the implementation details.
+We compare with the teacher, the undistilled student, SimCSE-unsup~\citep{gao2021simcse}, CDM~\citep{chen2025cdm}, DSKD~\citep{zhang2024dskd}, Jasper--Stella~\citep{zhang2024jasperstella}, DistillCSE~\citep{gao2021distilcse,xu2023distillcse}, EMO~\citep{truong2025emo}, and TALAS~\citep{dao2026talas}. We use one canonical RIPPLE configuration across downstream tasks and vary only the component named in each controlled comparison. Appendices~\ref{app:method-details} and~\ref{app:experimental-details} give the method and evaluation details.
 
 \subsection{Main Results}
 
