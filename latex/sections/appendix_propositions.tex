@@ -1,4 +1,4 @@
-\section{Theory}
+\section{Proofs}
 \label{app:theory}
 
 \subsection{Proof of Mini-Batch Exposure}
@@ -27,7 +27,7 @@ Splitting the distortion for anchor $i$ over selected and unselected relations g
 because $p_i^T(C_i)\leq1$ and $0\leq\ell_{ij}\leq1$. Averaging over anchors proves $\mathcal E\leq\bar\epsilon+\bar\delta$.
 \end{proof}
 
-\subsection{Teacher-Proportional Missed-Mass Bound}
+\subsection{Proof of the Teacher-Proportional Missed-Mass Bound}
 \label{app:proportional-bound}
 
 Let $C_i^{(T)}$ be the union of relations selected for anchor $i$ through epoch $T$, and let $\bar\delta_T=N^{-1}\sum_i[1-p_i^T(C_i^{(T)})]$. Suppose RIPPLE makes at least $m$ teacher-proportional draws per anchor and epoch. A relation retained deterministically has zero miss probability. For any remaining relation $j$, proportional sampling without replacement selects $j$ at each draw with conditional probability at least $p_i^T(j)$, because removing other entries can only decrease the remaining normalizer. Its probability of being missed by at least $mT$ draws is therefore at most $(1-p_i^T(j))^{mT}$. Consequently,
@@ -39,9 +39,9 @@ p_i^T(j)(1-p_i^T(j))^{mT}.
 \end{equation}
 Deterministic high-mass retention and additional candidates can only reduce missed mass.
 
-Combining Eq.~\eqref{eq:proportional-missed-mass} with Proposition~\ref{prop:global-geometry} yields the finite-epoch statement omitted from the main paper: the final global distortion is bounded by its selected-support error plus the residual teacher mass implied by the sampling process.
+Combining Eq.~\eqref{eq:proportional-missed-mass} with Proposition~\ref{prop:global-geometry} gives a finite-epoch upper bound: global distortion is controlled by selected-support error plus the residual teacher mass implied by the sampling process.
 
-\subsection{Concentrated-Support Comparison}
+\subsection{Proof of the Concentrated-Support Comparison}
 \label{app:concentrated-support}
 
 When $B$ is small relative to $N$, Proposition~\ref{prop:batch-exposure} requires $\Theta(N\log(1/\varepsilon))$ batch relation opportunities per anchor to reduce expected missed mass below $\varepsilon$. If $p_i^T$ is uniform on $h$ relevant relations, Eq.~\eqref{eq:proportional-missed-mass} reduces to

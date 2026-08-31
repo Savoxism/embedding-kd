@@ -1,34 +1,18 @@
 \section{Introduction}
 
-Text embedding models map examples into a space whose global arrangement supports similarity search, clustering, and transfer across tasks. A teacher therefore contains knowledge not only in individual vectors, but also in the relations it induces among corpus examples. Distilling these relations should preserve the geometry of the teacher embedding space over the corpus, rather than merely reproduce isolated representations~\citep{tung2019similarity,park2019rkd,passalis2020pkt,kim2023embeddistill,kim2024topkd}.
+Text embedding models map examples into a space whose geometry supports similarity search, clustering, and transfer across tasks. A teacher therefore contains knowledge not only in individual vectors but also in the relations it induces among corpus examples. Distilling these relations should preserve the teacher's corpus-level geometry rather than merely reproduce isolated representations~\citep{tung2019similarity,park2019rkd,passalis2020pkt,kim2023embeddistill,kim2024topkd}.
 
-Directly aligning all corpus relations is prohibitively expensive, so relational KD commonly constructs pair matrices or conditional distributions from the current mini-batch~\citep{tung2019similarity,park2019rkd,passalis2020pkt,qian2022fullkernel,xin2025nrkd}. Reusing encoded examples is efficient, but it conflates a computational subset with a geometric neighborhood: random co-occurrence decides which relations are distilled, regardless of their importance under the teacher geometry.
+Directly aligning all $N(N-1)$ corpus relations is prohibitively expensive. Relational KD therefore commonly constructs pair matrices or conditional distributions from the current mini-batch~\citep{tung2019similarity,park2019rkd,passalis2020pkt,qian2022fullkernel,xin2025nrkd}. Although computationally convenient, this choice conflates a batching decision with a geometric one: random co-occurrence determines which relations are distilled, regardless of their importance under the teacher geometry. Increasing training time eventually exposes more pairs, but it does not prioritize the relations carrying the most teacher mass. Deterministic top-$K$ selection fixes the relevance problem only partially: it retains a high-mass head but gives every omitted relation zero probability of ever being observed. This is analogous to the truncation bias identified for sparse logit distillation~\citep{anshumann2025sparse}, but corpus-level embedding KD faces an additional constraint---evaluating a student relation also requires encoding the corresponding text.
 
-Our key insight is to approximate global geometry by a collection of meaningful local geometries. Rather than treating arbitrary batch subsets as proxies for the corpus, we center a teacher-defined neighborhood at every corpus example. Overlap among these neighborhoods ties the local objectives together, while their composition exposes structure beyond any single neighborhood.
+Our key insight is that global geometry can be approximated by aligning a collection of teacher-defined local geometries. This requires solving three distinct problems. First, the sparse support must prioritize teacher relevance without permanently discarding its tail. Second, local neighborhoods must communicate information beyond one hop. Third, the resulting supervision must remain tractable without repeatedly encoding the same corpus examples.
 
-\textbf{RIPPLE} realizes this principle with cached teacher embeddings and a mutual-nearest-neighbor graph. Each graph row defines an immediate local geometry; diffusion expands it into multi-scale targets~\citep{coifman2006diffusionmaps}. Sparse candidate selection makes these targets tractable, candidate pooling reuses student encodings, and supervision on overlapping graph rows encourages consistency across anchors. The graph and teacher are discarded at inference.
+\textbf{RIPPLE} addresses these problems through relevance, reach, and amortization. For \emph{relevance}, cached teacher embeddings define a mutual-nearest-neighbor graph whose rows replace arbitrary batch-local relations. For \emph{reach}, diffusion composes overlapping graph neighborhoods into multi-scale targets~\citep{coifman2006diffusionmaps}. For \emph{amortization}, sparse candidate sets are pooled and deduplicated across anchors. The same encoded pool is then reused in two directions: batch anchors match their multi-scale targets, while teacher-selected candidates become auxiliary row centers and match the transition rows exposed within the pool. The latter operation broadens the set of local objectives instantiated by an update without adding encoder passes or introducing a separate row-sampling process.
 
-The analysis supporting this design is deliberately compact. We first show that random mini-batch exposure is independent of teacher relevance. We then bound global teacher-weighted geometry distortion by the alignment error on selected local relations plus the teacher mass left uncovered.
+The theoretical role of local alignment is deliberately limited and explicit. We first show that mini-batch exposure is independent of teacher relevance. We then decompose global teacher-weighted distortion into error on selected relations and teacher mass left uncovered. This decomposition motivates teacher-directed support selection; it does not claim that a downstream task must improve whenever the geometric bound tightens. Auxiliary row reuse is likewise an efficiency mechanism: it instantiates additional local objectives from already encoded examples rather than changing the selected support of the original anchors.
 
 Across nine datasets and three teacher--student settings, RIPPLE obtains the best mean compact-student result in all three settings. The gains are strongest and most consistent on semantic textual similarity, whereas pair-classification results are less uniform. Our contributions are:
 \begin{itemize}
-    \item We identify random mini-batch geometry as a relevance-agnostic approximation to corpus geometry.
-    \item We introduce RIPPLE, which approximates global geometry with teacher-defined, diffusion-expanded local geometries.
-    \item We demonstrate improved relational preservation and compact-student performance across diverse embedding tasks and teacher--student settings.
+    \item We formalize the support mismatch in batch-local relational KD and show that global teacher-weighted distortion is controlled by selected-relation error and uncovered teacher mass.
+    \item We introduce RIPPLE, which combines teacher-relevant neighborhoods, multi-scale diffusion, and pooled auxiliary-row reuse to approximate corpus geometry without online teacher inference.
+    \item We demonstrate strong compact-student performance across three teacher--student settings and nine downstream datasets, with consistent gains on semantic textual similarity.
 \end{itemize}
-
-\begin{figure}[t]
-    \centering
-    \IfFileExists{figures/figure1_motivation.pdf}{%
-        \includegraphics[width=\linewidth]{figures/figure1_motivation.pdf}%
-    }{%
-        \fbox{\parbox[c][0.07\textheight][c]{0.95\linewidth}{\centering
-        \textbf{Global geometry}
-        $\;\longrightarrow\;$
-        \textbf{teacher-defined local geometries}
-        $\;\longrightarrow\;$
-        \textbf{multi-scale alignment}}}
-    }
-    \caption{\textbf{Global geometry through local alignment.} Conventional relational KD treats batch-local relations as a proxy for corpus geometry. RIPPLE instead constructs teacher-defined local geometries, expands them through diffusion, and realizes them with sparse candidate pools.}
-    \label{fig:motivation}
-\end{figure}

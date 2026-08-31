@@ -1,5 +1,1 @@
 \section{Conclusion}
-
-RIPPLE approximates corpus-level teacher geometry through teacher-defined local geometries, diffusion-expanded targets, and sparse pooled matching. Its compact theoretical justification isolates the weakness of random batch exposure and separates global distortion into local alignment error and uncovered teacher mass. Across three teacher--student settings, RIPPLE is strongest and most consistent on semantic textual similarity and adds no inference-time machinery: deployment uses only the distilled encoder.
-
-The method remains limited by the teacher and corpus used to construct its graph. Teacher errors, hubs, domain bias, and heavy-tailed relation distributions can weaken the value of local support; row supervision is also limited by overlap in the shared candidate pool. Exact neighbor construction is quadratic before sparsification, although approximate search can replace it at larger scale. Finally, the geometry bound does not guarantee downstream improvement, consistent with the less uniform pair-classification results.

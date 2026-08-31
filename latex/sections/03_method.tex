@@ -1,7 +1,7 @@
 \section{RIPPLE: Global Geometry through Local Alignment}
 \label{sec:method}
 
-RIPPLE approximates the teacher's corpus-level geometry through sparse local geometries centered at each example. A cached teacher graph defines immediate neighborhoods, diffusion composes them into broader targets, and pooled candidates realize those targets without full-corpus student scoring. Figure~\ref{fig:motivation} gives the overall view.
+RIPPLE approximates corpus-level teacher geometry through three operations. A teacher graph selects \emph{relevant} local relations, diffusion gives those relations broader \emph{reach}, and a shared candidate pool \emph{amortizes} both anchor-centered and auxiliary-row supervision. All teacher-side quantities are cached before optimization.
 
 \subsection{From Global Geometry to Local Alignment}
 \label{sec:relation-selection}
@@ -43,14 +43,14 @@ For any selected relation set $C_i$ with positive teacher mass, define
 \end{equation}
 and let $\bar\epsilon=N^{-1}\sum_i\epsilon_i$ and $\bar\delta=N^{-1}\sum_i\delta_i$. Then
 \begin{equation}
-\boxed{\mathcal E\leq\bar\epsilon+\bar\delta.}
+\mathcal E\leq\bar\epsilon+\bar\delta.
 \label{eq:global-geometry-bound}
 \end{equation}
 \end{proposition}
 
-Global preservation therefore reduces to two requirements: accurately align the selected local geometry and cover most teacher-relevant mass. Bounds for teacher-proportional sampling and the concentrated-support comparison are deferred to Appendix~\ref{app:proportional-bound} and Appendix~\ref{app:concentrated-support}.
+Global preservation therefore reduces to two requirements: accurately align the selected local geometry and cover most teacher-relevant mass. Appendix~\ref{app:proportional-bound} bounds the missed mass under teacher-proportional sampling, and Appendix~\ref{app:concentrated-support} contrasts its exposure rate with random batches.
 
-\subsection{Teacher-Defined Multi-Scale Local Geometry}
+\subsection{Relevance: Teacher-Defined Local Geometry}
 \label{sec:graph}
 
 We cache the teacher embeddings and form the mutual $k$-nearest-neighbor set
@@ -59,55 +59,90 @@ We cache the teacher embeddings and form the mutual $k$-nearest-neighbor set
 =\operatorname{kNN}_T(i)
 \cap\{j:i\in\operatorname{kNN}_T(j)\}.
 \end{equation}
-Mutuality suppresses one-directional hub edges. Retained edges are weighted by teacher cosine similarity and row-normalized:
+Retained edges are weighted by teacher cosine similarity and row-normalized:
 \begin{equation}
 P^T_{ij}
 =\frac{\mathbf 1[j\in\mathcal M_k^T(i)]\exp(c^T_{ij}/\tau_i)}
 {\sum_{\ell\in\mathcal M_k^T(i)}\exp(c^T_{i\ell}/\tau_i)}.
 \label{eq:teacher-transition}
 \end{equation}
-The row $P_i^T$ defines the immediate local geometry around anchor $i$. We calibrate $\tau_i$ by a common target entropy so that neighborhood sharpness adapts to local density.
+The row $P_i^T$ defines the immediate local geometry around anchor $i$. Mutuality suppresses one-directional hub edges while preserving relations endorsed from both endpoints. We choose $\tau_i$ by bisection to satisfy $H(P_i^T)=\log\rho$ whenever the row degree permits, where $\rho$ is a shared target perplexity. Lower-degree rows use their maximum feasible entropy, and an isolated mutual-neighbor row falls back to the teacher's nearest neighbor. This entropy calibration gives every non-degenerate row a comparable effective neighborhood size while adapting its bandwidth to local density.
+
+\subsection{Reach: Diffusion over Overlapping Neighborhoods}
 
 One hop preserves immediate local structure; diffusion composes overlapping neighborhoods to expose broader structure. With the lazy operator $\widetilde P^T=\tfrac12(I+P^T)$, RIPPLE defines
 \begin{equation}
 g^T_{i,1}=P_i^T,
 \qquad
 g^T_{i,r}
-=\left.e_i^\top(\widetilde P^T)^r\right|_{\mathcal D\setminus\{i\}},
+=\operatorname{Norm}_{\mathcal D\setminus\{i\}}
+\!\left(e_i^\top(\widetilde P^T)^r\right),
 \quad r>1.
 \label{eq:diffusion-targets}
 \end{equation}
-These targets provide a multi-scale view of the teacher geometry without requiring a student graph. Graph construction, entropy calibration, and sparse diffusion are detailed in Appendix~\ref{app:method-details}.
+Here $\operatorname{Norm}_A$ restricts a nonnegative vector to $A$ and renormalizes it. The lazy walk prevents periodic oscillation, while the scales $r\in\mathcal R$ describe progressively broader teacher neighborhoods without constructing a student graph. To keep the cached targets sparse, after each multiplication we retain the smallest support carrying at least $1-\eta$ of the row mass and renormalize. Discarding mass $\eta$ changes the row by total variation $\eta$ and reverse KL $-\log(1-\eta)$, making $\eta$ an explicit approximation tolerance rather than an arbitrary width.
 
-\subsection{Sparse Relational Matching}
+\subsection{Sparse Multi-Scale Matching}
 \label{sec:candidates}
 
-Full-corpus scoring would defeat compact training. For every $g^T_{i,r}$, RIPPLE retains high-mass entries, samples additional entries in proportion to teacher mass, and adds hard and uniform negatives. Candidate sets are pooled and deduplicated across anchors, so each candidate text is encoded once while each anchor retains its own target. Let $\Omega_{i,r}$ be the realized domain and $g^S_{i,r}$ the student cosine-softmax on that domain. The relational objective is
+Full-corpus student scoring would defeat the purpose of sparse supervision. At a fixed budget, deterministic top-$K$ selection retains a high-mass head but assigns every tail relation zero inclusion probability across all subsequent epochs. RIPPLE instead retains high-mass diffusion entries, samples additional entries in proportion to teacher mass, and adds hard and uniform negatives. The deterministic head controls one-step omitted mass, while stochastic tail selection progressively exposes non-head relations within each cached target. Let $\Omega_i$ be the resulting candidate set. Sets are pooled and deduplicated across a batch $B$,
+\begin{equation}
+\mathcal P_B=\bigcup_{i\in B}\Omega_i,
+\end{equation}
+so every distinct candidate text is encoded once even when several anchors select it.
+
+The resulting conditional losses are sparse objectives, not unbiased Monte Carlo estimators of the full-corpus softmax: both teacher and student distributions are renormalized on the realized support. Their guarantee is instead one of coverage. Every positive-mass relation in the sampled tail has nonzero inclusion probability, and Appendix~\ref{app:proportional-bound} bounds the teacher mass that remains unobserved after a finite number of epochs.
+
+For a diffusion scale $r$, restrict and renormalize the teacher target to $\Omega_i$ as $\bar g^T_{i,r}=\operatorname{Norm}_{\Omega_i}(g^T_{i,r})$. The corresponding student distribution is
+\begin{equation}
+g^S_{i,r}(j)
+=\frac{\exp(c^S_{ij}/\tau_{i,r})}
+{\sum_{u\in\Omega_i}\exp(c^S_{iu}/\tau_{i,r})},
+\qquad \tau_{i,r}=\sqrt r\,\tau_i.
+\label{eq:student-diffusion}
+\end{equation}
+The temperature ladder evaluates broader targets at a correspondingly coarser resolution and ties the one-hop student distribution to the bandwidth that generated its teacher row.
+
+Restricted diffusion targets deliberately describe relations within $\Omega_i$, but they do not specify how an anchor should compare with candidates selected by other anchors. RIPPLE therefore adds an ambient profile over the shared pool. At a common temperature $\tau_0$, define
+\begin{equation}
+a_i^T(j)
+=\frac{\exp(c^T_{ij}/\tau_0)}
+{\sum_{u\in\mathcal P_B\setminus\{i\}}\exp(c^T_{iu}/\tau_0)},
+\qquad
+a_i^S(j)
+=\frac{\exp(c^S_{ij}/\tau_0)}
+{\sum_{u\in\mathcal P_B\setminus\{i\}}\exp(c^S_{iu}/\tau_0)}.
+\label{eq:ambient-profile}
+\end{equation}
+The relational objective combines the ambient comparison with the diffusion scales:
 \begin{equation}
 \mathcal L_{\mathrm{rel}}
-=\frac1{|B|}\sum_{i\in B}\sum_{r\in\mathcal R}
-\omega_rD_{\mathrm{KL}}\!\left(
-g^T_{i,r}|_{\Omega_{i,r}}
-\,\middle\|\,
-g^S_{i,r}|_{\Omega_{i,r}}
-\right).
+=\frac1{|B|}\sum_{i\in B}\left[
+\omega_0D_{\mathrm{KL}}(a_i^T\|a_i^S)
++\sum_{r\in\mathcal R}\omega_r
+D_{\mathrm{KL}}(\bar g^T_{i,r}\|g^S_{i,r})
+\right].
 \label{eq:relational-loss}
 \end{equation}
-The candidate construction also includes an ambient comparison over the shared pool, preventing a restricted high-mass target from hiding off-support alternatives. Exact quotas, scale weights, and temperatures are implementation details given in Appendix~\ref{app:candidates}.
+We use $\omega_r\propto1/r$ and tie $\omega_0=\omega_1$, normalizing all weights jointly. Thus diffusion ranks the selected neighborhood at several resolutions, whereas the ambient term calibrates each anchor against the broader shared pool.
 
-Anchor-wise objectives are not independent because their local geometries overlap. RIPPLE closes the sampled support under teacher transition rows, reusing already encoded candidates rather than sampling additional row centers. Let $\mathcal P_B$ be the deduplicated shared pool and let $\mathcal S_i\subseteq\mathcal P_B$ contain the columns with positive mass in anchor $i$'s realized diffusion targets. Thus $\mathcal S_i$ excludes hard and uniform negatives. The auxiliary row centers are
+\subsection{Amortization: Exposed-Support Row Reuse}
+
+Equation~\eqref{eq:relational-loss} centers every local objective on a batch anchor. The shared pool contains many additional texts already encoded by the student, so RIPPLE reuses teacher-selected candidates as auxiliary row centers. Let $\mathcal S_i\subseteq\Omega_i$ contain the candidates assigned positive mass by at least one realized diffusion target; hard and uniform negatives are excluded. The auxiliary centers are
 \begin{equation}
 \mathcal J_B
 =\left(\bigcup_{i\in B}\mathcal S_i\right)\setminus B,
 \end{equation}
-where removing all batch anchors avoids duplicating the one-hop term already present in $\mathcal L_{\mathrm{rel}}$. For $j\in\mathcal J_B$, define the exposed teacher-neighbor support and its retained mass as
+where removing batch anchors avoids duplicating the one-hop term already present in $\mathcal L_{\mathrm{rel}}$. This construction introduces neither a traversal process nor a separate sampling distribution: $\mathcal J_B$ is a deterministic function of the realized candidate pool.
+
+For $j\in\mathcal J_B$, only part of its transition row may be exposed in the current pool. Define that support and its teacher mass by
 \begin{equation}
 \Omega_j^{\mathrm{row}}
 =\mathcal P_B\cap\mathcal M_k^T(j),
 \qquad
 m_B(j)=\sum_{\ell\in\Omega_j^{\mathrm{row}}}P_{j\ell}^T.
 \end{equation}
-The teacher row is restricted and renormalized as $\bar P_{j\ell}^{T,B}=P_{j\ell}^T/m_B(j)$, while the student row is
+The teacher row is restricted and renormalized as $\bar P_{j\ell}^{T,B}=P_{j\ell}^T/m_B(j)$ for $\ell\in\Omega_j^{\mathrm{row}}$, while the student row is
 \begin{equation}
 q_{j\ell}^{S,B}
 =\frac{\exp(c_{j\ell}^S/\tau_j)}
@@ -121,11 +156,15 @@ Writing $\mathcal J_B^+=\{j\in\mathcal J_B:|\Omega_j^{\mathrm{row}}|\geq2\}$, th
 D_{\mathrm{KL}}\!\left(\bar P_j^{T,B}\,\middle\|\,q_j^{S,B}\right).
 \label{eq:row-loss}
 \end{equation}
-The exposed mass $m_B(j)$ is monitored but does not reweight the rows. Rows with fewer than two available teacher-neighbor columns are omitted because their restricted KL is uninformative. The complete objective is
+The exposed mass $m_B(j)$ records how much of the original transition row is visible but does not reweight the loss; teacher relevance has already influenced which centers enter $\mathcal J_B$. Rows with fewer than two exposed teacher neighbors are omitted because a conditional distribution on a singleton has identically zero KL. This term does not enlarge $\Omega_i$ for the original batch anchors. Its role is instead to amortize additional local objectives over non-anchor centers using embeddings already present in the update.
+
+The complete objective is
 \begin{equation}
 \mathcal L_{\mathrm{RIPPLE}}
 =\mathcal L_{\mathrm{rel}}
 +\lambda_{\mathrm{row}}\mathcal L_{\mathrm{row}}.
 \label{eq:full-objective}
 \end{equation}
-The cached graph is used only during distillation; inference uses the student encoder alone.
+
+\paragraph{Cost and deployment.}
+Exact teacher-graph construction requires $O(N^2d)$ similarity work before sparsification, although approximate nearest-neighbor search can replace the all-pairs stage. The stored graph uses $O(Nk)$ edges. Candidate pooling avoids additional encoder passes for duplicated columns and auxiliary row centers; $\mathcal L_{\mathrm{row}}$ adds only their pairwise similarity and softmax computation, approximately $O(|\mathcal J_B||\mathcal P_B|d)$ per batch. The cached graph and teacher are used only during distillation, so inference uses the student encoder alone.
