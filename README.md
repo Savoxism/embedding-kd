@@ -109,6 +109,13 @@ fixed-bandwidth baseline uses temperature `0.05`; none is a tunable method knob.
 
 ## Training
 
+### HeatGeo on Colab
+
+Open [`notebooks/train_heatgeo_colab.ipynb`](notebooks/train_heatgeo_colab.ipynb),
+choose one of the three canonical teacher--student pairs, set `MASS_WEIGHT`, and
+run all cells. The notebook clones `nqd_mass_geom_loss` on its first run and
+fetches/resets/pulls the latest remote commit on every later run.
+
 ### RKD baseline
 
 RKD uses the paper-default RKD-DA objective (distance weight 1, angle weight 2,

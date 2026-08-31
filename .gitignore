@@ -21,6 +21,8 @@ walk_distillation.patch
 
 # Notebooks
 *.ipynb
+!notebooks/
+!notebooks/*.ipynb
 
 
 # Byte-compiled / optimized / DLL files
