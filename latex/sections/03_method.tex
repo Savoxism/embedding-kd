@@ -93,38 +93,39 @@ so every distinct candidate text is encoded once even when several anchors selec
 
 The resulting conditional losses are sparse objectives, not unbiased Monte Carlo estimators of the full-corpus softmax: both teacher and student distributions are renormalized on the realized support. Their guarantee is instead one of coverage. Every positive-mass relation in the sampled tail has nonzero inclusion probability, and Appendix~\ref{app:proportional-bound} bounds the teacher mass that remains unobserved after a finite number of epochs.
 
-For a diffusion scale $r$, restrict and renormalize the teacher target to $\Omega_i$ as $\bar g^T_{i,r}=\operatorname{Norm}_{\Omega_i}(g^T_{i,r})$. The corresponding student distribution is
+All supervision in RIPPLE takes a single form: a teacher-derived relation vector is restricted to a realized support and matched by a student softmax over that same support. For a center node $v$ with student similarities $c^S_v$, a nonnegative target $g$, a support $\Omega$ not containing $v$, and a temperature $\tau$, define
 \begin{equation}
-g^S_{i,r}(j)
-=\frac{\exp(c^S_{ij}/\tau_{i,r})}
-{\sum_{u\in\Omega_i}\exp(c^S_{iu}/\tau_{i,r})},
-\qquad \tau_{i,r}=\sqrt r\,\tau_i.
-\label{eq:student-diffusion}
-\end{equation}
-The temperature ladder evaluates broader targets at a correspondingly coarser resolution and ties the one-hop student distribution to the bandwidth that generated its teacher row.
-
-Restricted diffusion targets deliberately describe relations within $\Omega_i$, but they do not specify how an anchor should compare with candidates selected by other anchors. RIPPLE therefore adds an ambient profile over the shared pool. At a common temperature $\tau_0$, define
-\begin{equation}
-a_i^T(j)
-=\frac{\exp(c^T_{ij}/\tau_0)}
-{\sum_{u\in\mathcal P_B\setminus\{i\}}\exp(c^T_{iu}/\tau_0)},
+\mathcal D_v(g,\Omega,\tau)
+=D_{\mathrm{KL}}\!\left(\operatorname{Norm}_\Omega(g)\,\middle\|\,
+\sigma_\Omega\!\bigl(c^S_v/\tau\bigr)\right),
 \qquad
-a_i^S(j)
-=\frac{\exp(c^S_{ij}/\tau_0)}
-{\sum_{u\in\mathcal P_B\setminus\{i\}}\exp(c^S_{iu}/\tau_0)}.
-\label{eq:ambient-profile}
+\sigma_\Omega(z)_j=\frac{\exp(z_j)}{\sum_{u\in\Omega}\exp(z_u)}.
+\label{eq:local-matching}
 \end{equation}
-The relational objective combines the ambient comparison with the diffusion scales:
+Each loss below is an instance of $\mathcal D_v$; scales differ only in which target, support, and temperature they supply. A diffusion scale $r\in\mathcal R$ matches the cached target $g^T_{i,r}$ on the anchor's own support $\Omega_{i,r}=\Omega_i$ at temperature $\tau_{i,r}=\sqrt r\,\tau_i$: the ladder evaluates broader targets at a correspondingly coarser resolution and ties the one-hop student distribution to the bandwidth that generated its teacher row.
+
+Restricted diffusion targets deliberately describe relations within $\Omega_i$, but they do not specify how an anchor should compare with candidates selected by other anchors. RIPPLE therefore extends the family downward with an ambient scale $r=0$, whose target is the teacher's affinity row \emph{before} mutual-$k$NN sparsification. At a single shared bandwidth $\tau_0$,
+\begin{equation}
+g^T_{i,0}=\sigma_{\mathcal P_B\setminus\{i\}}\!\bigl(c^T_i/\tau_0\bigr),
+\qquad
+\Omega_{i,0}=\mathcal P_B\setminus\{i\},
+\qquad
+\tau_{i,0}=\tau_0.
+\label{eq:ambient-scale}
+\end{equation}
+This is the same softmax-of-cosines construction as Equation~\eqref{eq:teacher-transition} with the sparsification removed: full support in place of $\mathcal M_k^T(i)$, one bandwidth in place of a per-row solution. The index $0$ marks the un-sparsified base of the family, not a zeroth operator power. Because the target is dense, every scored column receives its true teacher mass rather than an artifactual zero, and the same temperature appears on both sides of the KL.
+
+The relational objective matches the whole family at once:
 \begin{equation}
 \mathcal L_{\mathrm{rel}}
-=\frac1{|B|}\sum_{i\in B}\left[
-\omega_0D_{\mathrm{KL}}(a_i^T\|a_i^S)
-+\sum_{r\in\mathcal R}\omega_r
-D_{\mathrm{KL}}(\bar g^T_{i,r}\|g^S_{i,r})
-\right].
+=\frac1{|B|}\sum_{i\in B}
+\sum_{r\in\{0\}\cup\mathcal R}
+\omega_r\,\mathcal D_i\!\left(g^T_{i,r},\Omega_{i,r},\tau_{i,r}\right),
+\qquad
+\omega_r\propto\frac1{\max(r,1)},
 \label{eq:relational-loss}
 \end{equation}
-We use $\omega_r\propto1/r$ and tie $\omega_0=\omega_1$, normalizing all weights jointly. Thus diffusion ranks the selected neighborhood at several resolutions, whereas the ambient term calibrates each anchor against the broader shared pool.
+with the weights normalized to sum to one. A scale's influence decays with the diffusion time it describes, and the ambient scale sits at the sharpest scale's weight. Thus diffusion ranks the selected neighborhood at several resolutions, whereas the ambient scale calibrates each anchor against the broader shared pool.
 
 \subsection{Amortization: Exposed-Support Row Reuse}
 
@@ -142,20 +143,15 @@ For $j\in\mathcal J_B$, only part of its transition row may be exposed in the cu
 \qquad
 m_B(j)=\sum_{\ell\in\Omega_j^{\mathrm{row}}}P_{j\ell}^T.
 \end{equation}
-The teacher row is restricted and renormalized as $\bar P_{j\ell}^{T,B}=P_{j\ell}^T/m_B(j)$ for $\ell\in\Omega_j^{\mathrm{row}}$, while the student row is
-\begin{equation}
-q_{j\ell}^{S,B}
-=\frac{\exp(c_{j\ell}^S/\tau_j)}
-{\sum_{u\in\Omega_j^{\mathrm{row}}}\exp(c_{ju}^S/\tau_j)}.
-\end{equation}
-Writing $\mathcal J_B^+=\{j\in\mathcal J_B:|\Omega_j^{\mathrm{row}}|\geq2\}$, the row objective is the uniform mean
+Writing $\mathcal J_B^+=\{j\in\mathcal J_B:|\Omega_j^{\mathrm{row}}|\geq2\}$, the row objective is the one-hop instance of Equation~\eqref{eq:local-matching}, centered on non-anchor nodes and averaged uniformly:
 \begin{equation}
 \mathcal L_{\mathrm{row}}
 =\frac{1}{|\mathcal J_B^+|}
 \sum_{j\in\mathcal J_B^+}
-D_{\mathrm{KL}}\!\left(\bar P_j^{T,B}\,\middle\|\,q_j^{S,B}\right).
+\mathcal D_j\!\left(P_j^T,\Omega_j^{\mathrm{row}},\tau_j\right).
 \label{eq:row-loss}
 \end{equation}
+Each row is matched at the bandwidth $\tau_j$ its target was built at, exactly as the $r=1$ scale is for anchors.
 The exposed mass $m_B(j)$ records how much of the original transition row is visible but does not reweight the loss; teacher relevance has already influenced which centers enter $\mathcal J_B$. Rows with fewer than two exposed teacher neighbors are omitted because a conditional distribution on a singleton has identically zero KL. This term does not enlarge $\Omega_i$ for the original batch anchors. Its role is instead to amortize additional local objectives over non-anchor centers using embeddings already present in the update.
 
 The complete objective is
