@@ -1,5 +1,9 @@
 from .base_config import BaseConfig
 
+# Kept next to the config rather than imported from the criterion so that
+# `main.py --row_mode` can validate an override without constructing a module.
+ROW_MODES = ("walk", "closure_u", "closure_m")
+
 
 class HeatGeoConfig(BaseConfig):
     distill_method = "heatgeo"
@@ -54,9 +58,25 @@ class HeatGeoConfig(BaseConfig):
     # omega_r = 1/r and omega_0 = omega_1 are derived centrally from these scales.
 
     # ---- Row Supervision -----------------------------------------------------
-    # Non-backtracking teacher walks select non-anchor rows. L_row matches each
-    # selected node's complete available transition row rather than a sampled next
-    # step, so this is dense row-kernel supervision, not a trajectory likelihood.
+    # L_row matches each selected node's complete available transition row rather
+    # than a sampled next step, so this is dense row-kernel supervision, not a
+    # trajectory likelihood. `row_mode` picks how those nodes are selected:
+    #
+    #   "walk"       non-backtracking teacher walks discover them; nu is the visit
+    #                count. Costs num_walks and walk_length, neither of which
+    #                appears in the objective -- the trajectory is never a target.
+    #   "closure_u"  every teacher-selected pool column (the diffusion support,
+    #                not the hard/uniform negatives) is promoted to a row, weighted
+    #                uniformly. Batch anchors are excluded: L_rel already matches
+    #                their transition row as its r=1 target. No walk knobs.
+    #   "closure_m"  the same rows, weighted by the teacher mass the pool exposes
+    #                for each, m_B(j) = P^T_j(Omega_j). No walk knobs.
+    #
+    # closure_u is the control for closure_m: identical row sets, so the pair
+    # isolates the weighting. Under a closure mode num_walks is forced to 0 below,
+    # which also stops walk-visited nodes from displacing uniform negatives in the
+    # candidate draw -- the one way the walk changes L_rel as well as L_row.
+    row_mode = "walk"
     num_walks = 4
     walk_length = 4
     row_weight = 0.5
@@ -143,6 +163,25 @@ class HeatGeoConfig(BaseConfig):
     # carried, so deleting them changes no behaviour. Re-adding one is only
     # meaningful together with the kd_*_layers pair.
 
+    def resolve_row_mode(self) -> None:
+        """Validate ``row_mode`` and drop the walk knobs the closure modes do not own.
+
+        Called from ``__init__`` and again by ``main.py`` after the CLI overrides,
+        which are plain ``setattr`` and so bypass every check here. Forcing
+        ``num_walks`` to 0 rather than merely ignoring it keeps the sampler, the run
+        banner and the artifact requirement honest: with ``num_walks > 0`` the
+        sampler would still draw walks, still demand the transition arrays for that
+        draw, and still let visited nodes displace uniform negatives in the candidate
+        set -- which changes L_rel too, in a run whose whole point is that only
+        L_row's row selection changed.
+        """
+        if self.row_mode not in ROW_MODES:
+            raise ValueError(
+                f"row_mode must be one of {ROW_MODES}, got {self.row_mode!r}"
+            )
+        if self.row_mode != "walk":
+            self.num_walks = 0
+
     def __init__(self, **kwargs):
         # An unknown key is a typo, not a no-op. The previous version skipped it
         # silently, so `HeatGeoConfig(walk_lenght=8)` ran the default 4 and looked
@@ -154,6 +193,7 @@ class HeatGeoConfig(BaseConfig):
             )
         for k, v in kwargs.items():
             setattr(self, k, v)
+        self.resolve_row_mode()
         if self.num_walks < 0:
             raise ValueError("num_walks must be non-negative")
         if self.walk_length < 1:

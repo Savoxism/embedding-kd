@@ -2,6 +2,7 @@ import argparse
 import sys
 
 from config import (
+    ROW_MODES,
     TALAS_PAPER_PAIRS,
     BaseConfig,
     CDMConfig,
@@ -71,6 +72,18 @@ def parse_args():
         help="Target transition-row perplexity; 0 uses the fixed-bandwidth baseline",
     )
     parser.add_argument("--truncation_tolerance", type=float, default=None)
+    parser.add_argument(
+        "--row_mode",
+        type=str,
+        default=None,
+        choices=ROW_MODES,
+        help=(
+            "How L_row selects rows: 'walk' uses non-backtracking teacher walks "
+            "(num_walks/walk_length apply); 'closure_u' and 'closure_m' promote the "
+            "teacher-selected pool columns to rows, weighted uniformly or by the "
+            "teacher mass the pool exposes, and take no walk arguments"
+        ),
+    )
     parser.add_argument("--num_walks", type=int, default=None)
     parser.add_argument("--walk_length", type=int, default=None)
     parser.add_argument("--row_weight", type=float, default=None)
@@ -205,6 +218,7 @@ def get_config(method: str, args):
     heatgeo_overrides = (
         "graph_k",
         "truncation_tolerance",
+        "row_mode",
         "num_walks",
         "walk_length",
         "row_weight",
@@ -222,6 +236,11 @@ def get_config(method: str, args):
         value = getattr(args, name)
         if value is not None:
             setattr(config, name, value)
+    # The loop above is plain setattr, so it bypasses HeatGeoConfig.__init__. Re-run
+    # the row-mode policy or `--row_mode closure_m` would leave num_walks at its
+    # config default and the sampler would keep drawing walks.
+    if hasattr(config, "resolve_row_mode"):
+        config.resolve_row_mode()
 
     # None already means "leave the config unchanged", so 0 disables the
     # entropic-affinity bandwidth and selects the fixed-bandwidth baseline.

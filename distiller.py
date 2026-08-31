@@ -130,18 +130,19 @@ def add_domain_averages(results: dict[str, Any]) -> dict[str, Any]:
 
     enriched = dict(results)
     enriched["avg_in"] = round(
-        100.0 * sum(scores[name] for name in IN_DOMAIN_BENCHMARKS)
+        100.0
+        * sum(scores[name] for name in IN_DOMAIN_BENCHMARKS)
         / len(IN_DOMAIN_BENCHMARKS),
         2,
     )
     enriched["avg_out"] = round(
-        100.0 * sum(scores[name] for name in OUT_DOMAIN_BENCHMARKS)
+        100.0
+        * sum(scores[name] for name in OUT_DOMAIN_BENCHMARKS)
         / len(OUT_DOMAIN_BENCHMARKS),
         2,
     )
     enriched["avg"] = round(
-        100.0 * sum(scores[name] for name in ALL_BENCHMARKS)
-        / len(ALL_BENCHMARKS),
+        100.0 * sum(scores[name] for name in ALL_BENCHMARKS) / len(ALL_BENCHMARKS),
         2,
     )
     return enriched
@@ -193,7 +194,9 @@ def grads_are_finite(optim) -> bool:
             if p.grad is None:
                 continue
             current = torch.isfinite(p.grad).all()
-            finite_status = current if finite_status is None else finite_status & current
+            finite_status = (
+                current if finite_status is None else finite_status & current
+            )
     return finite_status is None or bool(finite_status.item())
 
 
@@ -270,16 +273,20 @@ class KnowledgeDistiller:
             )
         elif config.distill_method == "heatgeo":
             # Multi-layer HeatGeo logic
-            if hasattr(config, "kd_teacher_layers") and hasattr(config, "kd_student_layers"):
+            if hasattr(config, "kd_teacher_layers") and hasattr(
+                config, "kd_student_layers"
+            ):
                 self.kd_student_layers = config.kd_student_layers
                 self.kd_teacher_layers = config.kd_teacher_layers
-                
+
                 # We expect the last layer pair to use Cosine Loss, and the rest to use HeatGeo.
                 self.num_heatgeo_layers = len(self.kd_student_layers) - 1
                 self.heatgeo_criterions = nn.ModuleList()
-                
-                print(f"Multi-layer HeatGeo: Using {self.num_heatgeo_layers} middle layers for HeatGeo, 1 final layer for Cosine.")
-                
+
+                print(
+                    f"Multi-layer HeatGeo: Using {self.num_heatgeo_layers} middle layers for HeatGeo, 1 final layer for Cosine."
+                )
+
                 for l_idx in range(self.num_heatgeo_layers):
                     # For each middle layer, initialize a HeatGeoDistillation
                     criterion = HeatGeoDistillation(
@@ -289,19 +296,22 @@ class KnowledgeDistiller:
                         teacher_embeddings=self.teacher_cls_all[:, l_idx, :],
                         direct_temp=config.direct_temp,
                         row_weight=config.row_weight,
-                        row_temps=getattr(self, "heatgeo_artifact", {}).get("row_temps"),
-                        transition_neighbors=getattr(
-                            self, "heatgeo_artifact", {}
-                        ).get("transition_neighbors"),
+                        row_mode=getattr(config, "row_mode", "walk"),
+                        row_temps=getattr(self, "heatgeo_artifact", {}).get(
+                            "row_temps"
+                        ),
+                        transition_neighbors=getattr(self, "heatgeo_artifact", {}).get(
+                            "transition_neighbors"
+                        ),
                         transition_probs=getattr(self, "heatgeo_artifact", {}).get(
                             "transition_probs"
                         ),
                     ).to(self.device_s)
                     self.heatgeo_criterions.append(criterion)
-                
+
                 self.cosine_criterion = nn.CosineEmbeddingLoss().to(self.device_s)
-                self.criterion = None # Managed separately
-                
+                self.criterion = None  # Managed separately
+
                 # Setup projection layer if needed before building scheduler
                 d_s = self.model_student.config.hidden_size
                 d_t = self.teacher_cls_all.shape[-1]
@@ -314,7 +324,7 @@ class KnowledgeDistiller:
                         }
                     )
                     print(f"Initialized HeatGeo projection layer: {d_s} -> {d_t}")
-                    
+
                 self.scheduler = self._build_scheduler()
             else:
                 self.criterion = HeatGeoDistillation(
@@ -324,6 +334,7 @@ class KnowledgeDistiller:
                     teacher_embeddings=self.teacher_cls_all,
                     direct_temp=config.direct_temp,
                     row_weight=config.row_weight,
+                    row_mode=getattr(config, "row_mode", "walk"),
                     row_temps=getattr(self, "heatgeo_artifact", {}).get("row_temps"),
                     transition_neighbors=getattr(self, "heatgeo_artifact", {}).get(
                         "transition_neighbors"
@@ -593,7 +604,9 @@ class KnowledgeDistiller:
             return np.zeros(len(df), dtype=np.int64)
         codes = pd.factorize(df[column].astype(str))[0].astype(np.int64)
         counts = pd.Series(codes).value_counts().to_dict()
-        print(f"HeatGeo sources: {len(counts)} distinct, sizes={sorted(counts.values(), reverse=True)}")
+        print(
+            f"HeatGeo sources: {len(counts)} distinct, sizes={sorted(counts.values(), reverse=True)}"
+        )
         return codes
 
     def setup_data(self):
@@ -711,7 +724,11 @@ class KnowledgeDistiller:
 
             if cfg.distill_method == "heatgeo":
                 # If teacher_cls_list is 3D [N, Num_Layers, Dim], use the final layer for the graph
-                teacher_embeddings_for_graph = teacher_cls_list[:, -1, :] if teacher_cls_list.ndim == 3 else teacher_cls_list
+                teacher_embeddings_for_graph = (
+                    teacher_cls_list[:, -1, :]
+                    if teacher_cls_list.ndim == 3
+                    else teacher_cls_list
+                )
 
                 self.heatgeo_artifact = build_or_load_heatgeo_artifact(
                     teacher_embeddings=teacher_embeddings_for_graph,
@@ -811,8 +828,7 @@ class KnowledgeDistiller:
         total_steps = len(self.train_loader) * cfg.epochs
         if cfg.distill_method == "rkd":
             milestones = [
-                int(epoch) * len(self.train_loader)
-                for epoch in cfg.rkd_lr_decay_epochs
+                int(epoch) * len(self.train_loader) for epoch in cfg.rkd_lr_decay_epochs
             ]
             return optim.lr_scheduler.MultiStepLR(
                 self.optimizer,
@@ -946,18 +962,25 @@ class KnowledgeDistiller:
                     input_ids=batch_s["input_ids1_stu"],
                     attention_mask=batch_s["attention_mask1_stu"],
                     return_dict=True,
-                    output_hidden_states=True if hasattr(self, "kd_student_layers") else False,
+                    output_hidden_states=True
+                    if hasattr(self, "kd_student_layers")
+                    else False,
                 )
-                
+
                 # Check curriculum for SimCSE
-                run_simcse = (getattr(cfg, "lambda_simcse", 0) > 0) and (getattr(self, "current_epoch", 0) >= getattr(cfg, "simcse_start_epoch", 2))
-                
+                run_simcse = (getattr(cfg, "lambda_simcse", 0) > 0) and (
+                    getattr(self, "current_epoch", 0)
+                    >= getattr(cfg, "simcse_start_epoch", 2)
+                )
+
                 if run_simcse:
                     s_out2 = self.model_student(
                         input_ids=batch_s["input_ids1_stu"],
                         attention_mask=batch_s["attention_mask1_stu"],
                         return_dict=True,
-                        output_hidden_states=True if hasattr(self, "kd_student_layers") else False,
+                        output_hidden_states=True
+                        if hasattr(self, "kd_student_layers")
+                        else False,
                     )
 
                 # Candidates arrive deduplicated and grouped by length, so each chunk
@@ -965,12 +988,12 @@ class KnowledgeDistiller:
                 # encoded rows back to the flat [batch_size * candidate_size] layout
                 # the criterion expects; the gather is differentiable, so a candidate
                 # shared by several anchors accumulates all of their gradient.
-                
+
                 if hasattr(self, "kd_student_layers"):
                     chunk_embeddings_list = [[] for _ in range(self.num_heatgeo_layers)]
                 else:
                     chunk_embeddings_single = []
-                    
+
                 for chunk in batch["candidate_chunks"]:
                     chunk_out = self.model_student(
                         input_ids=chunk["input_ids"].to(
@@ -980,29 +1003,43 @@ class KnowledgeDistiller:
                             self.device_s, non_blocking=True
                         ),
                         return_dict=True,
-                        output_hidden_states=True if hasattr(self, "kd_student_layers") else False,
+                        output_hidden_states=True
+                        if hasattr(self, "kd_student_layers")
+                        else False,
                     )
-                    
+
                     if hasattr(self, "kd_student_layers"):
                         for l_idx in range(self.num_heatgeo_layers):
                             s_layer = self.kd_student_layers[l_idx]
-                            idx = s_layer if s_layer < len(chunk_out.hidden_states) else len(chunk_out.hidden_states) - 1
+                            idx = (
+                                s_layer
+                                if s_layer < len(chunk_out.hidden_states)
+                                else len(chunk_out.hidden_states) - 1
+                            )
                             idx = idx if idx >= -len(chunk_out.hidden_states) else 0
-                            chunk_embeddings_list[l_idx].append(chunk_out.hidden_states[idx][:, 0, :])
+                            chunk_embeddings_list[l_idx].append(
+                                chunk_out.hidden_states[idx][:, 0, :]
+                            )
                     else:
-                        chunk_embeddings_single.append(chunk_out.last_hidden_state[:, 0, :])
+                        chunk_embeddings_single.append(
+                            chunk_out.last_hidden_state[:, 0, :]
+                        )
 
                 if hasattr(self, "kd_student_layers"):
                     total_loss = 0.0
                     for l_idx, criterion in enumerate(self.heatgeo_criterions):
                         s_layer = self.kd_student_layers[l_idx]
-                        idx = s_layer if s_layer < len(s_out1.hidden_states) else len(s_out1.hidden_states) - 1
+                        idx = (
+                            s_layer
+                            if s_layer < len(s_out1.hidden_states)
+                            else len(s_out1.hidden_states) - 1
+                        )
                         idx = idx if idx >= -len(s_out1.hidden_states) else 0
                         S_cls1 = s_out1.hidden_states[idx][:, 0, :]
-                        S_candidates = torch.cat(chunk_embeddings_list[l_idx], dim=0).index_select(
-                            0, batch_s["candidate_inverse"]
-                        )
-                        
+                        S_candidates = torch.cat(
+                            chunk_embeddings_list[l_idx], dim=0
+                        ).index_select(0, batch_s["candidate_inverse"])
+
                         heat_loss, metrics = criterion(
                             anchor_embeddings=S_cls1,
                             candidate_embeddings=S_candidates,
@@ -1012,30 +1049,44 @@ class KnowledgeDistiller:
                             row_paths=batch_s.get("row_paths"),
                         )
                         total_loss += heat_loss * getattr(cfg, "lambda_heatgeo", 1.0)
-                        
+
                     # Cosine loss for final layer
                     s_layer_final = self.kd_student_layers[-1]
                     # Get teacher embeddings from the cached tensor using the batch indices (must be on CPU)
-                    T_cls1_final = self.teacher_cls_all[batch["idx"], -1, :].to(self.device_s, non_blocking=True)
-                    idx = s_layer_final if s_layer_final < len(s_out1.hidden_states) else len(s_out1.hidden_states) - 1
+                    T_cls1_final = self.teacher_cls_all[batch["idx"], -1, :].to(
+                        self.device_s, non_blocking=True
+                    )
+                    idx = (
+                        s_layer_final
+                        if s_layer_final < len(s_out1.hidden_states)
+                        else len(s_out1.hidden_states) - 1
+                    )
                     idx = idx if idx >= -len(s_out1.hidden_states) else 0
                     S_cls1_final = s_out1.hidden_states[idx][:, 0, :]
-                    
+
                     if getattr(cfg, "lambda_cosine", 0) > 0:
                         if self.proj_s2t is not None:
                             S_cls1_final_proj = self.proj_s2t(S_cls1_final)
                         else:
                             S_cls1_final_proj = S_cls1_final
-                        target = torch.ones(S_cls1_final_proj.size(0), device=self.device_s)
-                        cosine_loss = self.cosine_criterion(S_cls1_final_proj, T_cls1_final, target)
+                        target = torch.ones(
+                            S_cls1_final_proj.size(0), device=self.device_s
+                        )
+                        cosine_loss = self.cosine_criterion(
+                            S_cls1_final_proj, T_cls1_final, target
+                        )
                         total_loss += cosine_loss * cfg.lambda_cosine
                         metrics["loss_cosine"] = cosine_loss.item()
-                        
+
                     if run_simcse:
-                        idx = s_layer_final if s_layer_final < len(s_out2.hidden_states) else len(s_out2.hidden_states) - 1
+                        idx = (
+                            s_layer_final
+                            if s_layer_final < len(s_out2.hidden_states)
+                            else len(s_out2.hidden_states) - 1
+                        )
                         idx = idx if idx >= -len(s_out2.hidden_states) else 0
                         S_cls2_final = s_out2.hidden_states[idx][:, 0, :]
-                        
+
                         if self.proj_s2t is not None:
                             S_cls2_final_proj = self.proj_s2t(S_cls2_final)
                             # SimCSE needs S_cls1_final_proj as well
@@ -1043,39 +1094,47 @@ class KnowledgeDistiller:
                         else:
                             S_cls2_final_proj = S_cls2_final
                             S_cls1_final_proj = S_cls1_final
-                            
+
                         # SimCSE InfoNCE
                         S1 = F.normalize(S_cls1_final_proj, p=2, dim=-1)
                         S2 = F.normalize(S_cls2_final_proj, p=2, dim=-1)
-                        
-                        sim_matrix = torch.matmul(S1, S2.t()) / getattr(cfg, "simcse_temp", 0.05)
+
+                        sim_matrix = torch.matmul(S1, S2.t()) / getattr(
+                            cfg, "simcse_temp", 0.05
+                        )
                         labels = torch.arange(S1.size(0), device=S1.device)
                         simcse_loss = F.cross_entropy(sim_matrix, labels)
-                        
+
                         total_loss += simcse_loss * cfg.lambda_simcse
                         metrics["loss_simcse"] = simcse_loss.item()
-                        
+
                     if getattr(cfg, "lambda_infonce", 0) > 0:
                         if self.proj_s2t is not None:
                             S_cls1_final_proj = self.proj_s2t(S_cls1_final)
                         else:
                             S_cls1_final_proj = S_cls1_final
-                        infonce_loss, _ = info_nce(S_cls1_final_proj, T_cls1_final, temperature=getattr(cfg, "student_temp", 0.07))
+                        infonce_loss, _ = info_nce(
+                            S_cls1_final_proj,
+                            T_cls1_final,
+                            temperature=getattr(cfg, "student_temp", 0.07),
+                        )
                         total_loss += infonce_loss * cfg.lambda_infonce
                         metrics["loss_infonce"] = infonce_loss.item()
-                        
+
                     if getattr(cfg, "lambda_sim", 0) > 0:
                         # Similarity loss doesn't need projection since it compares inner (BxB) similarity matrices!
-                        sim_loss = pair_inbatch_similarity_loss(S_cls1_final, T_cls1_final)
+                        sim_loss = pair_inbatch_similarity_loss(
+                            S_cls1_final, T_cls1_final
+                        )
                         total_loss += sim_loss * cfg.lambda_sim
                         metrics["loss_sim"] = sim_loss.item()
-                    
+
                     loss = total_loss.float()
                 else:
                     S_cls1 = s_out1.last_hidden_state[:, 0, :]
-                    S_candidates = torch.cat(chunk_embeddings_single, dim=0).index_select(
-                        0, batch_s["candidate_inverse"]
-                    )
+                    S_candidates = torch.cat(
+                        chunk_embeddings_single, dim=0
+                    ).index_select(0, batch_s["candidate_inverse"])
 
                     loss, metrics = self.criterion(
                         anchor_embeddings=S_cls1,
@@ -1801,7 +1860,9 @@ class KnowledgeDistiller:
 
         print(f"Done train_epoch {epoch + 1}")
         self.log_step_records(step_records)
-        epoch_means = {key: value / max(1, n_items) for key, value in metric_totals.items()}
+        epoch_means = {
+            key: value / max(1, n_items) for key, value in metric_totals.items()
+        }
 
         # The progress bar shows the *last* step's diagnostics, and the last batch is
         # usually a short remainder -- with 13553 items and batch 16 it holds a single
@@ -1809,11 +1870,24 @@ class KnowledgeDistiller:
         # have nothing to do with training. Print the example-weighted epoch means.
         if epoch_means:
             headline = [
-                "loss_rel", "loss_amb", "loss_nbr", "loss_diff",
-                "loss_row_weighted", "row_count", "row_valid_ratio",
-                "row_node_hit_ratio", "js_floor", "loss_excess",
-                "target_entropy", "student_entropy", "student_entropy_ratio",
-                "student_top1", "target_top1", "candidates_per_anchor",
+                "loss_rel",
+                "loss_amb",
+                "loss_nbr",
+                "loss_diff",
+                "loss_row_weighted",
+                "row_count",
+                "row_eff_count",
+                "row_exposed_mass",
+                "row_valid_ratio",
+                "row_node_hit_ratio",
+                "js_floor",
+                "loss_excess",
+                "target_entropy",
+                "student_entropy",
+                "student_entropy_ratio",
+                "student_top1",
+                "target_top1",
+                "candidates_per_anchor",
             ]
             shown = [k for k in headline if k in epoch_means]
             semantic_kls = ("kl_amb", "kl_nbr")
@@ -2223,9 +2297,14 @@ class KnowledgeDistiller:
             for epoch in range(cfg.epochs):
                 self.current_epoch = epoch
 
+                row_mode = getattr(cfg, "row_mode", "walk")
+                # Only the walk mode needs walks to have been drawn; the closure
+                # modes read their rows off the shared pool, and cfg.num_walks is 0
+                # for them by construction.
+                row_source_ready = row_mode != "walk" or cfg.num_walks > 0
                 use_row = (
                     cfg.distill_method == "heatgeo"
-                    and cfg.num_walks > 0
+                    and row_source_ready
                     and cfg.row_weight > 0
                     and epoch + 1 >= cfg.row_start_epoch
                 )
@@ -2237,8 +2316,8 @@ class KnowledgeDistiller:
                 ):
                     self.criterion.use_row_loss = use_row
                 if use_row:
-                    print(f"L_row is ENABLED for Epoch {epoch + 1}")
-                
+                    print(f"L_row is ENABLED for Epoch {epoch + 1} (mode={row_mode})")
+
                 avg_loss = self.train_epoch(epoch)
                 validation_results = None
 
@@ -2269,9 +2348,7 @@ class KnowledgeDistiller:
                     }
                 )
 
-                final_weights_only = bool(
-                    getattr(cfg, "final_weights_only", False)
-                )
+                final_weights_only = bool(getattr(cfg, "final_weights_only", False))
                 should_save_final_weights = (
                     final_weights_only and epoch + 1 == cfg.epochs
                 )

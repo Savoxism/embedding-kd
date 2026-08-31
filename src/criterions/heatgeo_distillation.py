@@ -121,16 +121,41 @@ class HeatGeoDistillation(nn.Module):
     carry trainable parameters, and a knob that cannot work is worse than no knob.
 
     **Row supervision.** Diffusion KL supervises only rows indexed by batch anchors.
-    Non-backtracking teacher walks select additional nodes whose embeddings are
-    already present in the shared candidate pool. At every visited node j, L_row
-    matches the teacher's one-step transition row on the available teacher-neighbour
-    columns:
+    L_row adds rows centred on *non-anchor* nodes whose embeddings are already in the
+    shared candidate pool, matching the teacher's one-step transition row on the
+    teacher-neighbour columns the pool happens to expose:
 
-        L_row = E_{j ~ nu} KL(P^T_j|Omega_j || p^S_j|Omega_j).
+        L_row = sum_j nu_B(j) KL(P^T_j|Omega_j || p^S_j|Omega_j),
+        Omega_j = (teacher neighbours of j) ∩ (shared pool),
 
-    Visit counts define the occupancy measure nu. The dense transition row is used
-    instead of a sampled successor, so this is row-kernel matching rather than a
-    trajectory likelihood. Each row uses its own stored graph bandwidth.
+    with the dense transition row as target rather than a sampled successor, so this
+    is row-kernel matching and not a trajectory likelihood. Each row uses its own
+    stored graph bandwidth. Rows with fewer than two available columns are dropped:
+    a KL on a singleton support is identically zero.
+
+    ``row_mode`` chooses which nodes become rows and how nu_B weights them:
+
+    * ``"walk"``: non-backtracking teacher walks from each anchor select the nodes,
+      and nu_B is their normalized visit count. The walk is used only to *discover*
+      rows -- the trajectory is never a target -- which is why it costs two
+      hyperparameters (num_walks, walk_length) that do not appear in the objective.
+    * ``"closure_u"``: every pool column that some anchor's candidate draw selected
+      for its *teacher mass* (i.e. the diffusion support, not the hard or uniform
+      negatives) is promoted to a row, weighted uniformly. Batch anchors are excluded:
+      their transition row is already the r=1 diffusion target of L_rel. Nothing is
+      discovered stochastically -- the rows are exactly the columns L_rel already
+      paid to encode -- so both walk hyperparameters disappear.
+    * ``"closure_m"``: the same rows, weighted by the teacher mass the pool actually
+      exposes for each of them, m_B(j) = P^T_j(Omega_j). This is the quantity the
+      restricted-KL target is normalized by, so it says how much of row j's teacher
+      geometry this update can actually see; a row whose support carries 8% of its
+      mass is a badly conditioned target and is weighted accordingly. Visit counts
+      carry no such information: two nodes visited once each get equal weight
+      whether the pool exposes 85% or 8% of their neighbourhood.
+
+    The closure modes are not free of stochasticity -- candidate selection is still a
+    sampling procedure -- but they add no traversal process of their own, and their
+    row set is a deterministic function of the pool.
 
     **Temperature ties.** The temperatures are not free parameters and are
     therefore not constructor arguments:
@@ -169,6 +194,8 @@ class HeatGeoDistillation(nn.Module):
 
     Passing removed or derived knobs raises rather than being silently absorbed.
     """
+
+    _ROW_MODES = ("walk", "closure_u", "closure_m")
 
     _TIED_KNOBS = {
         "scale_weights": "derived from diffusion_scales by omega_r = 1/r",
@@ -209,6 +236,7 @@ class HeatGeoDistillation(nn.Module):
         transition_probs: torch.Tensor | None = None,
         row_weight: float = 0.5,
         row_temps: torch.Tensor | None = None,
+        row_mode: str = "walk",
         **kwargs,
     ):
         super().__init__()
@@ -241,6 +269,11 @@ class HeatGeoDistillation(nn.Module):
         if row_weight < 0.0:
             raise ValueError("row_weight must be non-negative")
         self.row_weight = float(row_weight)
+        if row_mode not in self._ROW_MODES:
+            raise ValueError(
+                f"row_mode must be one of {self._ROW_MODES}, got {row_mode!r}"
+            )
+        self.row_mode = str(row_mode)
         self.use_row_loss = False
         if transition_neighbors is not None and transition_probs is not None:
             self.register_buffer(
@@ -252,6 +285,17 @@ class HeatGeoDistillation(nn.Module):
         else:
             self.row_neighbors = None
             self.row_probs = None
+            # Under "walk" the sampler raises for a stale artifact when it tries to
+            # draw, so the missing graph is always reported. The closure modes never
+            # touch the sampler, so nothing else would notice: L_row would sit at
+            # exactly 0 for the whole run and look like a term that simply did not
+            # help. Fail here instead.
+            if self.row_mode != "walk" and self.row_weight > 0.0:
+                raise ValueError(
+                    f"row_mode={self.row_mode!r} needs the graph transition arrays; "
+                    "rebuild the HeatGeo artifact (missing: transition_neighbors, "
+                    "transition_probs)"
+                )
         self._warned_row_needs_sharing = False
 
         self.use_direct = teacher_embeddings is not None
@@ -407,13 +451,65 @@ class HeatGeoDistillation(nn.Module):
         logits = logits.masked_fill(self_mask, float("-inf"))
         return F.softmax(logits, dim=-1)
 
+    def _walk_sources(
+        self, row_paths: torch.Tensor, column_idx: torch.Tensor, pool_size: int
+    ) -> tuple[torch.Tensor, torch.Tensor, int, torch.Tensor] | None:
+        """Rows discovered by the teacher walks, weighted by visit count.
+
+        A walk step can land on a node that is not in the shared pool -- its
+        embedding was never computed, so the row cannot be scored. Those visits are
+        dropped here and reported as ``row_node_hit_ratio``.
+        """
+        visited = row_paths[..., 1:].reshape(-1)
+        considered = max(int(visited.numel()), 1)
+        visited = visited[visited >= 0]
+        if visited.numel() == 0:
+            return None
+
+        nodes, counts = torch.unique(visited, return_counts=True)
+        positions = torch.searchsorted(column_idx, nodes).clamp_max(pool_size - 1)
+        in_pool = column_idx[positions] == nodes
+        positions = positions[in_pool]
+        counts = counts[in_pool]
+        if positions.numel() == 0:
+            return None
+        return positions, counts.float(), considered, counts.sum()
+
+    def _closure_sources(
+        self, selected_columns: torch.Tensor, anchor_columns: torch.Tensor
+    ) -> tuple[torch.Tensor, torch.Tensor, int, torch.Tensor] | None:
+        """Pool columns the teacher selected, promoted to rows.
+
+        ``selected_columns`` marks the columns carrying diffusion mass for some
+        anchor -- the teacher-chosen part of the draw, excluding hard and uniform
+        negatives, which were chosen for reasons that say nothing about their own
+        neighbourhood. Batch anchors are removed because L_rel already supervises
+        their transition row as its r=1 target.
+
+        Every returned row is in the pool by construction, so unlike the walk path
+        there is nothing to miss: the hit ratio is 1 and the selection weight is
+        uniform. ``closure_m`` replaces that uniform weight with exposed mass in
+        ``_compute_row_loss``; keeping the two apart is what makes the U/M pair an
+        ablation of the *weight* alone.
+        """
+        eligible = selected_columns & ~anchor_columns
+        positions = eligible.nonzero(as_tuple=True)[0]
+        if positions.numel() == 0:
+            return None
+        weights = torch.ones(
+            positions.numel(), dtype=torch.float32, device=positions.device
+        )
+        return positions, weights, positions.numel(), weights.sum()
+
     def _compute_row_loss(
         self,
-        row_paths: torch.Tensor,
         pool_norm: torch.Tensor,
         column_idx: torch.Tensor,
+        row_paths: torch.Tensor | None = None,
+        selected_columns: torch.Tensor | None = None,
+        anchor_columns: torch.Tensor | None = None,
     ) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
-        """Match transition rows at non-anchor nodes selected by teacher walks."""
+        """Match transition rows at non-anchor nodes present in the shared pool."""
         zero = pool_norm.new_zeros(())
         empty_metrics = {
             "row_teacher_entropy": zero,
@@ -421,28 +517,25 @@ class HeatGeoDistillation(nn.Module):
             "row_count": zero,
             "row_valid_ratio": zero,
             "row_node_hit_ratio": zero,
+            "row_exposed_mass": zero,
+            "row_eff_count": zero,
         }
         if self.row_neighbors is None or self.row_probs is None:
             return zero, empty_metrics
 
-        visited = row_paths[..., 1:].reshape(-1)
-        total_visits = max(int(visited.numel()), 1)
-        visited = visited[visited >= 0]
-        if visited.numel() == 0:
-            return zero, empty_metrics
-
-        source_nodes, source_counts = torch.unique(visited, return_counts=True)
         pool_size = int(pool_norm.size(0))
-        source_positions = torch.searchsorted(column_idx, source_nodes).clamp_max(
-            pool_size - 1
-        )
-        in_pool = column_idx[source_positions] == source_nodes
-        source_nodes = source_nodes[in_pool]
-        source_positions = source_positions[in_pool]
-        source_counts = source_counts[in_pool]
-        if source_nodes.numel() == 0:
+        if self.row_mode == "walk":
+            if row_paths is None:
+                return zero, empty_metrics
+            sources = self._walk_sources(row_paths, column_idx, pool_size)
+        else:
+            if selected_columns is None or anchor_columns is None:
+                return zero, empty_metrics
+            sources = self._closure_sources(selected_columns, anchor_columns)
+        if sources is None:
             return zero, empty_metrics
-        visits_in_pool = source_counts.sum()
+        source_positions, select_weights, considered, reached = sources
+        source_nodes = column_idx.index_select(0, source_positions)
 
         neighbors = self.row_neighbors.index_select(0, source_nodes).long()
         teacher_probs = self.row_probs.index_select(0, source_nodes).float()
@@ -463,23 +556,29 @@ class HeatGeoDistillation(nn.Module):
             neighbor_positions,
             torch.where(keep, teacher_probs, torch.zeros_like(teacher_probs)),
         )
+        # m_B(j) = P^T_j(Omega_j): how much of row j's teacher transition mass this
+        # pool actually exposes. Taken before the renormalization below, which is
+        # exactly the step that destroys it -- afterwards every row sums to 1 whether
+        # it was built from 85% of the teacher's mass or 8%.
+        exposed_mass = target.sum(dim=1)
         allowed = target > 0
         live_columns = allowed.sum(dim=1)
         usable = live_columns >= 2
         if not bool(usable.any()):
-            empty_metrics["row_node_hit_ratio"] = (
-                visits_in_pool.float() / total_visits
-            )
+            empty_metrics["row_node_hit_ratio"] = reached.float() / considered
             return zero, empty_metrics
 
         target = target[usable]
         allowed = allowed[usable]
         source_positions = source_positions[usable]
-        visit_weights = source_counts[usable].float()
+        source_nodes = source_nodes[usable]
+        select_weights = select_weights[usable]
+        exposed_mass = exposed_mass[usable]
+        row_weights = exposed_mass if self.row_mode == "closure_m" else select_weights
         target = target / target.sum(dim=1, keepdim=True).clamp_min(1e-12)
 
         if self.row_temps is not None:
-            row_tau = self.row_temps.index_select(0, source_nodes[usable]).view(-1, 1)
+            row_tau = self.row_temps.index_select(0, source_nodes).view(-1, 1)
         else:
             row_tau = self.graph_temp
         logits = (pool_norm.index_select(0, source_positions) @ pool_norm.t()) / row_tau
@@ -493,16 +592,26 @@ class HeatGeoDistillation(nn.Module):
             target * (log_target - log_probs),
             torch.zeros_like(target),
         ).sum(dim=1)
-        visit_weights = visit_weights / visit_weights.sum().clamp_min(1e-12)
-        loss_row = (row_kl * visit_weights).sum()
+        nu = row_weights / row_weights.sum().clamp_min(1e-12)
+        loss_row = (row_kl * nu).sum()
 
         row_entropy = -(target * log_target).sum(dim=1)
         metrics = {
-            "row_teacher_entropy": (row_entropy * visit_weights).sum(),
+            "row_teacher_entropy": (row_entropy * nu).sum(),
             "row_eff_denom": live_columns[usable].float().mean(),
             "row_count": usable.sum().float(),
-            "row_valid_ratio": source_counts[usable].sum().float() / total_visits,
-            "row_node_hit_ratio": visits_in_pool.float() / total_visits,
+            "row_valid_ratio": select_weights.sum() / considered,
+            "row_node_hit_ratio": reached.float() / considered,
+            # Mean exposed teacher mass *as the loss sees it*. Under closure_m this
+            # is the mass-weighted mean and sits above the closure_u value by
+            # construction; the gap is how hard the weighting is concentrating.
+            "row_exposed_mass": (exposed_mass * nu).sum(),
+            # 1 / sum(nu^2): how many rows the weighting effectively supervises. It
+            # equals row_count under closure_u and drops under closure_m whenever
+            # exposed mass is concentrated on a few rows, which is the failure mode
+            # to watch -- mass weighting favours rows deep inside some anchor's
+            # neighbourhood, where the supervision most nearly duplicates L_rel.
+            "row_eff_count": 1.0 / nu.pow(2).sum().clamp_min(1e-12),
         }
         return loss_row, metrics
 
@@ -558,6 +667,14 @@ class HeatGeoDistillation(nn.Module):
             similarity = anchor_norm @ pool_norm.t()
             target = target.masked_fill(self_mask.unsqueeze(1), 0.0)
             target = target / target.sum(dim=-1, keepdim=True).clamp_min(1e-12)
+            # The row set for the closure modes, read off the diffusion target while
+            # it still *is* the diffusion target -- the ambient scale is concatenated
+            # below and is dense over the whole pool, so after that point every column
+            # would look selected. A column is teacher-selected if some anchor's draw
+            # gave it positive diffusion mass; hard and uniform negatives do not
+            # qualify. Anchors are tracked separately so they can be excluded.
+            selected_columns = target.sum(dim=1).sum(dim=0) > 0
+            anchor_columns = self_mask.any(dim=0)
         else:
             similarity = similarity_own
             target = teacher_probs
@@ -664,19 +781,26 @@ class HeatGeoDistillation(nn.Module):
                 multi_hop_weights.sum().clamp_min(1e-12)
             )
             loss_diff = (
-                multi_hop_kl * normalized_multi_hop_weights.view(1, -1)
-            ).sum(dim=-1).mean()
+                (multi_hop_kl * normalized_multi_hop_weights.view(1, -1))
+                .sum(dim=-1)
+                .mean()
+            )
         else:
             loss_diff = zero
 
         loss_row = anchor_embeddings.new_zeros(())
         row_metrics: dict[str, torch.Tensor] = {}
-        if self.use_row_loss and row_paths is not None:
+        # The closure modes need no walk input at all: their rows are a function of
+        # the pool, which is why they carry no num_walks / walk_length.
+        row_input_ready = self.row_mode != "walk" or row_paths is not None
+        if self.use_row_loss and row_input_ready:
             if share:
                 loss_row, row_metrics = self._compute_row_loss(
-                    row_paths=row_paths,
                     pool_norm=pool_norm,
                     column_idx=column_idx,
+                    row_paths=row_paths,
+                    selected_columns=selected_columns,
+                    anchor_columns=anchor_columns,
                 )
             elif not self._warned_row_needs_sharing:
                 self._warned_row_needs_sharing = True
@@ -818,6 +942,8 @@ class HeatGeoDistillation(nn.Module):
             row_metrics.get("row_count", row_zero).detach(),
             row_metrics.get("row_valid_ratio", row_zero).detach(),
             row_metrics.get("row_node_hit_ratio", row_zero).detach(),
+            row_metrics.get("row_exposed_mass", row_zero).detach(),
+            row_metrics.get("row_eff_count", row_zero).detach(),
             js_floor.mean(),
             (loss_rel - js_floor.mean()).detach(),
             (loss_rel + weighted_entropy.mean()).detach(),
@@ -845,6 +971,8 @@ class HeatGeoDistillation(nn.Module):
             "row_count",
             "row_valid_ratio",
             "row_node_hit_ratio",
+            "row_exposed_mass",
+            "row_eff_count",
             "js_floor",
             "loss_excess",
             "loss_cross_entropy",

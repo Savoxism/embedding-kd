@@ -9,7 +9,7 @@ from .talas_config import (
     TALASConfig,
     get_talas_paper_pair,
 )
-from .heatgeo_config import HeatGeoConfig
+from .heatgeo_config import ROW_MODES, HeatGeoConfig
 from .rkd_config import RKDConfig
 
 __all__ = [
@@ -23,5 +23,6 @@ __all__ = [
     'TALAS_PAPER_PAIRS',
     'get_talas_paper_pair',
     'HeatGeoConfig',
+    'ROW_MODES',
     'RKDConfig'
 ]

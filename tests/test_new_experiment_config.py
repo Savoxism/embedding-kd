@@ -353,6 +353,255 @@ def test_row_loss_matches_transition_kernel_and_backpropagates():
     assert pool.grad is not None and torch.isfinite(pool.grad).all()
 
 
+def _closure_graph() -> dict:
+    """Five nodes, three teacher neighbours each; node 4 is kept out of the pool.
+
+    Node 2 is the only row whose neighbourhood is partly unexposed (its 0.25 on
+    node 4 is unreachable), so it is the row that separates uniform weighting from
+    mass weighting.
+    """
+    return {
+        "transition_neighbors": torch.tensor(
+            [[1, 2, 3], [0, 2, 3], [0, 1, 4], [0, 1, 2], [2, 3, 0]],
+            dtype=torch.long,
+        ),
+        "transition_probs": torch.tensor(
+            [
+                [0.5, 0.3, 0.2],
+                [0.6, 0.3, 0.1],
+                [0.5, 0.25, 0.25],
+                [0.4, 0.4, 0.2],
+                [0.7, 0.2, 0.1],
+            ],
+            dtype=torch.float32,
+        ),
+    }
+
+
+def _closure_criterion(row_mode: str) -> HeatGeoDistillation:
+    graph = _closure_graph()
+    return HeatGeoDistillation(
+        student_dim=3,
+        teacher_dim=3,
+        transition_neighbors=graph["transition_neighbors"],
+        transition_probs=graph["transition_probs"],
+        row_temps=torch.full((5,), 0.2),
+        row_weight=1.0,
+        row_mode=row_mode,
+    )
+
+
+def _expected_closure_rows(pool: torch.Tensor) -> dict[int, torch.Tensor]:
+    """KL of each promoted row, computed directly from the graph above."""
+    graph = _closure_graph()
+    expected = {}
+    for node, support in ((1, [0, 2, 3]), (2, [0, 1]), (3, [0, 1, 2])):
+        neighbors = graph["transition_neighbors"][node].tolist()
+        probs = graph["transition_probs"][node]
+        mass = torch.tensor([probs[neighbors.index(v)] for v in support])
+        target = mass / mass.sum()
+        logits = torch.stack([pool[node] @ pool[v] for v in support]) / 0.2
+        expected[node] = (target * (target.log() - logits.log_softmax(dim=0))).sum()
+    return expected
+
+
+def test_closure_promotes_teacher_selected_columns_and_skips_anchors():
+    torch.manual_seed(0)
+    pool = F.normalize(torch.randn(4, 3), dim=-1)
+    column_idx = torch.arange(4)
+    # Node 0 is the batch anchor: L_rel already matches its transition row as the
+    # r=1 target, so promoting it again would duplicate that term.
+    anchor_columns = torch.tensor([True, False, False, False])
+    selected_columns = torch.ones(4, dtype=torch.bool)
+
+    loss_u, metrics_u = _closure_criterion("closure_u")._compute_row_loss(
+        pool_norm=pool,
+        column_idx=column_idx,
+        selected_columns=selected_columns,
+        anchor_columns=anchor_columns,
+    )
+
+    rows = _expected_closure_rows(pool)
+    expected_u = sum(rows.values()) / 3
+    assert loss_u.item() == pytest.approx(expected_u.item(), rel=1e-5)
+    assert metrics_u["row_count"].item() == 3.0
+    # Every promoted row is in the pool by construction, unlike a walk step.
+    assert metrics_u["row_node_hit_ratio"].item() == pytest.approx(1.0)
+    # Uniform weights supervise exactly as many rows as there are.
+    assert metrics_u["row_eff_count"].item() == pytest.approx(3.0, rel=1e-5)
+    assert metrics_u["row_exposed_mass"].item() == pytest.approx(
+        (1.0 + 0.75 + 1.0) / 3, rel=1e-5
+    )
+
+
+def test_closure_mass_weights_rows_by_exposed_teacher_mass():
+    torch.manual_seed(0)
+    pool = F.normalize(torch.randn(4, 3), dim=-1)
+    loss_m, metrics_m = _closure_criterion("closure_m")._compute_row_loss(
+        pool_norm=pool,
+        column_idx=torch.arange(4),
+        selected_columns=torch.ones(4, dtype=torch.bool),
+        anchor_columns=torch.tensor([True, False, False, False]),
+    )
+
+    rows = _expected_closure_rows(pool)
+    # Row 2 loses the 0.25 sitting on the out-of-pool node 4, so it is the one row
+    # down-weighted; rows 1 and 3 are fully exposed.
+    mass = {1: 1.0, 2: 0.75, 3: 1.0}
+    total = sum(mass.values())
+    expected_m = sum(mass[node] * rows[node] for node in rows) / total
+    assert loss_m.item() == pytest.approx(expected_m.item(), rel=1e-5)
+    assert metrics_m["row_count"].item() == 3.0
+    assert metrics_m["row_exposed_mass"].item() == pytest.approx(
+        (1.0 + 0.75**2 + 1.0) / total, rel=1e-5
+    )
+    # Concentration: mass weighting supervises fewer than 3 effective rows.
+    assert metrics_m["row_eff_count"].item() < 3.0
+
+    # The U/M pair must differ only in the weight, so the row sets agree.
+    _, metrics_u = _closure_criterion("closure_u")._compute_row_loss(
+        pool_norm=pool,
+        column_idx=torch.arange(4),
+        selected_columns=torch.ones(4, dtype=torch.bool),
+        anchor_columns=torch.tensor([True, False, False, False]),
+    )
+    assert metrics_u["row_count"].item() == metrics_m["row_count"].item()
+    assert loss_m.item() != pytest.approx(0.0, abs=1e-8)
+
+
+def test_closure_ignores_columns_without_teacher_mass():
+    """Hard and uniform negatives are columns, not teacher-selected relations."""
+    torch.manual_seed(0)
+    pool = F.normalize(torch.randn(4, 3), dim=-1)
+    # Node 3 is in the pool as a negative: it carries no diffusion mass for anyone.
+    selected_columns = torch.tensor([True, True, True, False])
+    loss, metrics = _closure_criterion("closure_u")._compute_row_loss(
+        pool_norm=pool,
+        column_idx=torch.arange(4),
+        selected_columns=selected_columns,
+        anchor_columns=torch.tensor([True, False, False, False]),
+    )
+
+    rows = _expected_closure_rows(pool)
+    expected = (rows[1] + rows[2]) / 2
+    assert metrics["row_count"].item() == 2.0
+    assert loss.item() == pytest.approx(expected.item(), rel=1e-5)
+
+
+def test_closure_forward_needs_no_walk_paths_and_backpropagates():
+    torch.manual_seed(0)
+    graph = _closure_graph()
+    criterion = HeatGeoDistillation(
+        student_dim=3,
+        teacher_dim=3,
+        diffusion_scales=(1,),
+        transition_neighbors=graph["transition_neighbors"],
+        transition_probs=graph["transition_probs"],
+        row_temps=torch.full((5,), 0.2),
+        row_weight=1.0,
+        row_mode="closure_m",
+    )
+    criterion.use_row_loss = True
+
+    anchor_idx = torch.tensor([0, 4])
+    candidate_idx = torch.tensor([[1, 2, 3], [2, 3, 1]])
+    anchors = torch.randn(2, 3, requires_grad=True)
+    candidates = torch.randn(2, 3, 3, requires_grad=True)
+    teacher_probs = torch.tensor(
+        [[[0.5, 0.3, 0.2]], [[0.7, 0.2, 0.1]]], dtype=torch.float32
+    )
+
+    loss, metrics = criterion(
+        anchor_embeddings=anchors,
+        candidate_embeddings=candidates,
+        teacher_probs=teacher_probs,
+        candidate_idx=candidate_idx,
+        anchor_idx=anchor_idx,
+        row_paths=None,
+    )
+
+    assert metrics["loss_row"] > 0.0
+    assert metrics["row_count"] > 0.0
+    loss.backward()
+    assert torch.isfinite(anchors.grad).all()
+    assert torch.isfinite(candidates.grad).all()
+
+
+def test_closure_runs_on_the_zero_walk_sampler_output():
+    """The dataloader path: num_walks=0 still emits a row_paths placeholder."""
+    artifact = _row_artifact()
+    sampler = HeatGeoCandidateSampler(
+        artifact=artifact,
+        diffusion_quota=1,
+        hard_neg_k=0,
+        random_neg_k=2,
+        deterministic_topm=1,
+        seed=42,
+        num_walks=0,
+    )
+    candidates, teacher_probs, row_paths = sampler.sample_torch(0)
+    assert bool((row_paths < 0).all()), "no walk was drawn, so no row was visited"
+
+    criterion = HeatGeoDistillation(
+        student_dim=3,
+        teacher_dim=3,
+        diffusion_scales=(1,),
+        transition_neighbors=artifact["transition_neighbors"],
+        transition_probs=artifact["transition_probs"],
+        row_weight=1.0,
+        row_mode="closure_u",
+    )
+    criterion.use_row_loss = True
+
+    loss, metrics = criterion(
+        anchor_embeddings=torch.randn(1, 3),
+        candidate_embeddings=torch.randn(1, candidates.numel(), 3),
+        teacher_probs=teacher_probs.unsqueeze(0),
+        candidate_idx=candidates.unsqueeze(0),
+        anchor_idx=torch.tensor([0]),
+        row_paths=row_paths.unsqueeze(0),
+    )
+    assert torch.isfinite(loss)
+    # The walk placeholder must not be mistaken for a row set.
+    assert metrics["row_node_hit_ratio"] == pytest.approx(1.0)
+
+
+def test_closure_without_a_graph_is_an_error_not_a_silent_zero():
+    with pytest.raises(ValueError, match="transition arrays"):
+        HeatGeoDistillation(
+            student_dim=3, teacher_dim=3, row_weight=1.0, row_mode="closure_m"
+        )
+
+
+def test_closure_mode_drops_the_walk_hyperparameters():
+    from config import HeatGeoConfig
+
+    walk = HeatGeoConfig()
+    assert walk.row_mode == "walk" and walk.num_walks > 0
+
+    for mode in ("closure_u", "closure_m"):
+        config = HeatGeoConfig(row_mode=mode, num_walks=4, walk_length=4)
+        assert config.num_walks == 0, "a closure mode must not draw walks"
+
+    with pytest.raises(ValueError):
+        HeatGeoConfig(row_mode="closure")
+
+
+def test_row_mode_cli_override_disables_walk_sampling(monkeypatch):
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["main.py", "--method", "heatgeo", "--row_mode", "closure_m"],
+    )
+    args = main.parse_args()
+    config = main.get_config(args.method, args)
+
+    assert config.row_mode == "closure_m"
+    # The override loop is plain setattr; without resolve_row_mode() running after
+    # it the sampler would keep drawing walks under a closure mode.
+    assert config.num_walks == 0
+
+
 def test_entropic_affinity_hits_the_requested_perplexity():
     rng = np.random.default_rng(0)
     scores = rng.normal(size=64) * 0.1 + 0.7
