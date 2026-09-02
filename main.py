@@ -84,6 +84,38 @@ def parse_args():
         help="Comma-separated diffusion scales, e.g. '1,2,4'; '1' drops multi-hop",
     )
     parser.add_argument("--diffusion_quota", type=int, default=None)
+    # Ablation switches (scripts/ablation/). Each defaults to the method's value,
+    # so omitting all four reproduces the full model exactly.
+    parser.add_argument(
+        "--support_policy",
+        choices=["hybrid", "topk", "proportional", "uniform"],
+        default=None,
+        help="Support-selection arm: hybrid (method), topk, proportional, uniform",
+    )
+    parser.add_argument(
+        "--relation_target",
+        choices=["diffusion", "direct", "ambient_only"],
+        default=None,
+        help="Target on the selected columns: diffusion (method), direct teacher "
+        "cosine, or ambient_only (no graph relations at all)",
+    )
+    parser.add_argument(
+        "--knn_mode",
+        choices=["mutual", "directed", "symmetrized"],
+        default=None,
+        help="kNN edge rule for the teacher graph: mutual (method), directed, symmetrized",
+    )
+    parser.add_argument(
+        "--batch_local",
+        action="store_true",
+        help="Batch-local relational KD baseline: relations among the batch only, "
+        "no graph and no candidate draw (implies --relation_target ambient_only)",
+    )
+    parser.add_argument(
+        "--no_ambient",
+        action="store_true",
+        help="Drop the ambient r=0 scale (S4 deletion arm)",
+    )
     parser.add_argument("--hard_neg_k", type=int, default=None)
     parser.add_argument("--random_neg_k", type=int, default=None)
     parser.add_argument("--cache_path", type=str, default=None)
@@ -213,6 +245,9 @@ def get_config(method: str, args):
         "ggpkd_cache_path",
         "ggpkd_log_dir",
         "pooling_method",
+        "support_policy",
+        "relation_target",
+        "knn_mode",
     )
     for name in ggpkd_overrides:
         value = getattr(args, name)
@@ -239,6 +274,18 @@ def get_config(method: str, args):
         if not config.diffusion_scales:
             raise ValueError("--diffusion_scales must name at least one scale")
 
+    # A store_true flag cannot express "leave the config alone", so it only ever
+    # turns the ambient scale off; the config default keeps it on.
+    if args.no_ambient:
+        config.use_ambient = False
+
+    # The baseline has no graph relations to target, so the objective it implies
+    # is forced rather than left to be passed consistently by hand. Setting it
+    # here keeps it in the run manifest as a concrete value.
+    if args.batch_local:
+        config.batch_local = True
+        config.relation_target = "ambient_only"
+
     if args.w_task is not None:
         config.w_task = args.w_task
     if args.alpha_dtw is not None:
@@ -263,6 +310,11 @@ def get_config(method: str, args):
         config.debug_align = True
     if args.num_workers is not None:
         config.num_workers = args.num_workers
+
+    # The CLI writes attributes onto an already-constructed config, so the
+    # constructor's checks have long since run. Re-run them over the final values.
+    if hasattr(config, "validate"):
+        config.validate()
 
     return config
 

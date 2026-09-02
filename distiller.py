@@ -40,7 +40,7 @@ from src.data_utils.dataset_cache import (
 )
 from src.distill.benchmarks import add_domain_averages, print_evaluation_table
 from src.distill.checkpointing import save_checkpoint, save_student_weights
-from src.distill.geometry import build_probe_set, probe_geometry
+from src.distill.geometry import build_probe_index, build_probe_set, probe_geometry
 from src.distill.numerics import (
     assert_module_parameters_finite,
 )
@@ -83,7 +83,17 @@ class KnowledgeDistiller:
         # / epochs.jsonl are all opened in append mode, so without it a save_dir
         # reused across runs interleaves them with no way to separate the rows.
         self.run_id = new_run_id()
+        # Cumulative student forward-pass budget, incremented by the ggpkd step.
+        # Cumulative rather than per-step because that is the quantity the
+        # ablations are matched on, and a mean over steps loses it.
+        self.encoded_texts_total = 0
+        self.encoded_tokens_total = 0
         self.probe_texts: list[str] = []
+        # Cached teacher vectors for exactly those probe texts, in the same order.
+        # Without them the probe reports the student's space in isolation; with
+        # them it also reports `teacher_student_spearman`, which is the one
+        # geometry number that is comparable across arms without a benchmark.
+        self.probe_teacher: torch.Tensor | None = None
         self.setup_seed(config.seed)
         self.setup_devices()
         self.setup_models()
@@ -185,18 +195,30 @@ class KnowledgeDistiller:
                     f"Derived direct_temp={config.direct_temp:.4f} "
                     "(median graph bandwidth; requested via --direct_temp 0)"
                 )
+            # `use_ambient=False` is the S4 deletion arm: withholding the bank is
+            # what removes scale r=0, because the criterion derives `use_direct`
+            # from whether it has teacher embeddings at all.
             self.criterion = GGPKDDistillation(
                 diffusion_scales=config.diffusion_scales,
-                teacher_embeddings=self.teacher_cls_all,
+                teacher_embeddings=(
+                    self.teacher_cls_all if config.use_ambient else None
+                ),
                 direct_temp=config.direct_temp,
                 row_weight=config.row_weight,
                 unbiased_geometry_weight=config.unbiased_geometry_weight,
+                relation_target=config.relation_target,
                 row_temps=artifact["row_temps"],
                 transition_neighbors=artifact["transition_neighbors"],
                 transition_probs=artifact["transition_probs"],
             ).to(self.device_s)
             self.scheduler = self._build_scheduler()
-            print("GGPKD criterion initialized")
+            print(
+                "GGPKD criterion initialized: "
+                f"batch_local={config.batch_local}, "
+                f"ambient={config.use_ambient}, "
+                f"relation_target={config.relation_target}, "
+                f"row_weight={config.row_weight}"
+            )
         else:
             self.criterion = None
 
@@ -539,6 +561,7 @@ class KnowledgeDistiller:
                     perplexity=cfg.perplexity,
                     truncation_tolerance=cfg.truncation_tolerance,
                     diffusion_scales=cfg.diffusion_scales,
+                    knn_mode=cfg.knn_mode,
                     source_ids=self._ggpkd_source_ids(df),
                 )
 
@@ -569,8 +592,18 @@ class KnowledgeDistiller:
                     seed=cfg.seed,
                     deterministic_topm=DETERMINISTIC_TOPM,
                     unbiased_geometry=cfg.unbiased_geometry_weight > 0.0,
+                    support_policy=cfg.support_policy,
                 )
                 anchor_texts = df[self.ggpkd_anchor_column].astype(str).tolist()
+                # Rebuild the probe on the deduplicated anchor column. The set built
+                # in setup_data was sampled from the pre-dedup frame, whose row
+                # positions no longer index the teacher cache -- so pairing the two
+                # there would silently report the Spearman of mismatched rows.
+                probe_index = build_probe_index(len(anchor_texts), size=2048, seed=0)
+                self.probe_texts = [anchor_texts[int(i)] for i in probe_index]
+                self.probe_teacher = teacher_cls_list[
+                    torch.from_numpy(np.asarray(probe_index)).long()
+                ]
                 self.train_ds = TextPairWithTeacherAndGGPKD(
                     anchor_texts=anchor_texts,
                     teacher_cls=teacher_cls_list,
@@ -578,6 +611,7 @@ class KnowledgeDistiller:
                     labels=df["label"].astype(int).tolist()
                     if "label" in df.columns
                     else None,
+                    batch_local=cfg.batch_local,
                 )
                 # The collate owns the tokenized corpus: anchors and candidates are
                 # drawn from the same rows, so every text is tokenized once here
@@ -587,14 +621,23 @@ class KnowledgeDistiller:
                     cfg.task_type,
                     cfg.max_length,
                     corpus_texts=anchor_texts,
+                    batch_local=cfg.batch_local,
+                    n_scales=len(cfg.diffusion_scales),
                 )
+                if cfg.batch_local:
+                    print(
+                        "GGPKD batch-local baseline: relations among the batch "
+                        f"only ({cfg.batch_size} texts), no candidate draw, no "
+                        "graph support, no auxiliary rows"
+                    )
                 print(
                     "GGPKD candidate sampling: "
                     f"candidate_size={self.ggpkd_sampler.candidate_size} "
                     f"(diffusion={self.ggpkd_sampler.diffusion_quota}, "
                     f"hard={self.ggpkd_sampler.hard_neg_k}, "
                     f"random={self.ggpkd_sampler.random_neg_k}), "
-                    "stochastic=True, resample_per_epoch=True"
+                    f"support_policy={self.ggpkd_sampler.support_policy}, "
+                    "resample_per_epoch=True"
                 )
             else:
                 self.train_ds = TextPairWithTeacher(df, cfg.task_type, teacher_cls_list)
@@ -702,6 +745,7 @@ class KnowledgeDistiller:
                 self.model_student,
                 self.tok_student,
                 self.probe_texts,
+                teacher_embeddings=self.probe_teacher,
                 max_length=min(128, int(getattr(self.config, "max_length", 128))),
                 seed=0,
             )
@@ -963,6 +1007,8 @@ class KnowledgeDistiller:
                 else 0.0
             ),
             "peak_memory_mb": peak_memory_mb,
+            "encoded_texts_cum": self.encoded_texts_total,
+            "encoded_tokens_cum": self.encoded_tokens_total,
             **epoch_means,
         }
         return avg_loss

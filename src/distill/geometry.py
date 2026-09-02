@@ -25,6 +25,14 @@ from typing import Any
 import torch
 import torch.nn.functional as F
 
+# Temperature of the dense teacher distribution p^T that weights the distortion
+# below. Deliberately a constant of the *probe* rather than a copy of the run's
+# direct_temp: E_hat is compared across ablation arms, and a quantity whose
+# weighting moves with the arm being measured cannot order those arms. 0.05 is
+# the fixed-bandwidth graph temperature, so the weighting is the same shape as
+# the teacher rows the method distils from.
+PROBE_DISTORTION_TEMP = 0.05
+
 
 @torch.no_grad()
 def _encode(model, tokenizer, texts: list[str], max_length: int, batch_size: int):
@@ -153,10 +161,52 @@ def probe_geometry(
             teacher_cos = (teacher[left] * teacher[right]).sum(dim=-1)
             stats["teacher_student_spearman"] = _spearman(teacher_cos, cosines)
             stats["teacher_anisotropy"] = float(teacher_cos.mean())
+            stats.update(_distortion(teacher, normalized))
         return stats
     finally:
         if was_training:
             model.train()
+
+
+@torch.no_grad()
+def _distortion(teacher: torch.Tensor, student: torch.Tensor) -> dict[str, float]:
+    """Teacher-weighted global distortion E_hat, and its unweighted companion.
+
+        E_hat = mean_i sum_j p^T_i(j) (cos_T(i,j) - cos_S(i,j))^2,
+        p^T_i  = softmax_j( cos_T(i,j) / PROBE_DISTORTION_TEMP ),  j != i
+
+    This is the middle link of the paper's causal chain -- support coverage ->
+    geometry preservation -> downstream -- and the only one of the three that a
+    benchmark score cannot stand in for. The weighting is what makes it the right
+    quantity: an unweighted cosine error is dominated by the ~99% of pairs the
+    teacher considers unrelated and where being wrong costs nothing, so it moves
+    with anisotropy rather than with preserved geometry. Weighting by the
+    teacher's own distribution asks the question the method is trying to answer --
+    is the student right *where the teacher has an opinion*.
+    `cosine_rmse` is reported beside it precisely so the two can be seen to
+    disagree; if a policy improves the unweighted number while E_hat worsens, it
+    flattened the space rather than preserving it.
+
+    Both are computed densely over the probe. At 2k probes that is a 2k x 2k
+    float32 block, ~16 MB -- cheaper than the pair sampling it sits next to.
+    """
+    n = teacher.size(0)
+    if n < 2:
+        return {}
+    teacher_cos = teacher @ teacher.t()
+    student_cos = student @ student.t()
+    self_pairs = torch.eye(n, dtype=torch.bool, device=teacher_cos.device)
+
+    weights = F.softmax(
+        (teacher_cos / PROBE_DISTORTION_TEMP).masked_fill(self_pairs, float("-inf")),
+        dim=-1,
+    )
+    squared_gap = (teacher_cos - student_cos).pow(2).masked_fill(self_pairs, 0.0)
+    off_diagonal = squared_gap.masked_select(~self_pairs)
+    return {
+        "teacher_weighted_distortion": float((weights * squared_gap).sum(-1).mean()),
+        "cosine_rmse": float(off_diagonal.mean().sqrt()),
+    }
 
 
 def _spearman(a: torch.Tensor, b: torch.Tensor) -> float:
@@ -171,6 +221,24 @@ def _spearman(a: torch.Tensor, b: torch.Tensor) -> float:
     return float((rank_a * rank_b).sum() / denominator)
 
 
+def build_probe_index(n_rows: int, size: int = 2048, seed: int = 0):
+    """Row positions of the probe set, so callers can index aligned arrays.
+
+    `build_probe_set` returns strings, which is all the student needs. Anything
+    that has to line a *second* array up with the probe -- cached teacher vectors,
+    for `teacher_student_spearman` -- needs the positions, and re-deriving them at
+    the call site is how two "identical" probe sets drift apart.
+    """
+    import numpy as np
+
+    if n_rows <= size:
+        return np.arange(n_rows)
+    rng = np.random.default_rng(seed)
+    index = rng.choice(n_rows, size=size, replace=False)
+    index.sort()
+    return index
+
+
 def build_probe_set(
     frame: Any, text_column: str, size: int = 2048, seed: int = 0
 ) -> list[str]:
@@ -179,12 +247,6 @@ def build_probe_set(
     Deterministic by construction: the same corpus and seed give the same texts,
     which is what makes the numbers comparable between runs.
     """
-    import numpy as np
-
     texts = frame[text_column].astype(str).tolist()
-    if len(texts) <= size:
-        return texts
-    rng = np.random.default_rng(seed)
-    index = rng.choice(len(texts), size=size, replace=False)
-    index.sort()
+    index = build_probe_index(len(texts), size=size, seed=seed)
     return [texts[int(i)] for i in index]

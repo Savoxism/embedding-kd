@@ -25,6 +25,24 @@ DIAG_TOPK = 8
 # already proportional to.
 DETERMINISTIC_TOPM = 2
 
+# Support-selection arms for the fixed-budget ablation. Only `hybrid` is the
+# method; the other three exist to answer what the head and the tail each buy.
+#
+#   hybrid        deterministic top-DETERMINISTIC_TOPM head, then a Gumbel top-k
+#                 tail drawn proportionally to the remaining teacher mass. GGPKD.
+#   topk          the whole quota taken deterministically by teacher mass. High
+#                 coverage on step one, and the same columns every epoch, so
+#                 cumulative exposed mass plateaus.
+#   proportional  the whole quota drawn by Gumbel top-k, no deterministic head.
+#                 Cumulative coverage keeps growing; per-epoch coverage is noisier.
+#   uniform       the quota drawn uniformly without replacement from the anchor's
+#                 own pool. This is the *matched* random control: same graph, same
+#                 budget, same column population, teacher relevance ordering
+#                 discarded. Drawing uniformly from the whole corpus instead would
+#                 give every drawn column diffusion target exactly zero and delete
+#                 the objective rather than ablate the policy.
+SUPPORT_POLICIES = ("hybrid", "topk", "proportional", "uniform")
+
 # Coverage target for the derived diffusion quota: the support size is the
 # smallest k whose top-k mixture mass reaches this fraction at the median anchor.
 # 0.7 is where the measured payoff knee sits on Qwen3-0.6B -> MiniLMv2-H384

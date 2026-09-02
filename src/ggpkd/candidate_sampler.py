@@ -1,7 +1,12 @@
 import numpy as np
 import torch
 
-from .policy import DETERMINISTIC_TOPM, candidate_budget, normalized_diffusion_weights
+from .policy import (
+    DETERMINISTIC_TOPM,
+    SUPPORT_POLICIES,
+    candidate_budget,
+    normalized_diffusion_weights,
+)
 
 
 def _gumbel_topk(probs: np.ndarray, k: int, rng: np.random.Generator) -> np.ndarray:
@@ -35,6 +40,7 @@ class GGPKDCandidateSampler:
         seed: int,
         deterministic_topm: int = DETERMINISTIC_TOPM,
         unbiased_geometry: bool = False,
+        support_policy: str = "hybrid",
     ):
         self.pool_indices = artifact["pool_indices"].numpy()
         self.pool_probs = artifact["pool_probs"].numpy()
@@ -50,6 +56,21 @@ class GGPKDCandidateSampler:
         self.random_neg_k = int(random_neg_k)
         self.deterministic_topm = int(deterministic_topm)
         self.unbiased_geometry = bool(unbiased_geometry)
+        if support_policy not in SUPPORT_POLICIES:
+            raise ValueError(
+                f"support_policy must be one of {SUPPORT_POLICIES}, "
+                f"got {support_policy!r}"
+            )
+        # The head--tail geometry estimator is defined against the hybrid draw: it
+        # needs a deterministic stratum evaluated exactly plus one exact
+        # teacher-proportional tail draw. No other policy supplies both, and a
+        # silently biased E_hat is worse than none.
+        if self.unbiased_geometry and support_policy != "hybrid":
+            raise ValueError(
+                "the unbiased geometry estimator is only defined for the hybrid "
+                f"support policy, got support_policy={support_policy!r}"
+            )
+        self.support_policy = support_policy
         self.seed = int(seed)
 
         scales = tuple(artifact.get("metadata", {}).get("diffusion_scales", ()))
@@ -94,6 +115,41 @@ class GGPKDCandidateSampler:
             quotas[position] += 1
         return quotas
 
+    def _select_support_uniform(
+        self,
+        idx: int,
+        pool: np.ndarray,
+        valid: np.ndarray,
+        rng: np.random.Generator,
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+        """Uniform draw over the anchor's own pool, ignoring teacher mass.
+
+        The control arm for the support ablation. It holds the graph, the quota
+        and the column population fixed and removes exactly one thing -- the
+        teacher's ordering of which of those columns matter -- so a gap against
+        the hybrid draw is attributable to relevance rather than to budget,
+        encoder cost, or which nodes are reachable at all.
+
+        The per-scale split is deliberately not applied: without teacher mass
+        there is nothing to split by, and one uniform draw over the pool is the
+        only unambiguous reading of "uniform support".
+        """
+        available = np.flatnonzero(valid)
+        take = min(self.diffusion_quota, available.size)
+        support_positions = (
+            rng.choice(available, size=take, replace=False).astype(np.int64)
+            if take > 0
+            else np.empty(0, dtype=np.int64)
+        )
+        support = pool[support_positions].astype(np.int64)
+        return (
+            support,
+            support_positions,
+            np.zeros((self.n_scales, support_positions.size), dtype=np.float32),
+            np.full(self.n_scales, -1, dtype=np.int64),
+            np.zeros(self.n_scales, dtype=np.float32),
+        )
+
     def _select_support_impl(
         self,
         idx: int,
@@ -102,8 +158,9 @@ class GGPKDCandidateSampler:
     ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
         pool = self.pool_indices[idx]
         valid = pool >= 0
+        if self.support_policy == "uniform":
+            return self._select_support_uniform(idx, pool, valid, rng)
         quotas = self._scale_quotas(self.diffusion_quota)
-        head_per_scale = max(1, self.deterministic_topm)
         taken = np.zeros(pool.size, dtype=bool)
         positions: list[int] = []
         deficit = 0
@@ -124,6 +181,16 @@ class GGPKDCandidateSampler:
                 if row_total > 0.0
                 else np.zeros_like(row_probs)
             )
+            # `topk` spends the whole per-scale quota on the deterministic head
+            # and never reaches the Gumbel draw; `proportional` has no head at all.
+            # Both are expressed here so the rest of the draw -- quotas, deficit
+            # spill, target extraction -- is byte-for-byte the shared path.
+            if self.support_policy == "topk":
+                head_per_scale = max(need, 0)
+            elif self.support_policy == "proportional":
+                head_per_scale = 0
+            else:
+                head_per_scale = max(1, self.deterministic_topm)
             taken_before = taken.copy()
             probs = row_probs.copy()
             probs[taken_before] = 0.0
@@ -145,7 +212,7 @@ class GGPKDCandidateSampler:
                 continue
 
             order = np.argsort(-probs)
-            head = order[: min(head_per_scale, need)]
+            head = order[: max(0, min(head_per_scale, need))]
             head = head[probs[head] > 0]
             rest = probs.copy()
             rest[head] = 0.0

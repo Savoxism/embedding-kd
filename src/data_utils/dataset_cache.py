@@ -95,14 +95,22 @@ class TextPairWithTeacherAndGGPKD(Dataset):
         teacher_cls: torch.Tensor,
         sampler,
         labels: list[int] | None = None,
+        batch_local: bool = False,
     ):
         """
         teacher_cls is [N, Num_Layers, Dim] or [N, Dim]
+
+        `batch_local` is the S1 baseline arm: relations are formed among the texts
+        that happen to share a minibatch, with no graph and no candidate draw at
+        all. The candidate set is therefore not a property of an *item* -- it is
+        the batch -- so it is built in the collate, and this dataset stops calling
+        the sampler rather than drawing candidates it would then discard.
         """
         self.anchor_texts = anchor_texts
         self.teacher_cls = teacher_cls
         self.sampler = sampler
         self.labels = labels
+        self.batch_local = bool(batch_local)
 
     def __len__(self):
         return len(self.anchor_texts)
@@ -111,6 +119,11 @@ class TextPairWithTeacherAndGGPKD(Dataset):
         self.sampler.set_epoch(epoch)
 
     def __getitem__(self, idx):
+        if self.batch_local:
+            item = {"idx": idx}
+            if self.labels is not None:
+                item["label"] = int(self.labels[idx])
+            return item
         # Only corpus indices cross the worker boundary. Carrying the candidate
         # *texts* here shipped candidate_size strings per item through shared
         # memory and re-tokenized every one of them; GGPKDCollate holds the
@@ -178,12 +191,16 @@ class GGPKDCollate:
         corpus_texts: list[str],
         encode_chunk_size: int = 256,
         pad_to_multiple_of: int = 8,
+        batch_local: bool = False,
+        n_scales: int = 1,
     ):
         self.ts = tok_student
         self.task = task
         self.max_len = max_len
         self.encode_chunk_size = int(encode_chunk_size)
         self.pad_to_multiple_of = int(pad_to_multiple_of)
+        self.batch_local = bool(batch_local)
+        self.n_scales = int(n_scales)
 
         self.pad_id = tok_student.pad_token_id
         if self.pad_id is None:
@@ -215,12 +232,31 @@ class GGPKDCollate:
 
     def __call__(self, batch):
         idx = torch.tensor([item["idx"] for item in batch], dtype=torch.long)
-        candidate_idx = torch.stack(
-            [item["candidate_idx"] for item in batch], dim=0
-        ).long()
-        teacher_probs = torch.stack(
-            [item["teacher_probs"] for item in batch], dim=0
-        ).float()
+        if self.batch_local:
+            if idx.numel() < 2:
+                raise ValueError(
+                    "batch-local relations need at least two texts in a batch; "
+                    "raise batch_size or keep drop_last on"
+                )
+            # Every anchor is scored against the whole batch, itself included --
+            # the criterion masks the diagonal. The union of these rows is exactly
+            # the batch, so the candidate encode is the batch texts and nothing
+            # else: this arm buys its cheapness by supervising only what
+            # co-occurrence happens to supply.
+            candidate_idx = idx.view(1, -1).expand(idx.numel(), -1).contiguous()
+            # Zero diffusion mass everywhere. Under
+            # `relation_target='ambient_only'` the graph group is dropped from the
+            # stack entirely, so these are shape carriers, not silent targets.
+            teacher_probs = torch.zeros(
+                idx.numel(), self.n_scales, idx.numel(), dtype=torch.float32
+            )
+        else:
+            candidate_idx = torch.stack(
+                [item["candidate_idx"] for item in batch], dim=0
+            ).long()
+            teacher_probs = torch.stack(
+                [item["teacher_probs"] for item in batch], dim=0
+            ).float()
         ys = [item["label"] for item in batch] if "label" in batch[0] else None
 
         unique_idx, inverse = torch.unique(candidate_idx.reshape(-1), return_inverse=True)

@@ -1,3 +1,7 @@
+from src.criterions.ggpkd_distillation import RELATION_TARGETS
+from src.ggpkd.graph_builder import KNN_MODES
+from src.ggpkd.policy import SUPPORT_POLICIES
+
 from .base_config import BaseConfig
 
 
@@ -51,6 +55,35 @@ class GGPKDConfig(BaseConfig):
     # matching and ambient calibration remain intact. Off until its coefficient is
     # selected by the matched-budget ablation.
     unbiased_geometry_weight = 0.0
+
+    # ---- Ablation switches ---------------------------------------------------
+    # Every one of these sits at the method's value. They exist so the ablation
+    # arms in scripts/ablation/ are one flag away from the full model instead of a
+    # branch, and so a run manifest records which arm produced a number.
+    #
+    # support_policy  which columns the diffusion quota is spent on (S1):
+    #                 hybrid (method) / topk / proportional / uniform.
+    # relation_target what the selected columns are supervised *against* (S3):
+    #                 diffusion (method, composed multi-scale transition rows) or
+    #                 direct (the teacher's raw cosine over the same columns).
+    # use_ambient     the r=0 scale (S4). False drops it entirely; the criterion
+    #                 then sees no teacher bank, which is what "no ambient" means.
+    # knn_mode        which retrieval edges survive into the graph (G1):
+    #                 mutual (method) / directed / symmetrized.
+    # batch_local     the S1 baseline (batch-local relational KD): no graph, no
+    #                 candidate draw, no rows -- each anchor is scored against the
+    #                 texts that happen to share its minibatch. Implies
+    #                 relation_target="ambient_only", which main.py sets for it.
+    #                 Deliberately NOT encoder-budget-matched: it encodes 2B texts
+    #                 per step against the method's B + unique candidates, and that
+    #                 gap is the point, not a flaw. The budget-matched counterpart
+    #                 is diffusion_quota=0 with the whole quota spent on uniform
+    #                 corpus draws, which needs no flag of its own.
+    support_policy = "hybrid"
+    relation_target = "diffusion"
+    use_ambient = True
+    knn_mode = "mutual"
+    batch_local = False
 
     # ---- Teacher Graph -------------------------------------------------------
     graph_k = 200
@@ -206,6 +239,17 @@ class GGPKDConfig(BaseConfig):
             )
         for k, v in kwargs.items():
             setattr(self, k, v)
+        self.validate()
+
+    def validate(self):
+        """Re-checkable invariants.
+
+        Called from __init__, and again by main.py after the CLI overrides are
+        applied -- those are plain attribute assignments on an already-built
+        config, so without a second call every flag combination goes unchecked.
+        An arm like `--relation_target direct --no_ambient` would then get as far
+        as caching the teacher before the criterion refused it.
+        """
         if self.row_weight < 0:
             raise ValueError("row_weight must be non-negative")
         if self.direct_temp < 0:
@@ -216,3 +260,37 @@ class GGPKDConfig(BaseConfig):
             raise ValueError("row_start_epoch must be at least 1")
         if self.diffusion_quota is not None and self.diffusion_quota < 0:
             raise ValueError("diffusion_quota must be None (derived) or non-negative")
+        if self.support_policy not in SUPPORT_POLICIES:
+            raise ValueError(
+                f"support_policy must be one of {SUPPORT_POLICIES}, "
+                f"got {self.support_policy!r}"
+            )
+        if self.relation_target not in RELATION_TARGETS:
+            raise ValueError(
+                f"relation_target must be one of {RELATION_TARGETS}, "
+                f"got {self.relation_target!r}"
+            )
+        if self.knn_mode not in KNN_MODES:
+            raise ValueError(
+                f"knn_mode must be one of {KNN_MODES}, got {self.knn_mode!r}"
+            )
+        if self.batch_local:
+            if self.relation_target != "ambient_only":
+                raise ValueError(
+                    "batch_local forms no graph relations, so it requires "
+                    "relation_target='ambient_only'; got "
+                    f"{self.relation_target!r} (pass --batch_local, which sets it)"
+                )
+            if self.batch_size < 2:
+                raise ValueError(
+                    "batch_local needs at least two texts per batch to have any "
+                    f"relation at all; got batch_size={self.batch_size}"
+                )
+        if self.relation_target in ("direct", "ambient_only") and not self.use_ambient:
+            # The direct relation target reads the teacher bank, and the bank only
+            # reaches the criterion through the ambient scale. Caught here so the
+            # run fails in the banner rather than at the first backward pass.
+            raise ValueError(
+                f"relation_target={self.relation_target!r} needs the teacher bank, "
+                "which is only passed when use_ambient is True"
+            )

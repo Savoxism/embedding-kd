@@ -208,16 +208,48 @@ def _compute_topk_cosine(
         torch.backends.cuda.matmul.allow_tf32 = previous_tf32
 
 
+KNN_MODES = ("mutual", "directed", "symmetrized")
+
+
+def _reverse_adjacency(
+    top_indices: np.ndarray, top_scores: np.ndarray, graph_k: int
+) -> list[list[tuple[int, float]]]:
+    """For each node i, the (j, cos) pairs of every j whose top-k contains i.
+
+    Only the symmetrized arm needs this. Cosine is symmetric, so the score stored
+    on j's row for i is exactly the score i's row would carry for j; taking it
+    from j's row is what makes the union arm buildable without a second retrieval.
+    """
+    n_items = top_indices.shape[0]
+    reverse: list[list[tuple[int, float]]] = [[] for _ in range(n_items)]
+    for j in range(n_items):
+        for pos, i in enumerate(top_indices[j, :graph_k]):
+            reverse[int(i)].append((j, float(top_scores[j, pos])))
+    return reverse
+
+
 def _build_transition(
     top_indices: np.ndarray,
     top_scores: np.ndarray,
     graph_k: int,
     graph_temp: float,
     perplexity: float | None,
+    knn_mode: str = "mutual",
 ) -> tuple[
     list[np.ndarray], list[np.ndarray], list[np.ndarray], np.ndarray, np.ndarray, dict
 ]:
-    """Mutual-kNN neighbour lists and their transition rows.
+    """Neighbour lists and their transition rows, under one of three kNN rules.
+
+    `knn_mode` selects which edges survive retrieval, and nothing else in the
+    build changes with it -- same bandwidth solve, same truncation, same pools --
+    so the three arms differ only in the edge set:
+
+    * ``mutual`` (canonical): keep j iff j in topk(i) *and* i in topk(j). A hub
+      that everything retrieves but that retrieves nothing back loses those edges.
+    * ``directed``: keep all of topk(i). Every node has degree graph_k, and hubs
+      keep every edge pointing at them.
+    * ``symmetrized``: keep the union, j in topk(i) *or* i in topk(j). Degrees are
+      the largest of the three and hubs are amplified rather than suppressed.
 
     With `perplexity` set, each row gets its own temperature from the entropic
     affinity above, so every node's neighbour distribution carries the same
@@ -225,8 +257,15 @@ def _build_transition(
     similarity scale. With `perplexity=None` every row uses `graph_temp`, which is
     the fixed-bandwidth baseline that arm exists to be compared against.
     """
+    if knn_mode not in KNN_MODES:
+        raise ValueError(f"knn_mode must be one of {KNN_MODES}, got {knn_mode!r}")
     n_items = top_indices.shape[0]
     top_sets = [set(top_indices[i, :graph_k].tolist()) for i in range(n_items)]
+    reverse = (
+        _reverse_adjacency(top_indices, top_scores, graph_k)
+        if knn_mode == "symmetrized"
+        else None
+    )
     row_neighbors: list[np.ndarray] = []
     row_probs: list[np.ndarray] = []
     row_scores: list[np.ndarray] = []
@@ -235,14 +274,24 @@ def _build_transition(
     target_entropy = None if perplexity is None else float(np.log(float(perplexity)))
     clamped_rows = 0
 
-    for i in tqdm(range(n_items), desc="GGPKD mutual kNN graph"):
+    for i in tqdm(range(n_items), desc=f"GGPKD {knn_mode} kNN graph"):
         neighbors = []
         scores = []
+        seen: set[int] = set()
         for pos, j in enumerate(top_indices[i, :graph_k]):
             j_int = int(j)
-            if i in top_sets[j_int]:
+            if knn_mode == "mutual" and i not in top_sets[j_int]:
+                continue
+            neighbors.append(j_int)
+            scores.append(float(top_scores[i, pos]))
+            seen.add(j_int)
+        if reverse is not None:
+            for j_int, score in reverse[i]:
+                if j_int == i or j_int in seen:
+                    continue
                 neighbors.append(j_int)
-                scores.append(float(top_scores[i, pos]))
+                scores.append(score)
+                seen.add(j_int)
 
         if not neighbors:
             fallback_flags[i] = True
@@ -282,6 +331,52 @@ def _build_transition(
     return row_neighbors, row_probs, row_scores, fallback_flags, row_temps, temp_stats
 
 
+def _hubness_stats(row_neighbors: list[np.ndarray]) -> dict[str, float]:
+    """Indegree concentration of the edge set.
+
+    The kNN-mode comparison is not settled by a downstream score alone: mutual
+    kNN is claimed to suppress hubness, and that claim is about the *graph*. A hub
+    is a node that appears in many other nodes' neighbour lists, so the quantity
+    is the indegree distribution -- its tail (max, p99) and how much of the total
+    edge mass the top 1% of nodes absorb. Reported for every build so the three
+    arms are comparable without rebuilding.
+    """
+    n_items = len(row_neighbors)
+    if n_items == 0:
+        return {}
+    flat = np.concatenate([n for n in row_neighbors if n.size]) if any(
+        n.size for n in row_neighbors
+    ) else np.empty(0, dtype=np.int64)
+    indegree = np.bincount(flat.astype(np.int64), minlength=n_items)
+    total_edges = int(indegree.sum())
+    order = np.sort(indegree)[::-1]
+    top_count = max(1, int(round(0.01 * n_items)))
+    return {
+        "indegree_mean": float(indegree.mean()),
+        "indegree_max": float(indegree.max()),
+        "indegree_p99": float(np.percentile(indegree, 99)),
+        "indegree_p50": float(np.percentile(indegree, 50)),
+        "indegree_gini": _gini(indegree.astype(np.float64)),
+        "hub_edge_share_top1pct": (
+            float(order[:top_count].sum() / total_edges) if total_edges else 0.0
+        ),
+        "isolated_indegree_rate": float((indegree == 0).mean()),
+    }
+
+
+def _gini(values: np.ndarray) -> float:
+    """Gini coefficient of a non-negative vector; 0 = flat, 1 = one node holds all."""
+    if values.size == 0:
+        return 0.0
+    total = values.sum()
+    if total <= 0:
+        return 0.0
+    sorted_values = np.sort(values)
+    n = sorted_values.size
+    rank = np.arange(1, n + 1, dtype=np.float64)
+    return float((2.0 * (rank * sorted_values).sum()) / (n * total) - (n + 1.0) / n)
+
+
 def _write_knn_graph_log(
     log_dir: str,
     row_neighbors: list[np.ndarray],
@@ -304,6 +399,7 @@ def _write_knn_graph_log(
         "avg_degree": float(degrees.mean()) if degrees.size else 0.0,
         "min_degree": float(degrees.min()) if degrees.size else 0.0,
         "max_degree": float(degrees.max()) if degrees.size else 0.0,
+        **_hubness_stats(row_neighbors),
     }
 
     with open(log_path, "w", encoding="utf-8") as handle:
@@ -865,19 +961,28 @@ _METADATA_KEYS = (
     "hard_neg_pool",
     "truncation_tolerance",
     "lazy_walk",
+    "knn_mode",
     "artifact_version",
     "teacher_fingerprint",
     "source_fingerprint",
 )
 
 
+# Keys introduced after an artifact version was already in use. A cache written
+# before the key existed was built at this value, so reading it as the default
+# keeps those caches valid instead of forcing a rebuild that would change nothing.
+_METADATA_DEFAULTS = {"knn_mode": "mutual"}
+
+
 def _metadata_matches(artifact: dict, metadata: dict) -> tuple[bool, str]:
     old = artifact.get("metadata", {})
     for key in _METADATA_KEYS:
-        if old.get(key) != metadata.get(key):
+        default = _METADATA_DEFAULTS.get(key)
+        if old.get(key, default) != metadata.get(key):
             return (
                 False,
-                f"{key}: cached={old.get(key)!r} requested={metadata.get(key)!r}",
+                f"{key}: cached={old.get(key, default)!r} "
+                f"requested={metadata.get(key)!r}",
             )
     return True, ""
 
@@ -891,6 +996,7 @@ def build_or_load_ggpkd_artifact(
     source_ids: Sequence[int] | None = None,
     perplexity: float | None = None,
     truncation_tolerance: float = 0.01,
+    knn_mode: str = "mutual",
 ) -> dict:
     n_items = int(teacher_embeddings.size(0))
     scales = _as_tuple(diffusion_scales)
@@ -932,6 +1038,9 @@ def build_or_load_ggpkd_artifact(
         "hard_neg_pool": int(hard_neg_pool),
         "truncation_tolerance": float(truncation_tolerance),
         "lazy_walk": True,
+        # In _METADATA_KEYS below: two arms of the kNN ablation share every other
+        # key, so without it the second arm would silently load the first's graph.
+        "knn_mode": str(knn_mode),
         "artifact_version": ARTIFACT_VERSION,
         "teacher_fingerprint": _fingerprint(teacher_embeddings),
         "source_fingerprint": hashlib.sha1(source_array.tobytes()).hexdigest(),
@@ -981,6 +1090,7 @@ def build_or_load_ggpkd_artifact(
         graph_k=graph_k,
         graph_temp=FIXED_BANDWIDTH_TEMP,
         perplexity=perplexity,
+        knn_mode=knn_mode,
     )
     graph_log_path, graph_stats = _write_knn_graph_log(
         log_dir=log_dir,

@@ -12,6 +12,9 @@ from src.ggpkd.policy import (
 )
 
 
+RELATION_TARGETS = ("diffusion", "direct", "ambient_only")
+
+
 def _assert_finite_tensors(named_tensors: Sequence[tuple[str, torch.Tensor]]) -> None:
     finite_status = None
     for _, tensor in named_tensors:
@@ -271,6 +274,7 @@ class GGPKDDistillation(nn.Module):
         row_weight: float = 0.5,
         row_temps: torch.Tensor | None = None,
         unbiased_geometry_weight: float = 0.0,
+        relation_target: str = "diffusion",
         **kwargs,
     ):
         super().__init__()
@@ -298,6 +302,27 @@ class GGPKDDistillation(nn.Module):
             self.row_temps = None
         self.eps_norm = EPS_NORM
         self.diag_topk = DIAG_TOPK
+        # "diffusion" is the method. "direct" is the S3 control: identical selected
+        # columns, identical temperature, identical weight on the group -- only the
+        # target changes, from the composed multi-scale transition rows to the
+        # teacher's own cosine profile restricted to those same columns. It
+        # separates the value of the composed graph relations from the value of
+        # merely having selected farther nodes to supervise.
+        #
+        # "ambient_only" deletes the graph group outright and leaves the objective
+        # as one KL against the teacher's similarity profile over the scored
+        # columns. That is batch-local relational knowledge distillation in KL
+        # form, and it is the S1 baseline: no graph, no support selection, no rows.
+        # The group is *removed* rather than given a zero target -- a zero-target
+        # scale still holds its weight in the normalization, so leaving it in would
+        # silently scale the whole loss down by the dead group's share (0.64 at
+        # R={1,2,4}) and hand the baseline a different effective learning rate.
+        if relation_target not in RELATION_TARGETS:
+            raise ValueError(
+                f"relation_target must be one of {RELATION_TARGETS}, "
+                f"got {relation_target!r}"
+            )
+        self.relation_target = relation_target
         if row_weight < 0.0:
             raise ValueError("row_weight must be non-negative")
         self.row_weight = float(row_weight)
@@ -331,6 +356,13 @@ class GGPKDDistillation(nn.Module):
                 )
         self._warned_row_needs_sharing = False
 
+        if self.relation_target in ("direct", "ambient_only") and (
+            teacher_embeddings is None
+        ):
+            raise ValueError(
+                f"relation_target={self.relation_target!r} reads the teacher bank; "
+                "pass teacher_embeddings"
+            )
         self.use_direct = teacher_embeddings is not None
         if self.use_direct:
             if direct_temp <= 0.0:
@@ -410,8 +442,11 @@ class GGPKDDistillation(nn.Module):
         # index 0 of the runtime stack and is excluded there; on this ladder the
         # diffusion scales are the whole of `temps`.)
         self._excess_is_exact = bool(
-            row_temps is None
-            and (temps.numel() <= 1 or torch.allclose(temps, temps[0]))
+            self.relation_target in ("direct", "ambient_only")
+            or (
+                row_temps is None
+                and (temps.numel() <= 1 or torch.allclose(temps, temps[0]))
+            )
         )
 
     def _resolved(self, buffer: torch.Tensor, n_scales: int) -> torch.Tensor:
@@ -492,6 +527,49 @@ class GGPKDDistillation(nn.Module):
         logits = logits / self.direct_temp
         logits = logits.masked_fill(self_mask, float("-inf"))
         return F.softmax(logits, dim=-1)
+
+    @torch.no_grad()
+    def _direct_relation_target(
+        self,
+        anchor_idx: torch.Tensor,
+        column_idx: torch.Tensor,
+        own_mask: torch.Tensor,
+        self_mask: torch.Tensor,
+        shared: bool,
+    ) -> torch.Tensor:
+        """Teacher cosine over *the anchor's own selected columns* (S3 control).
+
+        Differs from `_direct_target` in exactly one way that matters: the column
+        domain. The ambient scale is dense over the whole shared pool and is what
+        calibrates across the batch; this one is restricted to the same columns
+        the diffusion scales are restricted to, at the same temperature the r=1
+        target is matched at, carrying the same total weight the diffusion group
+        carried. So the only difference between this arm and the method is whether
+        the target over those columns is the composed multi-hop transition rows or
+        the teacher's raw similarity.
+        """
+        bank = self.teacher_bank
+        t_anchor = bank.index_select(0, anchor_idx).float()
+        if shared:
+            t_columns = bank.index_select(0, column_idx).float()
+            logits = t_anchor @ t_columns.t()
+        else:
+            batch_size, candidate_size = column_idx.shape
+            t_columns = bank.index_select(0, column_idx.reshape(-1)).float()
+            t_columns = t_columns.view(batch_size, candidate_size, -1)
+            logits = torch.einsum("bd,bcd->bc", t_anchor, t_columns)
+        if self.row_temps is not None:
+            tau = self.row_temps.index_select(0, anchor_idx).view(-1, 1)
+        else:
+            tau = logits.new_full((1, 1), self.graph_temp)
+        logits = logits / tau
+        logits = logits.masked_fill(self_mask | ~own_mask, float("-inf"))
+        # A row with no available column would softmax to NaN. It cannot happen --
+        # every anchor owns its own draw -- but the loss would go non-finite three
+        # frames later and blame the student.
+        empty = (~(own_mask & ~self_mask)).all(dim=-1, keepdim=True)
+        probs = F.softmax(logits, dim=-1)
+        return torch.where(empty, torch.zeros_like(probs), probs)
 
     def _compute_row_loss(
         self,
@@ -766,6 +844,11 @@ class GGPKDDistillation(nn.Module):
         }
         if not getattr(self, "direct_active", False):
             return empty
+        # `ambient_only` leaves the ambient profile alone in the stack. There is no
+        # diffusion scale to disagree with it, so every quantity here is zero by
+        # definition -- and target[:, 1, :] would be an index error, not a zero.
+        if target.size(1) < 2:
+            return empty
 
         # `target` already carries the ambient profile at index 0, so index 1 is the
         # r=1 transition target and 1: is the whole diffusion group.
@@ -900,12 +983,47 @@ class GGPKDDistillation(nn.Module):
         weights = self._resolved(self.scale_weights, n_scales)
         temps = self._resolved(self.scale_temps, n_scales)
 
+        if self.relation_target == "ambient_only":
+            # Drop the diffusion group: no scales, no weight, nothing to
+            # normalize against. The ambient scale prepended below then carries
+            # weight 1 and is the entire objective.
+            target = target[:, :0, :]
+            weights = weights[:0]
+            temps = temps[:0]
+            n_scales = 0
+        elif self.relation_target == "direct":
+            if anchor_idx is None or column_idx is None:
+                raise ValueError(
+                    "relation_target='direct' needs corpus indices for both the "
+                    "anchors and the scored columns"
+                )
+            # `selected_columns` was already read off the diffusion target above, so
+            # L_row keeps supervising exactly the rows it does in the full method:
+            # this arm changes the target, not the row set.
+            target = self._direct_relation_target(
+                anchor_idx, column_idx, own_mask, self_mask, share
+            ).unsqueeze(1).to(target.dtype)
+            # One scale carrying the diffusion group's whole weight, so the
+            # graph-group / ambient balance is identical to the full method.
+            weights = weights.sum(dim=0, keepdim=True)
+            temps = temps[:1]
+            n_scales = 1
+
         # Scale r=0: the teacher's own similarity over every scored column. Without
         # it, every column outside the anchor's diffusion pool carries target 0 and
         # is pushed toward maximal dissimilarity regardless of what the teacher says.
         self.direct_active = (
             self.use_direct and anchor_idx is not None and column_idx is not None
         )
+        if self.relation_target == "ambient_only" and not self.direct_active:
+            # The graph group has already been dropped, so without the ambient
+            # scale there is no scale left at all and the stack below would be
+            # empty. Say that, rather than fail on a zero-length torch.stack.
+            raise ValueError(
+                "relation_target='ambient_only' is the ambient scale and nothing "
+                "else; it needs the teacher bank and corpus indices for both the "
+                "anchors and the scored columns"
+            )
         if self.direct_active:
             direct = self._direct_target(anchor_idx, column_idx, self_mask, share)
             target = torch.cat([direct.unsqueeze(1).to(target.dtype), target], dim=1)
@@ -1242,11 +1360,21 @@ class GGPKDDistillation(nn.Module):
             # scoped to the sharpest diffusion scale, and comparing it against
             # student_entropy compares two different column domains. This is the
             # teacher entropy that student_entropy is actually the counterpart of.
-            ("teacher_entropy_scale", target_entropy[:, offset].mean()),
-            *_distribution_stats(
-                log_probs_per_scale[offset], target[:, offset, :], diffusion_mask
-            ),
         ]
+        # The unsuffixed distribution stats describe the *neighbor* scale. Under
+        # `relation_target='ambient_only'` there is no such scale -- the stack is
+        # the ambient profile and nothing else -- so these are omitted rather than
+        # aimed at index `offset`, which is then past the end of the stack. The
+        # `*_amb` block below is that arm's whole report.
+        if kl_per_scale.size(1) > offset:
+            entries.append(
+                ("teacher_entropy_scale", target_entropy[:, offset].mean())
+            )
+            entries.extend(
+                _distribution_stats(
+                    log_probs_per_scale[offset], target[:, offset, :], diffusion_mask
+                )
+            )
         if offset:
             entries.append(("teacher_entropy_amb", target_entropy[:, 0].mean()))
             entries.extend(

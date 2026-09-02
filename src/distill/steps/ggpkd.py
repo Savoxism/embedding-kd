@@ -55,6 +55,21 @@ def step(ctx, batch: dict) -> tuple[torch.Tensor, dict]:
 
         chunk_embeddings_single = []
 
+        # Encoder budget, counted where the encoding actually happens. Support
+        # policies dedup differently -- a draw concentrated on the same columns
+        # costs fewer unique texts than a spread one at the same quota -- so
+        # "equal candidate quota" is not "equal compute", and an ablation compared
+        # at equal quota alone would credit a policy for buying more forward
+        # passes. These two counters are what the arms are matched on.
+        # getattr rather than a bare += : the step is also driven by contexts that
+        # are not the distiller (the train-step contract tests build a minimal one),
+        # and a diagnostic counter must not be what decides whether the step runs.
+        # Read off `batch`, not `batch_s`: the latter lives on the GPU, and
+        # int() on a CUDA tensor blocks until the queue drains -- a per-step sync
+        # in the training loop, paid for a counter. The two hold the same values.
+        encoded_texts = int(batch["input_ids1_stu"].size(0))
+        encoded_tokens = int(batch["attention_mask1_stu"].sum())
+
         for chunk in batch["candidate_chunks"]:
             chunk_out = ctx.model_student(
                 input_ids=chunk["input_ids"].to(
@@ -66,8 +81,15 @@ def step(ctx, batch: dict) -> tuple[torch.Tensor, dict]:
                 return_dict=True,
                 output_hidden_states=False,
             )
+            encoded_texts += int(chunk["input_ids"].size(0))
+            encoded_tokens += int(chunk["attention_mask"].sum())
 
             chunk_embeddings_single.append(chunk_out.last_hidden_state[:, 0, :])
+
+        ctx.encoded_texts_total = getattr(ctx, "encoded_texts_total", 0) + encoded_texts
+        ctx.encoded_tokens_total = (
+            getattr(ctx, "encoded_tokens_total", 0) + encoded_tokens
+        )
 
         S_cls1 = s_out1.last_hidden_state[:, 0, :]
         S_candidates = torch.cat(chunk_embeddings_single, dim=0).index_select(
