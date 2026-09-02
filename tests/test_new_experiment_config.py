@@ -8,11 +8,11 @@ import torch.nn.functional as F
 
 import main
 from distiller import KnowledgeDistiller, add_domain_averages
-from src.criterions.heatgeo_distillation import HeatGeoDistillation
+from src.criterions.ggpkd_distillation import GGPKDDistillation
 from src.distill.checkpointing import save_student_weights
-from src.heatgeo.candidate_sampler import HeatGeoCandidateSampler
-from src.heatgeo.graph_builder import _entropic_affinity, _mass_prefix, _softmax_at
-from src.heatgeo.policy import (
+from src.ggpkd.candidate_sampler import GGPKDCandidateSampler
+from src.ggpkd.graph_builder import _entropic_affinity, _mass_prefix, _softmax_at
+from src.ggpkd.policy import (
     FIXED_BANDWIDTH_TEMP,
     ROW_COVERAGE_TAU,
     candidate_budget,
@@ -22,14 +22,14 @@ from src.heatgeo.policy import (
 )
 
 
-def test_heatgeo_cli_overrides(monkeypatch):
+def test_ggpkd_cli_overrides(monkeypatch):
     monkeypatch.setattr(
         sys,
         "argv",
         [
             "main.py",
             "--method",
-            "heatgeo",
+            "ggpkd",
             "--row_weight",
             "0.8",
             "--unbiased_geometry_weight",
@@ -46,7 +46,7 @@ def test_heatgeo_cli_overrides(monkeypatch):
             "46",
             "--cache_path",
             "cache/teacher.pt",
-            "--heatgeo_cache_path",
+            "--ggpkd_cache_path",
             "cache/graph.pt",
             "--pooling_method",
             "last_token",
@@ -93,7 +93,7 @@ def test_heatgeo_cli_overrides(monkeypatch):
     ):
         assert not hasattr(config, removed)
     assert config.cache_path == "cache/teacher.pt"
-    assert config.heatgeo_cache_path == "cache/graph.pt"
+    assert config.ggpkd_cache_path == "cache/graph.pt"
     assert config.pooling_method == "last_token"
     assert config.weights_dir == "weights"
     assert config.final_weights_only is True
@@ -199,8 +199,8 @@ def test_rkd_cli_uses_paper_defaults_and_accepts_overrides(monkeypatch):
     assert config.pooling_method == "mean"
 
 
-def test_heatgeo_temperature_ties():
-    criterion = HeatGeoDistillation(
+def test_ggpkd_temperature_ties():
+    criterion = GGPKDDistillation(
         diffusion_scales=(1, 2, 4),
         row_weight=0.0,  # L_rel only: no graph passed, so L_row must be off
     )
@@ -231,7 +231,7 @@ def test_heatgeo_temperature_ties():
         "direct_student_temp",
     ):
         with pytest.raises(ValueError, match=removed):
-            HeatGeoDistillation(
+            GGPKDDistillation(
                 row_weight=0.0,
                 **{removed: 0.07},
             )
@@ -265,7 +265,7 @@ def test_derived_diffusion_quota_reads_the_coverage_knee_off_the_artifact():
     assert derive_diffusion_quota(two_scale, (1, 2)) == 2
 
 
-def test_heatgeo_relational_loss_reports_semantic_decomposition():
+def test_ggpkd_relational_loss_reports_semantic_decomposition():
     """Renaming the scale groups must not change the optimized objective."""
     torch.manual_seed(7)
     teacher_bank = F.normalize(torch.randn(6, 4), dim=-1)
@@ -275,7 +275,7 @@ def test_heatgeo_relational_loss_reports_semantic_decomposition():
     anchor_idx = torch.tensor([0, 1], dtype=torch.long)
     teacher_probs = torch.rand(2, 3, 3)
 
-    criterion = HeatGeoDistillation(
+    criterion = GGPKDDistillation(
         diffusion_scales=(1, 2, 4),
         teacher_embeddings=teacher_bank,
         row_weight=0.0,
@@ -309,7 +309,7 @@ def test_heatgeo_relational_loss_reports_semantic_decomposition():
     assert metrics["loss_total"] == pytest.approx(metrics["loss_rel"], rel=1e-6)
 
 
-def test_heatgeo_tied_temperature_makes_teacher_row_attainable():
+def test_ggpkd_tied_temperature_makes_teacher_row_attainable():
     """With tau_1 = graph_temp, a student that reproduces the teacher's cosines
     reaches loss 0 exactly -- the attainability statement behind the tie."""
     graph_temp = FIXED_BANDWIDTH_TEMP
@@ -319,7 +319,7 @@ def test_heatgeo_tied_temperature_makes_teacher_row_attainable():
     cosines = torch.einsum("bd,bcd->bc", anchor, candidates)
     teacher_probs = torch.softmax(cosines / graph_temp, dim=-1).unsqueeze(1)
 
-    criterion = HeatGeoDistillation(
+    criterion = GGPKDDistillation(
         row_weight=0.0,
     )
     loss, _ = criterion(
@@ -353,7 +353,7 @@ def _row_artifact() -> dict:
 
 def test_sampler_returns_candidates_and_targets_only():
     """The sampler has no row-selection role: no walks, no row_paths."""
-    sampler = HeatGeoCandidateSampler(
+    sampler = GGPKDCandidateSampler(
         artifact=_row_artifact(),
         diffusion_quota=1,
         hard_neg_k=0,
@@ -389,7 +389,7 @@ def test_head_tail_sampler_is_unbiased_for_cached_target_distortion():
         "hard_neg_indices": torch.full((n_items, 1), -1, dtype=torch.long),
         "metadata": {"diffusion_scales": (1,)},
     }
-    sampler = HeatGeoCandidateSampler(
+    sampler = GGPKDCandidateSampler(
         artifact=artifact,
         diffusion_quota=2,
         hard_neg_k=0,
@@ -424,7 +424,7 @@ def test_unbiased_geometry_loss_matches_the_head_tail_formula():
     teacher_bank = torch.tensor(
         [[1.0, 0.0], [1.0, 0.0], [0.0, 1.0], [-1.0, 0.0]]
     )
-    criterion = HeatGeoDistillation(
+    criterion = GGPKDDistillation(
         teacher_embeddings=teacher_bank,
         row_weight=0.0,
         unbiased_geometry_weight=1.0,
@@ -472,7 +472,7 @@ def test_sampler_mixture_row_matches_the_weighted_pool_and_feeds_the_spill():
         "hard_neg_indices": torch.full((n_items, 1), -1, dtype=torch.long),
         "metadata": {"diffusion_scales": (1, 2)},
     }
-    sampler = HeatGeoCandidateSampler(
+    sampler = GGPKDCandidateSampler(
         artifact=artifact,
         diffusion_quota=5,
         hard_neg_k=0,
@@ -520,9 +520,9 @@ def _closure_graph() -> dict:
     }
 
 
-def _closure_criterion(**kwargs) -> HeatGeoDistillation:
+def _closure_criterion(**kwargs) -> GGPKDDistillation:
     graph = _closure_graph()
-    return HeatGeoDistillation(
+    return GGPKDDistillation(
         transition_neighbors=graph["transition_neighbors"],
         transition_probs=graph["transition_probs"],
         row_temps=torch.full((5,), 0.2),
@@ -614,22 +614,22 @@ def test_row_loss_forward_takes_no_walk_input_and_backpropagates():
 
 def test_row_loss_without_a_graph_is_an_error_not_a_silent_zero():
     with pytest.raises(ValueError, match="transition arrays"):
-        HeatGeoDistillation(row_weight=1.0)
+        GGPKDDistillation(row_weight=1.0)
     # row_weight=0 is the honest way to run without L_row.
-    HeatGeoDistillation(row_weight=0.0)
+    GGPKDDistillation(row_weight=0.0)
 
 
 def test_row_selection_knobs_are_gone():
     """The removed arms must raise rather than be silently absorbed."""
-    from config import HeatGeoConfig
+    from config import GGPKDConfig
 
-    config = HeatGeoConfig()
+    config = GGPKDConfig()
     for removed in ("row_mode", "row_ambient", "num_walks", "walk_length"):
         assert not hasattr(config, removed)
         with pytest.raises(AttributeError):
-            HeatGeoConfig(**{removed: 1})
+            GGPKDConfig(**{removed: 1})
         with pytest.raises(ValueError, match=removed):
-            HeatGeoDistillation(**{removed: 1})
+            GGPKDDistillation(**{removed: 1})
 
     assert config.row_weight == 1.0
     assert config.row_start_epoch == 1
@@ -723,7 +723,7 @@ def test_criterion_uses_the_row_temperature_of_each_anchor():
     # distributions from identical similarities; a scalar temperature cannot.
     torch.manual_seed(0)
     # Anchor 0 is matched at tau = 0.02, anchor 1 at tau = 0.50.
-    criterion = HeatGeoDistillation(
+    criterion = GGPKDDistillation(
         row_temps=torch.tensor([0.02, 0.50, 0.10, 0.10, 0.10, 0.10]),
         row_weight=0.0,
     )
@@ -780,16 +780,16 @@ def test_criterion_uses_the_row_temperature_of_each_anchor():
         "--eval_data",
     ),
 )
-def test_removed_heatgeo_cli_knobs_are_rejected(monkeypatch, removed_flag):
+def test_removed_ggpkd_cli_knobs_are_rejected(monkeypatch, removed_flag):
     monkeypatch.setattr(
-        sys, "argv", ["main.py", "--method", "heatgeo", removed_flag, "1"]
+        sys, "argv", ["main.py", "--method", "ggpkd", removed_flag, "1"]
     )
     with pytest.raises(SystemExit):
         main.parse_args()
 
 
-class _TinyHeatGeoStudent(torch.nn.Module):
-    """Minimal stand-in for the student encoder used by the heatgeo train_step."""
+class _TinyGGPKDStudent(torch.nn.Module):
+    """Minimal stand-in for the student encoder used by the ggpkd train_step."""
 
     def __init__(self, vocab: int = 64, dim: int = 8):
         super().__init__()
@@ -801,7 +801,7 @@ class _TinyHeatGeoStudent(torch.nn.Module):
         return SimpleNamespace(last_hidden_state=self.embedding(input_ids))
 
 
-def test_heatgeo_train_step_updates_the_student(monkeypatch):
+def test_ggpkd_train_step_updates_the_student(monkeypatch):
     """End-to-end cover for the active path: the candidate_chunks/candidate_inverse
     gather, the criterion call, and the optimizer/scheduler step."""
     from torch.amp import GradScaler
@@ -815,10 +815,10 @@ def test_heatgeo_train_step_updates_the_student(monkeypatch):
     probs = F.normalize(torch.rand(corpus, graph_k), p=1, dim=1)
 
     distiller = KnowledgeDistiller.__new__(KnowledgeDistiller)
-    distiller.config = SimpleNamespace(distill_method="heatgeo", w_task=0.0)
+    distiller.config = SimpleNamespace(distill_method="ggpkd", w_task=0.0)
     distiller.device_s = torch.device("cpu")
-    distiller.model_student = _TinyHeatGeoStudent(vocab=corpus, dim=dim)
-    distiller.criterion = HeatGeoDistillation(
+    distiller.model_student = _TinyGGPKDStudent(vocab=corpus, dim=dim)
+    distiller.criterion = GGPKDDistillation(
         diffusion_scales=(1,),
         teacher_embeddings=F.normalize(torch.randn(corpus, dim), dim=-1),
         transition_neighbors=neighbors,
@@ -906,7 +906,7 @@ def test_final_student_weights_are_idempotent(tmp_path):
     assert payload["epoch"] == 5
 
 
-def test_heatgeo_cli_diffusion_scales_and_derived_direct_temp(monkeypatch):
+def test_ggpkd_cli_diffusion_scales_and_derived_direct_temp(monkeypatch):
     """The two new ablation surfaces: R override and the derived tau_0 sentinel."""
     monkeypatch.setattr(
         sys,
@@ -914,7 +914,7 @@ def test_heatgeo_cli_diffusion_scales_and_derived_direct_temp(monkeypatch):
         [
             "main.py",
             "--method",
-            "heatgeo",
+            "ggpkd",
             "--diffusion_scales",
             "1",
             "--direct_temp",
@@ -928,13 +928,13 @@ def test_heatgeo_cli_diffusion_scales_and_derived_direct_temp(monkeypatch):
     # median entropic-affinity bandwidth before the criterion is constructed.
     assert config.direct_temp == 0.0
 
-    from config import HeatGeoConfig
+    from config import GGPKDConfig
 
     with pytest.raises(ValueError, match="direct_temp"):
-        HeatGeoConfig(direct_temp=-0.1)
+        GGPKDConfig(direct_temp=-0.1)
 
 
-def test_heatgeo_ambient_diffusion_audit_metrics():
+def test_ggpkd_ambient_diffusion_audit_metrics():
     """The residual ambient-vs-diffusion audit inside the own draw.
 
     The domain split silenced the argument on other anchors' columns; these
@@ -949,7 +949,7 @@ def test_heatgeo_ambient_diffusion_audit_metrics():
     candidate_idx = torch.tensor([[1, 2, 3], [0, 4, 5]], dtype=torch.long)
     anchor_idx = torch.tensor([0, 1], dtype=torch.long)
 
-    criterion = HeatGeoDistillation(
+    criterion = GGPKDDistillation(
         diffusion_scales=(1, 2),
         teacher_embeddings=teacher_bank,
         row_weight=0.0,

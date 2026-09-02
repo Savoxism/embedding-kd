@@ -181,7 +181,7 @@ def _compute_topk_cosine(
         k_eff = min(k + 1, n_items)
         all_indices = []
         all_scores = []
-        for start in tqdm(range(0, n_items, chunk_size), desc="HeatGeo top-k cosine"):
+        for start in tqdm(range(0, n_items, chunk_size), desc="GGPKD top-k cosine"):
             end = min(start + chunk_size, n_items)
             sims = normalized[start:end] @ normalized.T
             row_ids = torch.arange(start, end, device=target)
@@ -201,7 +201,7 @@ def _compute_topk_cosine(
     except torch.cuda.OutOfMemoryError:
         # n_items x d plus one score block did not fit. Falling back is far better
         # than failing a build that used to work.
-        print(f"HeatGeo top-k cosine: out of memory on {device}, falling back to CPU")
+        print(f"GGPKD top-k cosine: out of memory on {device}, falling back to CPU")
         torch.cuda.empty_cache()
         return _run(torch.device("cpu"))
     finally:
@@ -235,7 +235,7 @@ def _build_transition(
     target_entropy = None if perplexity is None else float(np.log(float(perplexity)))
     clamped_rows = 0
 
-    for i in tqdm(range(n_items), desc="HeatGeo mutual kNN graph"):
+    for i in tqdm(range(n_items), desc="GGPKD mutual kNN graph"):
         neighbors = []
         scores = []
         for pos, j in enumerate(top_indices[i, :graph_k]):
@@ -327,13 +327,13 @@ def _write_knn_graph_log(
         )
 
     print(
-        "HeatGeo kNN graph log saved: "
+        "GGPKD kNN graph log saved: "
         f"{log_path} | fallback={fallback_count}/{len(row_neighbors)} "
         f"({stats['fallback_rate']:.2%}), avg_degree={stats['avg_degree']:.2f}"
     )
     if fallback_count:
         fallback_examples = np.flatnonzero(fallback_flags)[:10].tolist()
-        print(f"HeatGeo fallback node examples: {fallback_examples}")
+        print(f"GGPKD fallback node examples: {fallback_examples}")
     return log_path, stats
 
 
@@ -621,7 +621,7 @@ def _build_diffusion_pools(
     fixed 64-slot set per anchor and reused it for every epoch, so after epoch 1 the
     student had fit those exact comparisons and the objective had nothing left to
     say. What is precomputed now is the diffusion support; the candidate set is
-    resampled from it each epoch by HeatGeoCandidateSampler.
+    resampled from it each epoch by GGPKDCandidateSampler.
 
     There is no pool-size argument. How many nodes an anchor keeps is decided by
     `tolerance` alone, per anchor, and the array is allocated afterwards at the
@@ -652,7 +652,7 @@ def _build_diffusion_pools(
     diffusion_capped_rows = 0
 
     for block_start in tqdm(
-        range(0, n_items, block_size), desc="HeatGeo diffusion pools"
+        range(0, n_items, block_size), desc="GGPKD diffusion pools"
     ):
         block_ids = np.arange(
             block_start, min(block_start + block_size, n_items), dtype=np.int64
@@ -882,7 +882,7 @@ def _metadata_matches(artifact: dict, metadata: dict) -> tuple[bool, str]:
     return True, ""
 
 
-def build_or_load_heatgeo_artifact(
+def build_or_load_ggpkd_artifact(
     teacher_embeddings: torch.Tensor,
     cache_path: str,
     log_dir: str,
@@ -944,12 +944,12 @@ def build_or_load_heatgeo_artifact(
         if matches:
             graph_log_path = artifact.get("graph_log_path")
             if graph_log_path and os.path.exists(graph_log_path):
-                print(f"Loaded HeatGeo artifact from: {artifact_path}")
+                print(f"Loaded GGPKD artifact from: {artifact_path}")
                 _print_graph_summary(artifact.get("graph_stats", {}), scales)
                 return artifact
-            print(f"HeatGeo graph log missing, rebuilding artifact: {graph_log_path}")
+            print(f"GGPKD graph log missing, rebuilding artifact: {graph_log_path}")
         else:
-            print(f"HeatGeo artifact config mismatch, rebuilding: {artifact_path}")
+            print(f"GGPKD artifact config mismatch, rebuilding: {artifact_path}")
             print(f"  first mismatch -> {reason}")
 
     if str(artifact_path.parent):
@@ -1029,7 +1029,7 @@ def build_or_load_heatgeo_artifact(
         "metadata": metadata,
     }
     torch.save(artifact, artifact_path)
-    print(f"Saved HeatGeo artifact to: {artifact_path}")
+    print(f"Saved GGPKD artifact to: {artifact_path}")
     _print_graph_summary(graph_stats, scales)
     return artifact
 
@@ -1040,14 +1040,14 @@ def _print_graph_summary(
     if not graph_stats:
         return
     print(
-        "HeatGeo kNN graph summary: "
+        "GGPKD kNN graph summary: "
         f"fallback={graph_stats.get('fallback_count', 0)}/{graph_stats.get('n_items', 0)} "
         f"({float(graph_stats.get('fallback_rate', 0.0)):.2%}), "
         f"avg_degree={float(graph_stats.get('avg_degree', 0.0)):.2f}"
     )
     if "pool_fill_avg" in graph_stats:
         print(
-            "HeatGeo pools: "
+            "GGPKD pools: "
             f"diffusion_fill={graph_stats['pool_fill_avg']:.1f}/"
             f"{graph_stats['pool_width']:.0f} (min {graph_stats['pool_fill_min']:.0f}), "
             f"hard_neg_fill={graph_stats['hard_pool_fill_avg']:.1f} "
@@ -1057,7 +1057,7 @@ def _print_graph_summary(
         key = f"target_kl_uniform_r{scale}"
         if key in graph_stats:
             print(
-                f"HeatGeo target r={scale}: support={graph_stats[f'target_support_r{scale}']:.1f}, "
+                f"GGPKD target r={scale}: support={graph_stats[f'target_support_r{scale}']:.1f}, "
                 f"KL(p||uniform_on_support)={graph_stats[key]:.4f}, "
                 f"top1={graph_stats[f'target_top1_r{scale}']:.4f}, "
                 f"residual_mass_outside_pool={graph_stats.get(f'pool_residual_mass_r{scale}', 0.0):.2e}, "
@@ -1073,7 +1073,7 @@ def _print_graph_summary(
     tolerance = graph_stats.get("truncation_tolerance", 0.0)
     if worst_truncation > 0.05:
         print(
-            f"WARNING: HeatGeo lazy walk drops {worst_truncation:.1%} of the mass at the "
+            f"WARNING: GGPKD lazy walk drops {worst_truncation:.1%} of the mass at the "
             f"broadest scale before renormalizing, against a per-step tolerance of "
             f"{tolerance:.1%}. The per-step bound compounds across steps, so r*tolerance "
             f"is the figure to compare against; if it is exceeded, DIFFUSION_ROW_CAP bound "
@@ -1081,10 +1081,10 @@ def _print_graph_summary(
         )
     cross_keys = [key for key in graph_stats if key.startswith("target_cross_kl_")]
     for key in sorted(cross_keys):
-        print(f"HeatGeo {key}={graph_stats[key]:.4f}")
+        print(f"GGPKD {key}={graph_stats[key]:.4f}")
     if "target_js_floor" in graph_stats:
         print(
-            "HeatGeo irreducible L_diff floor (tied student temperature): "
+            "GGPKD irreducible L_diff floor (tied student temperature): "
             f"JS_omega={graph_stats['target_js_floor']:.4f} nats "
             f"(p90={graph_stats['target_js_floor_p90']:.4f}); "
             f"mixture H={graph_stats['target_mixture_entropy']:.4f}, "
@@ -1093,7 +1093,7 @@ def _print_graph_summary(
     degenerate = int(graph_stats.get("target_degenerate_count", 0))
     if degenerate:
         print(
-            f"WARNING: HeatGeo {degenerate} anchors "
+            f"WARNING: GGPKD {degenerate} anchors "
             f"({graph_stats.get('target_degenerate_rate', 0.0):.2%}) have a near one-hot "
             f"target at r={scales[0]} (min support "
             f"{int(graph_stats.get(f'target_min_support_r{scales[0]}', 0))}). They sit in "
@@ -1104,7 +1104,7 @@ def _print_graph_summary(
     low = [s for s in scales if graph_stats.get(f"target_kl_uniform_r{s}", 1.0) < 0.05]
     if low:
         print(
-            f"WARNING: HeatGeo targets at scales {low} are close to uniform on their support "
+            f"WARNING: GGPKD targets at scales {low} are close to uniform on their support "
             f"(KL < 0.05 nats) -- lower the target perplexity (or the internal "
             f"fixed-baseline temperature), otherwise L_diff degenerates into a binary "
             f"neighbour/non-neighbour objective."

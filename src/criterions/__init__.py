@@ -3,7 +3,7 @@ from .contextual_dynamic_mapping import ContextualDynamicMapping
 from .teacher_anchor_kd import TeacherAnchorKD
 from .dual_space_kd import DualSpaceKD
 from .emo_embedding_distillation import EMODistillation
-from .heatgeo_distillation import HeatGeoDistillation
+from .ggpkd_distillation import GGPKDDistillation
 from .relational_kd import RelationalKnowledgeDistillation
 
 __all__ = [
@@ -11,6 +11,6 @@ __all__ = [
     'TeacherAnchorKD',
     'DualSpaceKD',
     'EMODistillation',
-    'HeatGeoDistillation',
+    'GGPKDDistillation',
     'RelationalKnowledgeDistillation'
 ]

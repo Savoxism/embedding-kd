@@ -4,7 +4,7 @@ import torch
 import torch.nn.functional as F
 from torch import nn
 
-from src.heatgeo.policy import (
+from src.ggpkd.policy import (
     DIAG_TOPK,
     EPS_NORM,
     FIXED_BANDWIDTH_TEMP,
@@ -31,13 +31,13 @@ def _assert_finite_tensors(named_tensors: Sequence[tuple[str, torch.Tensor]]) ->
             nan_count = 0
             inf_count = 0
         raise RuntimeError(
-            f"HeatGeo non-finite tensor {name!r}: shape={tuple(tensor.shape)}, "
+            f"GGPKD non-finite tensor {name!r}: shape={tuple(tensor.shape)}, "
             f"dtype={tensor.dtype}, device={tensor.device}, "
             f"nan_count={nan_count}, inf_count={inf_count}"
         )
 
 
-class HeatGeoDistillation(nn.Module):
+class GGPKDDistillation(nn.Module):
     r"""Multi-resolution diffusion matching.
 
     L = sum_r omega_r KL(p^T_r || p^S_r),  p^S_r(j) = softmax_j(cos(s_i,s_j) / tau_r)
@@ -277,7 +277,7 @@ class HeatGeoDistillation(nn.Module):
         for name, why in self._TIED_KNOBS.items():
             if name in kwargs:
                 raise ValueError(
-                    f"HeatGeoDistillation no longer accepts {name!r}: {why}"
+                    f"GGPKDDistillation no longer accepts {name!r}: {why}"
                 )
         self.graph_temp = FIXED_BANDWIDTH_TEMP
 
@@ -325,7 +325,7 @@ class HeatGeoDistillation(nn.Module):
             # needed the same arrays; it no longer reads them.) Fail here instead.
             if self.row_weight > 0.0:
                 raise ValueError(
-                    "L_row needs the graph transition arrays; rebuild the HeatGeo "
+                    "L_row needs the graph transition arrays; rebuild the GGPKD "
                     "artifact (missing: transition_neighbors, transition_probs) or "
                     "set row_weight=0"
                 )
@@ -648,7 +648,7 @@ class HeatGeoDistillation(nn.Module):
             raise ValueError(
                 "unbiased geometry loss needs candidate_idx, anchor_idx, "
                 "geometry_head_probs, geometry_tail_positions, and "
-                "geometry_tail_mass from HeatGeoCandidateSampler"
+                "geometry_tail_mass from GGPKDCandidateSampler"
             )
         assert candidate_idx is not None
         assert anchor_idx is not None
@@ -1008,7 +1008,7 @@ class HeatGeoDistillation(nn.Module):
             elif not self._warned_row_needs_sharing:
                 self._warned_row_needs_sharing = True
                 print(
-                    "HeatGeo: L_row requires corpus indices for in-batch sharing; "
+                    "GGPKD: L_row requires corpus indices for in-batch sharing; "
                     "term disabled."
                 )
 

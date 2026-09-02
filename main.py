@@ -7,7 +7,7 @@ from config import (
     CDMConfig,
     DSKDConfig,
     EMOConfig,
-    HeatGeoConfig,
+    GGPKDConfig,
     RKDConfig,
     StellaConfig,
     TALASConfig,
@@ -25,7 +25,7 @@ def parse_args():
         "--method",
         type=str,
         default="cdm",
-        choices=["cdm", "dskd", "emo", "stella", "talas", "heatgeo", "rkd"],
+        choices=["cdm", "dskd", "emo", "stella", "talas", "ggpkd", "rkd"],
         help="Distillation method to use",
     )
 
@@ -57,7 +57,7 @@ def parse_args():
         "--max_length", type=int, default=None, help="Maximum sequence length"
     )
 
-    # HeatGeo experiment overrides. Keeping these on the CLI lets concurrent
+    # GGPKD experiment overrides. Keeping these on the CLI lets concurrent
     # teacher-student pairs use isolated caches without rewriting the shared
     # default config.
     parser.add_argument("--graph_k", type=int, default=None)
@@ -87,8 +87,8 @@ def parse_args():
     parser.add_argument("--hard_neg_k", type=int, default=None)
     parser.add_argument("--random_neg_k", type=int, default=None)
     parser.add_argument("--cache_path", type=str, default=None)
-    parser.add_argument("--heatgeo_cache_path", type=str, default=None)
-    parser.add_argument("--heatgeo_log_dir", type=str, default=None)
+    parser.add_argument("--ggpkd_cache_path", type=str, default=None)
+    parser.add_argument("--ggpkd_log_dir", type=str, default=None)
     parser.add_argument(
         "--pooling_method",
         choices=["last_token", "mean", "cls"],
@@ -158,8 +158,8 @@ def get_config(method: str, args):
         config = StellaConfig()
     elif method == "talas":
         config = TALASConfig()
-    elif method == "heatgeo":
-        config = HeatGeoConfig()
+    elif method == "ggpkd":
+        config = GGPKDConfig()
     elif method == "rkd":
         config = RKDConfig()
     else:
@@ -199,7 +199,7 @@ def get_config(method: str, args):
     if args.max_length is not None:
         config.max_length = args.max_length
 
-    heatgeo_overrides = (
+    ggpkd_overrides = (
         "graph_k",
         "truncation_tolerance",
         "row_weight",
@@ -210,11 +210,11 @@ def get_config(method: str, args):
         "hard_neg_k",
         "random_neg_k",
         "cache_path",
-        "heatgeo_cache_path",
-        "heatgeo_log_dir",
+        "ggpkd_cache_path",
+        "ggpkd_log_dir",
         "pooling_method",
     )
-    for name in heatgeo_overrides:
+    for name in ggpkd_overrides:
         value = getattr(args, name)
         if value is not None:
             setattr(config, name, value)

@@ -1,6 +1,6 @@
-# HeatGeo: Heat-Diffusion Manifold Distillation for Text Embeddings
+# GGPKD: Heat-Diffusion Manifold Distillation for Text Embeddings
 
-This repository implements HeatGeo, a knowledge distillation method that transfers geometric structure from a large teacher embedding model to a compact student model using heat diffusion on a teacher-induced kNN graph and auxiliary supervision of the
+This repository implements GGPKD, a knowledge distillation method that transfers geometric structure from a large teacher embedding model to a compact student model using heat diffusion on a teacher-induced kNN graph and auxiliary supervision of the
 teacher-selected candidate rows.
 
 ## Supported Distillation Pairs
@@ -67,7 +67,7 @@ The student predicts a distribution over candidate neighbors:
 
 $$p_i^S(j) = \frac{\exp(\cos(s_i, s_j) / \tau_r)}{\sum_{u \in C_i} \exp(\cos(s_i, s_u) / \tau_r)}$$
 
-Each diffusion scale uses its own temperature $\tau_r$ to avoid the single-temperature collapse (see docstring in `src/criterions/heatgeo_distillation.py`).
+Each diffusion scale uses its own temperature $\tau_r$ to avoid the single-temperature collapse (see docstring in `src/criterions/ggpkd_distillation.py`).
 
 ### 6. Loss Function
 
@@ -94,7 +94,7 @@ In-batch sharing deduplicates candidates and exposes each anchor to the full uni
 
 ## Configuration
 
-Only genuine experiment controls live in `config/heatgeo_config.py`. Derived
+Only genuine experiment controls live in `config/ggpkd_config.py`. Derived
 weights, capacities, and correctness policies are resolved internally:
 
 | Group | Parameters | Description |
@@ -106,14 +106,14 @@ weights, capacities, and correctness policies are resolved internally:
 | Training | `batch_size`, `epochs`, `learning_rate`, `min_lr` | Standard training setup |
 | Ambient profile | `direct_temp` | Shared teacher/student temperature for scale 0 |
 
-RIPPLE always uses in-batch sharing, per-epoch stochastic resampling, and corpus
+GGPKD always uses in-batch sharing, per-epoch stochastic resampling, and corpus
 deduplication. Scale weights are `1/r`, the ambient
 weight equals the `r=1` weight, hard-negative storage equals `graph_k`, and the
 fixed-bandwidth baseline uses temperature `0.05`; none is a tunable method knob.
 
 ## Training
 
-### HeatGeo on Colab
+### GGPKD on Colab
 
 Open [`notebooks/train_colab.ipynb`](notebooks/train_colab.ipynb),
 choose one of the three canonical teacher--student pairs, set `ROW_WEIGHT`, and
@@ -149,7 +149,7 @@ BATCH_SIZE=16 EPOCHS=1 bash scripts/train_rkd.sh
 
 ```bash
 source venv/bin/activate
-bash scripts/train_heatgeo.sh
+bash scripts/train_ggpkd.sh
 ```
 
 Override settings via environment variables:
@@ -159,20 +159,20 @@ STUDENT_MODEL="nreimers/MiniLMv2-L6-H384-distilled-from-BERT-Base" \
 TEACHER_MODEL="Qwen/Qwen3-Embedding-0.6B" \
 BATCH_SIZE=32 \
 EPOCHS=5 \
-bash scripts/train_heatgeo.sh --no_wandb
+bash scripts/train_ggpkd.sh --no_wandb
 ```
 
 To persist student weights to a durable directory:
 
 ```bash
-WEIGHTS_DIR="/path/to/weights" bash scripts/train_heatgeo.sh --no_wandb
+WEIGHTS_DIR="/path/to/weights" bash scripts/train_ggpkd.sh --no_wandb
 ```
 
 ### Using Python directly
 
 ```bash
 python3 main.py \
-  --method heatgeo \
+  --method ggpkd \
   --train_data data/train_set/merged_3_data_5k_each.csv \
   --student_model nreimers/MiniLMv2-L6-H384-distilled-from-BERT-Base \
   --teacher_model Qwen/Qwen3-Embedding-0.6B \
@@ -180,20 +180,20 @@ python3 main.py \
   --epochs 5 \
   --lr 2e-5 \
   --unbiased_geometry_weight 0.1 \
-  --save_dir models/heatgeo/qwen3_0_6b_to_minilmv2
+  --save_dir models/ggpkd/qwen3_0_6b_to_minilmv2
 ```
 
 ## Outputs
 
 Model checkpoints are saved under the configured `save_dir`. Training metrics are written to `metrics.jsonl` in the same directory.
 
-Teacher embedding and graph caches are written to `cache/heatgeo/`. If you change the training corpus, teacher model, or graph parameters, delete the old caches before retraining:
+Teacher embedding and graph caches are written to `cache/ggpkd/`. If you change the training corpus, teacher model, or graph parameters, delete the old caches before retraining:
 
 ```bash
-rm -f cache/heatgeo/*.pt
+rm -f cache/ggpkd/*.pt
 ```
 
-kNN graph diagnostics are logged to `logs/heatgeo/knn_graph_neighbors.jsonl`.
+kNN graph diagnostics are logged to `logs/ggpkd/knn_graph_neighbors.jsonl`.
 
 ## Benchmarks
 
@@ -226,13 +226,13 @@ This repository also includes implementations of other distillation baselines fo
 ├── distiller.py                     # Training loop and evaluation
 ├── config/
 │   ├── base_config.py               # Shared defaults
-│   ├── heatgeo_config.py            # HeatGeo hyperparameters
+│   ├── ggpkd_config.py            # GGPKD hyperparameters
 │   └── ...                          # Other method configs
 ├── src/
 │   ├── criterions/
-│   │   ├── heatgeo_distillation.py  # Relational, row, and geometry objectives
+│   │   ├── ggpkd_distillation.py  # Relational, row, and geometry objectives
 │   │   └── ...                      # Other method losses
-│   ├── heatgeo/
+│   ├── ggpkd/
 │   │   ├── graph_builder.py         # kNN graph and diffusion pool construction
 │   │   └── candidate_sampler.py     # Per-epoch candidate sampling
 │   ├── data_utils/                  # Dataset and collation

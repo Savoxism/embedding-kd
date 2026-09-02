@@ -1,4 +1,4 @@
-"""The heatgeo training step.
+"""The ggpkd training step.
 
 Reads from the distiller context: config, device_s, model_student, criterion, optimizer, scaler, scheduler, current_epoch, current_step
 """
@@ -43,7 +43,7 @@ def step(ctx, batch: dict) -> tuple[torch.Tensor, dict]:
         )
 
         # A second encoder pass for a SimCSE term used to sit here, gated on
-        # `lambda_simcse`. That knob was declared on no config (heatgeo_config.py
+        # `lambda_simcse`. That knob was declared on no config (ggpkd_config.py
         # records its removal), so the gate was constantly False and the pass never
         # ran; it is dropped with the rest of the multi-layer branch it belonged to.
 
@@ -88,7 +88,7 @@ def step(ctx, batch: dict) -> tuple[torch.Tensor, dict]:
 
     if not is_finite(loss):
         raise RuntimeError(
-            f"HeatGeo loss NaN/Inf at epoch={ctx.current_epoch} step={ctx.current_step}"
+            f"GGPKD loss NaN/Inf at epoch={ctx.current_epoch} step={ctx.current_step}"
         )
 
     ctx.scaler.scale(loss).backward()
@@ -116,7 +116,7 @@ def step(ctx, batch: dict) -> tuple[torch.Tensor, dict]:
     ctx.scaler.update()
     assert_module_parameters_finite(
         ctx.model_student,
-        f"HeatGeo student after optimizer step "
+        f"GGPKD student after optimizer step "
         f"(epoch={ctx.current_epoch}, step={ctx.current_step})",
     )
     ctx.scheduler.step()

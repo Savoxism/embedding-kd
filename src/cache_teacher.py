@@ -109,7 +109,7 @@ def cache_teacher_embeddings(
 
     This used to consume a `DataLoader` over `DualTokenizerCollate`, which
     tokenized four things per row -- student and teacher, first and second text --
-    when only the teacher's first text is ever read here. On the heatgeo corpus
+    when only the teacher's first text is ever read here. On the ggpkd corpus
     the second text is a copy of the first, so three of the four were pure waste,
     and none of the student ones were consumed at all.
     """

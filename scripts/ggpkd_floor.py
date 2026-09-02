@@ -17,8 +17,8 @@ the objective is close to exhausted. Distinct per-scale temperatures break the
 identity, and then JS_w is a diagnostic bound rather than the exact minimum.
 
 Usage:
-    python scripts/heatgeo_floor.py cache/heatgeo/qwen3_4b_bert_base_graph.pt
-    python scripts/heatgeo_floor.py <artifact.pt> --observed-loss 0.83
+    python scripts/ggpkd_floor.py cache/ggpkd/qwen3_4b_bert_base_graph.pt
+    python scripts/ggpkd_floor.py <artifact.pt> --observed-loss 0.83
 """
 
 import argparse
@@ -30,7 +30,7 @@ import torch
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from src.heatgeo.policy import diffusion_weights
+from src.ggpkd.policy import diffusion_weights
 
 
 def _entropy(probs: np.ndarray) -> np.ndarray:
@@ -48,7 +48,7 @@ def _percentiles(values: np.ndarray, label: str, unit: str = "nats") -> None:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("artifact", type=str, help="path to the HeatGeo artifact .pt")
+    parser.add_argument("artifact", type=str, help="path to the GGPKD artifact .pt")
     parser.add_argument(
         "--observed-loss",
         type=float,

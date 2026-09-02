@@ -2,7 +2,7 @@
 set -euo pipefail
 
 echo "======================================"
-echo "Training with HeatGeo method"
+echo "Training with GGPKD method"
 echo "======================================"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -11,11 +11,11 @@ cd "${REPO_ROOT}"
 
 export TOKENIZERS_PARALLELISM="${TOKENIZERS_PARALLELISM:-false}"
 export PYTORCH_ENABLE_MPS_FALLBACK="${PYTORCH_ENABLE_MPS_FALLBACK:-1}"
-export WANDB_PROJECT="${WANDB_PROJECT:-iclr-mdd-heatgeo}"
-export WANDB_RUN_NAME="${WANDB_RUN_NAME:-heatgeo_qwen3_4b_to_bert_base}"
+export WANDB_PROJECT="${WANDB_PROJECT:-iclr-mdd-ggpkd}"
+export WANDB_RUN_NAME="${WANDB_RUN_NAME:-ggpkd_qwen3_4b_to_bert_base}"
 export WANDB_MODE="${WANDB_MODE:-online}"
 
-METHOD="heatgeo"
+METHOD="ggpkd"
 TRAIN_DATA="${TRAIN_DATA:-data/train_set/merged_3_data_5k_each.csv}"
 STUDENT_MODEL="${STUDENT_MODEL:-google-bert/bert-base-uncased}"
 TEACHER_MODEL="${TEACHER_MODEL:-Qwen/Qwen3-Embedding-4B}"
@@ -23,7 +23,7 @@ BATCH_SIZE="${BATCH_SIZE:-4}"
 EPOCHS="${EPOCHS:-5}"
 LR="${LR:-2e-5}"
 MAX_LENGTH="${MAX_LENGTH:-256}"
-SAVE_DIR="${SAVE_DIR:-models/heatgeo/qwen3_4b_to_bert_base}"
+SAVE_DIR="${SAVE_DIR:-models/ggpkd/qwen3_4b_to_bert_base}"
 WEIGHTS_DIR="${WEIGHTS_DIR:-}"
 
 COMMAND=(

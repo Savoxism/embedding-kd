@@ -1,7 +1,7 @@
-\section{RIPPLE: Global Geometry through Local Alignment}
+\section{GGPKD: Global Geometry through Local Alignment}
 \label{sec:method}
 
-RIPPLE approximates corpus-level teacher geometry through three operations. A teacher graph selects \emph{relevant} local relations, diffusion gives those relations broader \emph{reach}, and a shared candidate pool \emph{amortizes} both anchor-centered and auxiliary-row supervision. All teacher-side quantities are cached before optimization.
+GGPKD approximates corpus-level teacher geometry through three operations. A teacher graph selects \emph{relevant} local relations, diffusion gives those relations broader \emph{reach}, and a shared candidate pool \emph{amortizes} both anchor-centered and auxiliary-row supervision. All teacher-side quantities are cached before optimization.
 
 \subsection{From Global Geometry to Local Alignment}
 \label{sec:relation-selection}
@@ -70,7 +70,7 @@ The row $P_i^T$ defines the immediate local geometry around anchor $i$. Mutualit
 
 \subsection{Reach: Diffusion over Overlapping Neighborhoods}
 
-One hop preserves immediate local structure; diffusion composes overlapping neighborhoods to expose broader structure. With the lazy operator $\widetilde P^T=\tfrac12(I+P^T)$, RIPPLE defines
+One hop preserves immediate local structure; diffusion composes overlapping neighborhoods to expose broader structure. With the lazy operator $\widetilde P^T=\tfrac12(I+P^T)$, GGPKD defines
 \begin{equation}
 g^T_{i,1}=P_i^T,
 \qquad
@@ -85,7 +85,7 @@ Here $\operatorname{Norm}_A$ restricts a nonnegative vector to $A$ and renormali
 \subsection{Sparse Multi-Scale Matching}
 \label{sec:candidates}
 
-Full-corpus student scoring would defeat the purpose of sparse supervision. At a fixed budget, deterministic top-$K$ selection retains a high-mass head but assigns every tail relation zero inclusion probability across all subsequent epochs. RIPPLE instead retains high-mass diffusion entries, samples additional entries in proportion to teacher mass, and adds hard and uniform negatives. The deterministic head controls one-step omitted mass, while stochastic tail selection progressively exposes non-head relations within each cached target. Let $\Omega_i$ be the resulting candidate set. Sets are pooled and deduplicated across a batch $B$,
+Full-corpus student scoring would defeat the purpose of sparse supervision. At a fixed budget, deterministic top-$K$ selection retains a high-mass head but assigns every tail relation zero inclusion probability across all subsequent epochs. GGPKD instead retains high-mass diffusion entries, samples additional entries in proportion to teacher mass, and adds hard and uniform negatives. The deterministic head controls one-step omitted mass, while stochastic tail selection progressively exposes non-head relations within each cached target. Let $\Omega_i$ be the resulting candidate set. Sets are pooled and deduplicated across a batch $B$,
 \begin{equation}
 \mathcal P_B=\bigcup_{i\in B}\Omega_i,
 \end{equation}
@@ -93,7 +93,7 @@ so every distinct candidate text is encoded once even when several anchors selec
 
 The resulting conditional losses are sparse objectives, not unbiased Monte Carlo estimators of the full-corpus softmax: both teacher and student distributions are renormalized on the realized support. Their guarantee is instead one of coverage. Every positive-mass relation in the sampled tail has nonzero inclusion probability, and Appendix~\ref{app:proportional-bound} bounds the teacher mass that remains unobserved after a finite number of epochs.
 
-All supervision in RIPPLE takes a single form: a teacher-derived relation vector is restricted to a realized support and matched by a student softmax over that same support. For a center node $v$ with student similarities $c^S_v$, a nonnegative target $g$, a support $\Omega$ not containing $v$, and a temperature $\tau$, define
+All supervision in GGPKD takes a single form: a teacher-derived relation vector is restricted to a realized support and matched by a student softmax over that same support. For a center node $v$ with student similarities $c^S_v$, a nonnegative target $g$, a support $\Omega$ not containing $v$, and a temperature $\tau$, define
 \begin{equation}
 \mathcal D_v(g,\Omega,\tau)
 =D_{\mathrm{KL}}\!\left(\operatorname{Norm}_\Omega(g)\,\middle\|\,
@@ -104,7 +104,7 @@ All supervision in RIPPLE takes a single form: a teacher-derived relation vector
 \end{equation}
 Each loss below is an instance of $\mathcal D_v$; scales differ only in which target, support, and temperature they supply. A diffusion scale $r\in\mathcal R$ matches the cached target $g^T_{i,r}$ on the anchor's own support $\Omega_{i,r}=\Omega_i$ at temperature $\tau_{i,r}=\sqrt r\,\tau_i$: the ladder evaluates broader targets at a correspondingly coarser resolution and ties the one-hop student distribution to the bandwidth that generated its teacher row.
 
-Restricted diffusion targets deliberately describe relations within $\Omega_i$, but they do not specify how an anchor should compare with candidates selected by other anchors. RIPPLE therefore extends the family downward with an ambient scale $r=0$, whose target is the teacher's affinity row \emph{before} mutual-$k$NN sparsification. At a single shared bandwidth $\tau_0$,
+Restricted diffusion targets deliberately describe relations within $\Omega_i$, but they do not specify how an anchor should compare with candidates selected by other anchors. GGPKD therefore extends the family downward with an ambient scale $r=0$, whose target is the teacher's affinity row \emph{before} mutual-$k$NN sparsification. At a single shared bandwidth $\tau_0$,
 \begin{equation}
 g^T_{i,0}=\sigma_{\mathcal P_B\setminus\{i\}}\!\bigl(c^T_i/\tau_0\bigr),
 \qquad
@@ -129,7 +129,7 @@ with the weights normalized to sum to one. A scale's influence decays with the d
 
 \subsection{Amortization: Exposed-Support Row Reuse}
 
-Equation~\eqref{eq:relational-loss} centers every local objective on a batch anchor. The shared pool contains many additional texts already encoded by the student, so RIPPLE reuses teacher-selected candidates as auxiliary row centers. Let $\mathcal S_i\subseteq\Omega_i$ contain the candidates assigned positive mass by at least one realized diffusion target; hard and uniform negatives are excluded. The auxiliary centers are
+Equation~\eqref{eq:relational-loss} centers every local objective on a batch anchor. The shared pool contains many additional texts already encoded by the student, so GGPKD reuses teacher-selected candidates as auxiliary row centers. Let $\mathcal S_i\subseteq\Omega_i$ contain the candidates assigned positive mass by at least one realized diffusion target; hard and uniform negatives are excluded. The auxiliary centers are
 \begin{equation}
 \mathcal J_B
 =\left(\bigcup_{i\in B}\mathcal S_i\right)\setminus B,
@@ -156,7 +156,7 @@ The exposed mass $m_B(j)$ records how much of the original transition row is vis
 
 The complete objective is
 \begin{equation}
-\mathcal L_{\mathrm{RIPPLE}}
+\mathcal L_{\mathrm{GGPKD}}
 =\mathcal L_{\mathrm{rel}}
 +\lambda_{\mathrm{row}}\mathcal L_{\mathrm{row}}.
 \label{eq:full-objective}

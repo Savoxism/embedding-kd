@@ -1,6 +1,6 @@
 \begin{table}[t]
 \centering
-\caption{Results across three teacher\,$\rightarrow$\,student settings on nine datasets. Emotion, WiC, and STS-B (marked with $\star$) are in-domain; the remaining datasets are out-of-domain. Bold and underlined values denote the best and second-best results within each setting, excluding the Teacher and Student base reference rows. TALAS and RIPPLE results are reported as mean $\pm$ standard deviation; the remaining baseline results are from TALAS~\citep{dao2026talas}. For setting (c), the epoch checkpoint is selected on the validation average.}
+\caption{Results across three teacher\,$\rightarrow$\,student settings on nine datasets. Emotion, WiC, and STS-B (marked with $\star$) are in-domain; the remaining datasets are out-of-domain. Bold and underlined values denote the best and second-best results within each setting, excluding the Teacher and Student base reference rows. TALAS and GGPKD results are reported as mean $\pm$ standard deviation; the remaining baseline results are from TALAS~\citep{dao2026talas}. For setting (c), the epoch checkpoint is selected on the validation average.}
 \label{tab:main_results}
 \setlength{\tabcolsep}{2.4pt}
 \resizebox{\textwidth}{!}{%
@@ -65,7 +65,7 @@ TALAS
 & $\boldsymbol{85.90 \pm 0.10}$ & \underline{$81.78 \pm 0.29$} & $68.84 \pm 0.15$
 & $\boldsymbol{77.56 \pm 0.10}$ & \underline{$73.12 \pm 0.30$} & \underline{$79.24 \pm 0.10$}
 & $\boldsymbol{72.98 \pm 0.19}$ & \underline{$80.57 \pm 0.01$} & \underline{$78.04 \pm 0.07$} \\
-\textbf{RIPPLE}
+\textbf{GGPKD}
 & $\boldsymbol{91.89 \pm 0.17}$ & $73.49 \pm 0.45$ & \underline{$70.29 \pm 0.57$}
 & $83.88 \pm 0.05$ & $\boldsymbol{84.00 \pm 0.18}$ & $66.19 \pm 0.06$
 & \underline{$77.49 \pm 0.13$} & $\boldsymbol{74.96 \pm 0.19}$ & $\boldsymbol{81.87 \pm 0.09}$
@@ -119,7 +119,7 @@ TALAS
 & $\boldsymbol{87.58 \pm 0.02}$ & \underline{$82.90 \pm 0.12$} & $66.96 \pm 0.07$
 & \underline{$75.82 \pm 0.11$} & $68.11 \pm 0.20$ & \underline{$77.51 \pm 0.18$}
 & \underline{$70.10 \pm 0.13$} & \underline{$79.92 \pm 0.05$} & \underline{$76.64 \pm 0.04$} \\
-\textbf{RIPPLE}
+\textbf{GGPKD}
 & $\boldsymbol{90.80 \pm 0.12}$ & $72.98 \pm 0.30$ & $\boldsymbol{67.61 \pm 0.98}$
 & $84.84 \pm 0.09$ & $\boldsymbol{83.44 \pm 0.14}$ & $62.27 \pm 0.15$
 & $\boldsymbol{78.64 \pm 0.09}$ & $\boldsymbol{73.56 \pm 0.20}$ & $\boldsymbol{81.53 \pm 0.22}$
@@ -173,7 +173,7 @@ TALAS
 & $\boldsymbol{84.85 \pm 0.10}$ & \underline{$80.91 \pm 0.27$} & $66.32 \pm 0.07$
 & $70.72 \pm 0.15$ & $67.80 \pm 0.08$ & \underline{$72.39 \pm 0.31$}
 & $66.61 \pm 0.24$ & \underline{$76.88 \pm 0.07$} & \underline{$73.46 \pm 0.10$} \\
-\textbf{RIPPLE}
+\textbf{GGPKD}
 & $\boldsymbol{88.03 \pm 0.24}$ & $71.04 \pm 0.29$ & $\boldsymbol{62.80 \pm 0.40}$
 & $83.24 \pm 0.12$ & $\boldsymbol{82.31 \pm 0.05}$ & $65.35 \pm 0.10$
 & $\boldsymbol{74.22 \pm 0.11}$ & $\boldsymbol{73.22 \pm 0.09}$ & $\boldsymbol{77.92 \pm 0.08}$

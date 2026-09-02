@@ -42,7 +42,7 @@ class _TinyTokenizer:
 def test_run_manifest_pins_config_git_and_artifact(tmp_path):
     run_id = new_run_id()
     config = SimpleNamespace(
-        distill_method="heatgeo",
+        distill_method="ggpkd",
         row_weight=1.0,
         diffusion_scales=(1, 2, 4),
         seed=42,

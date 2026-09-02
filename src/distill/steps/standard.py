@@ -1,6 +1,6 @@
 """The shared training step for cdm, dskd, emo and stella.
 
-Unlike heatgeo/rkd/talas -- which use a cached teacher -- these four run the
+Unlike ggpkd/rkd/talas -- which use a cached teacher -- these four run the
 teacher model inside the step, so they share a prologue (teacher forward, student
 forward, pooling, task loss) and differ only in the KD term.
 

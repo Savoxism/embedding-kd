@@ -2,7 +2,7 @@ from .base_config import BaseConfig
 from .cdm_config import CDMConfig
 from .dskd_config import DSKDConfig
 from .emo_config import EMOConfig
-from .heatgeo_config import HeatGeoConfig
+from .ggpkd_config import GGPKDConfig
 from .rkd_config import RKDConfig
 from .stella_config import StellaConfig
 from .talas_config import (
@@ -19,7 +19,7 @@ __all__ = [
     "CDMConfig",
     "DSKDConfig",
     "EMOConfig",
-    "HeatGeoConfig",
+    "GGPKDConfig",
     "RKDConfig",
     "StellaConfig",
     "TALASConfig",

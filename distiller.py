@@ -26,7 +26,7 @@ from src.cache_teacher import (
 from src.criterions.contextual_dynamic_mapping import ContextualDynamicMapping
 from src.criterions.dual_space_kd import DualSpaceKD
 from src.criterions.emo_embedding_distillation import EMODistillation
-from src.criterions.heatgeo_distillation import HeatGeoDistillation
+from src.criterions.ggpkd_distillation import GGPKDDistillation
 from src.criterions.relational_kd import RelationalKnowledgeDistillation
 from src.criterions.stella_distillation import (
     StellaModel,
@@ -34,9 +34,9 @@ from src.criterions.stella_distillation import (
 from src.data_utils import DualTokenizerCollate, TextPairRaw
 from src.data_utils.dataset_cache import (
     DualTokenizerCollateWithTeacher,
-    HeatGeoCollate,
+    GGPKDCollate,
     TextPairWithTeacher,
-    TextPairWithTeacherAndHeatGeo,
+    TextPairWithTeacherAndGGPKD,
 )
 from src.distill.benchmarks import add_domain_averages, print_evaluation_table
 from src.distill.checkpointing import save_checkpoint, save_student_weights
@@ -45,7 +45,7 @@ from src.distill.numerics import (
     assert_module_parameters_finite,
 )
 from src.distill.stella_trainer import train as stella_train
-from src.distill.steps.heatgeo import step as heatgeo_step
+from src.distill.steps.ggpkd import step as ggpkd_step
 from src.distill.steps.rkd import step as rkd_step
 from src.distill.steps.standard import step as standard_step
 from src.distill.steps.talas import step as talas_step
@@ -61,8 +61,8 @@ from src.evaluation.evaluation_automodel import (
     test_pair_tasks,
     test_sts_tasks,
 )
-from src.heatgeo import HeatGeoCandidateSampler, build_or_load_heatgeo_artifact
-from src.heatgeo.policy import (
+from src.ggpkd import GGPKDCandidateSampler, build_or_load_ggpkd_artifact
+from src.ggpkd.policy import (
     DETERMINISTIC_TOPM,
     FIXED_BANDWIDTH_TEMP,
     ROW_COVERAGE_TAU,
@@ -161,12 +161,12 @@ class KnowledgeDistiller:
                 f"distance={config.rkd_distance_weight}, "
                 f"angle={config.rkd_angle_weight}, task={config.w_task}"
             )
-        elif config.distill_method == "heatgeo":
-            # `self.heatgeo_artifact` is set unconditionally in the data path before
+        elif config.distill_method == "ggpkd":
+            # `self.ggpkd_artifact` is set unconditionally in the data path before
             # this runs, so indexing it directly is right: a `.get()` fallback would
             # hand the criterion `None` and make it blame the graph artifact for what
             # is really a setup-ordering bug.
-            artifact = self.heatgeo_artifact
+            artifact = self.ggpkd_artifact
             # --direct_temp 0 derives the last free student temperature from the
             # graph itself: the median entropic-affinity bandwidth. The ambient
             # target is the same softmax-of-cosines construction as the transition
@@ -185,7 +185,7 @@ class KnowledgeDistiller:
                     f"Derived direct_temp={config.direct_temp:.4f} "
                     "(median graph bandwidth; requested via --direct_temp 0)"
                 )
-            self.criterion = HeatGeoDistillation(
+            self.criterion = GGPKDDistillation(
                 diffusion_scales=config.diffusion_scales,
                 teacher_embeddings=self.teacher_cls_all,
                 direct_temp=config.direct_temp,
@@ -196,7 +196,7 @@ class KnowledgeDistiller:
                 transition_probs=artifact["transition_probs"],
             ).to(self.device_s)
             self.scheduler = self._build_scheduler()
-            print("HeatGeo criterion initialized")
+            print("GGPKD criterion initialized")
         else:
             self.criterion = None
 
@@ -238,7 +238,7 @@ class KnowledgeDistiller:
 
         print("Loading tokenizers...")
         tokenizer_kwargs = {"use_fast": True}
-        cached_teacher_methods = {"talas", "heatgeo", "rkd"}
+        cached_teacher_methods = {"talas", "ggpkd", "rkd"}
         self._teacher_cache_ready = (
             cfg.distill_method in cached_teacher_methods
             and Path(cfg.cache_path).is_file()
@@ -336,13 +336,13 @@ class KnowledgeDistiller:
         print("Models loaded successfully!")
         print("Done setup_models")
 
-    def _resolve_heatgeo_anchor_column(self, df: pd.DataFrame) -> str:
+    def _resolve_ggpkd_anchor_column(self, df: pd.DataFrame) -> str:
         cfg = self.config
-        column = cfg.heatgeo_anchor_column
+        column = cfg.ggpkd_anchor_column
         if column is not None:
             if column not in df.columns:
                 raise ValueError(
-                    f"heatgeo_anchor_column={column!r} is not a column of "
+                    f"ggpkd_anchor_column={column!r} is not a column of "
                     f"{cfg.train_data_path} (have {list(df.columns)})"
                 )
             return column
@@ -355,7 +355,7 @@ class KnowledgeDistiller:
             column = "sentence1"
         if column not in df.columns:
             raise ValueError(
-                f"HeatGeo needs column {column!r} for task_type={cfg.task_type!r}"
+                f"GGPKD needs column {column!r} for task_type={cfg.task_type!r}"
             )
 
         # The teacher graph is built over this column only. If a genuine second view
@@ -364,13 +364,13 @@ class KnowledgeDistiller:
         partner = {"pair_cls": "hypothesis", "pair_reg": "sentence2"}.get(cfg.task_type)
         if partner in df.columns and not df[column].equals(df[partner]):
             print(
-                f"WARNING: HeatGeo uses only {column!r}; {partner!r} differs from it "
-                f"and is not distilled. Set heatgeo_anchor_column explicitly if that "
+                f"WARNING: GGPKD uses only {column!r}; {partner!r} differs from it "
+                f"and is not distilled. Set ggpkd_anchor_column explicitly if that "
                 f"is not what you want."
             )
         return column
 
-    def _prepare_heatgeo_frame(
+    def _prepare_ggpkd_frame(
         self, df: pd.DataFrame, anchor_column: str
     ) -> tuple[pd.DataFrame, np.ndarray]:
         """Drop exact duplicate anchors and report the surviving row positions.
@@ -383,29 +383,29 @@ class KnowledgeDistiller:
         texts = df[anchor_column].astype(str)
         duplicated = texts.duplicated(keep="first").to_numpy()
         if not duplicated.any():
-            print(f"HeatGeo corpus: {len(df)} rows, no duplicate anchors")
+            print(f"GGPKD corpus: {len(df)} rows, no duplicate anchors")
             return df.reset_index(drop=True), keep_positions
 
         keep_positions = np.flatnonzero(~duplicated).astype(np.int64)
         deduped = df.iloc[keep_positions].reset_index(drop=True)
         print(
-            f"HeatGeo corpus dedup on {anchor_column!r}: "
+            f"GGPKD corpus dedup on {anchor_column!r}: "
             f"{len(df)} -> {len(deduped)} rows ({int(duplicated.sum())} exact duplicates removed)"
         )
         return deduped, keep_positions
 
-    def _heatgeo_source_ids(self, df: pd.DataFrame) -> np.ndarray:
-        column = self.config.heatgeo_source_column
+    def _ggpkd_source_ids(self, df: pd.DataFrame) -> np.ndarray:
+        column = self.config.ggpkd_source_column
         if column not in df.columns:
             print(
-                f"HeatGeo: no {column!r} column, hard negatives will not be "
+                f"GGPKD: no {column!r} column, hard negatives will not be "
                 f"restricted to the same source corpus"
             )
             return np.zeros(len(df), dtype=np.int64)
         codes = pd.factorize(df[column].astype(str))[0].astype(np.int64)
         counts = pd.Series(codes).value_counts().to_dict()
         print(
-            f"HeatGeo sources: {len(counts)} distinct, sizes={sorted(counts.values(), reverse=True)}"
+            f"GGPKD sources: {len(counts)} distinct, sizes={sorted(counts.values(), reverse=True)}"
         )
         return codes
 
@@ -422,7 +422,7 @@ class KnowledgeDistiller:
                 df["premise"] = df["text"] if "text" in df.columns else df.iloc[:, 0]
                 df["hypothesis"] = df["text"] if "text" in df.columns else df.iloc[:, 0]
 
-        # HeatGeo is anchor-only: the teacher graph, the candidate pool and the
+        # GGPKD is anchor-only: the teacher graph, the candidate pool and the
         # student forward all consume one string per row. Resolve that column once
         # and keep it, instead of each component re-deriving it from the frame.
         # Fixed probe set for the geometry diagnostics. Sampled from the training
@@ -435,13 +435,13 @@ class KnowledgeDistiller:
         if probe_column is not None:
             self.probe_texts = build_probe_set(df, probe_column, size=2048, seed=0)
 
-        self.heatgeo_anchor_column = None
-        if cfg.distill_method == "heatgeo":
-            self.heatgeo_anchor_column = self._resolve_heatgeo_anchor_column(df)
-            df, keep_positions = self._prepare_heatgeo_frame(
-                df, self.heatgeo_anchor_column
+        self.ggpkd_anchor_column = None
+        if cfg.distill_method == "ggpkd":
+            self.ggpkd_anchor_column = self._resolve_ggpkd_anchor_column(df)
+            df, keep_positions = self._prepare_ggpkd_frame(
+                df, self.ggpkd_anchor_column
             )
-            self.heatgeo_keep_positions = keep_positions
+            self.ggpkd_keep_positions = keep_positions
 
         self.task_head = None
         if cfg.distill_method == "emo":
@@ -455,8 +455,8 @@ class KnowledgeDistiller:
                     self.device_s
                 )
 
-        # TALAS, HeatGeo and RKD use cached teacher embeddings.
-        if cfg.distill_method in ("talas", "heatgeo", "rkd"):
+        # TALAS, GGPKD and RKD use cached teacher embeddings.
+        if cfg.distill_method in ("talas", "ggpkd", "rkd"):
             cache_path = Path(cfg.cache_path)
 
             # Check if cache exists
@@ -496,9 +496,9 @@ class KnowledgeDistiller:
 
             # A stale cache computed before dedup still lines up row-for-row with the
             # original frame, so slice it instead of forcing a teacher re-run.
-            keep_positions = getattr(self, "heatgeo_keep_positions", None)
+            keep_positions = getattr(self, "ggpkd_keep_positions", None)
             if (
-                cfg.distill_method == "heatgeo"
+                cfg.distill_method == "ggpkd"
                 and keep_positions is not None
                 and len(teacher_cls_list) > len(df)
                 and len(keep_positions) == len(df)
@@ -530,16 +530,16 @@ class KnowledgeDistiller:
 
             self.teacher_cls_all = teacher_cls_list
 
-            if cfg.distill_method == "heatgeo":
-                self.heatgeo_artifact = build_or_load_heatgeo_artifact(
+            if cfg.distill_method == "ggpkd":
+                self.ggpkd_artifact = build_or_load_ggpkd_artifact(
                     teacher_embeddings=teacher_cls_list,
-                    cache_path=cfg.heatgeo_cache_path,
-                    log_dir=cfg.heatgeo_log_dir,
+                    cache_path=cfg.ggpkd_cache_path,
+                    log_dir=cfg.ggpkd_log_dir,
                     graph_k=cfg.graph_k,
                     perplexity=cfg.perplexity,
                     truncation_tolerance=cfg.truncation_tolerance,
                     diffusion_scales=cfg.diffusion_scales,
-                    source_ids=self._heatgeo_source_ids(df),
+                    source_ids=self._ggpkd_source_ids(df),
                 )
 
             # Free teacher model to save GPU memory (teacher not needed after caching)
@@ -549,20 +549,20 @@ class KnowledgeDistiller:
                 torch.cuda.empty_cache()
             print("Teacher model freed from GPU memory")
 
-            if cfg.distill_method == "heatgeo":
+            if cfg.distill_method == "ggpkd":
                 if cfg.diffusion_quota is None:
                     # Written back onto the config so the run manifest and the
                     # banner below record the concrete value this run trained on.
                     cfg.diffusion_quota = derive_diffusion_quota(
-                        self.heatgeo_artifact["pool_probs"].numpy(),
-                        self.heatgeo_artifact["metadata"]["diffusion_scales"],
+                        self.ggpkd_artifact["pool_probs"].numpy(),
+                        self.ggpkd_artifact["metadata"]["diffusion_scales"],
                     )
                     print(
                         f"Derived diffusion_quota={cfg.diffusion_quota} "
                         f"(coverage tau={ROW_COVERAGE_TAU} at the median anchor)"
                     )
-                self.heatgeo_sampler = HeatGeoCandidateSampler(
-                    artifact=self.heatgeo_artifact,
+                self.ggpkd_sampler = GGPKDCandidateSampler(
+                    artifact=self.ggpkd_artifact,
                     diffusion_quota=cfg.diffusion_quota,
                     hard_neg_k=cfg.hard_neg_k,
                     random_neg_k=cfg.random_neg_k,
@@ -570,11 +570,11 @@ class KnowledgeDistiller:
                     deterministic_topm=DETERMINISTIC_TOPM,
                     unbiased_geometry=cfg.unbiased_geometry_weight > 0.0,
                 )
-                anchor_texts = df[self.heatgeo_anchor_column].astype(str).tolist()
-                self.train_ds = TextPairWithTeacherAndHeatGeo(
+                anchor_texts = df[self.ggpkd_anchor_column].astype(str).tolist()
+                self.train_ds = TextPairWithTeacherAndGGPKD(
                     anchor_texts=anchor_texts,
                     teacher_cls=teacher_cls_list,
-                    sampler=self.heatgeo_sampler,
+                    sampler=self.ggpkd_sampler,
                     labels=df["label"].astype(int).tolist()
                     if "label" in df.columns
                     else None,
@@ -582,18 +582,18 @@ class KnowledgeDistiller:
                 # The collate owns the tokenized corpus: anchors and candidates are
                 # drawn from the same rows, so every text is tokenized once here
                 # instead of ~candidate_size times per epoch in the workers.
-                self.collate_fn = HeatGeoCollate(
+                self.collate_fn = GGPKDCollate(
                     self.tok_student,
                     cfg.task_type,
                     cfg.max_length,
                     corpus_texts=anchor_texts,
                 )
                 print(
-                    "HeatGeo candidate sampling: "
-                    f"candidate_size={self.heatgeo_sampler.candidate_size} "
-                    f"(diffusion={self.heatgeo_sampler.diffusion_quota}, "
-                    f"hard={self.heatgeo_sampler.hard_neg_k}, "
-                    f"random={self.heatgeo_sampler.random_neg_k}), "
+                    "GGPKD candidate sampling: "
+                    f"candidate_size={self.ggpkd_sampler.candidate_size} "
+                    f"(diffusion={self.ggpkd_sampler.diffusion_quota}, "
+                    f"hard={self.ggpkd_sampler.hard_neg_k}, "
+                    f"random={self.ggpkd_sampler.random_neg_k}), "
                     "stochastic=True, resample_per_epoch=True"
                 )
             else:
@@ -624,10 +624,10 @@ class KnowledgeDistiller:
             pin_memory=True,
             num_workers=cfg.num_workers,
             persistent_workers=cfg.num_workers > 0 and not resamples_per_epoch,
-            # HeatGeo and RKD define their relational support from the batch. A short
+            # GGPKD and RKD define their relational support from the batch. A short
             # remainder would therefore optimize a structurally different objective;
             # RKD additionally needs at least two examples to form a relation.
-            drop_last=cfg.distill_method in ("heatgeo", "rkd"),
+            drop_last=cfg.distill_method in ("ggpkd", "rkd"),
         )
 
         print(f"Training samples: {len(self.train_ds)}")
@@ -773,8 +773,8 @@ class KnowledgeDistiller:
         cfg = self.config
         method = cfg.distill_method
 
-        if method == "heatgeo":
-            return heatgeo_step(self, batch)
+        if method == "ggpkd":
+            return ggpkd_step(self, batch)
 
         if method == "rkd":
             return rkd_step(self, batch)
@@ -802,7 +802,7 @@ class KnowledgeDistiller:
         peak_memory_mb = 0.0
         # Per-step diagnostics, buffered here and written once at the end of the epoch.
         # Epoch means alone cannot show *when* inside an epoch a curve flattened, and
-        # the HeatGeo objective saturated inside epoch 1 on the previous run -- five
+        # the GGPKD objective saturated inside epoch 1 on the previous run -- five
         # points per curve is a summary, not a diagnosis. Buffering keeps this to one
         # file write per epoch rather than one per step.
         step_records: list[dict] = []
@@ -1045,7 +1045,7 @@ class KnowledgeDistiller:
             cfg.save_dir,
             self.run_id,
             cfg,
-            artifact=getattr(self, "heatgeo_artifact", None),
+            artifact=getattr(self, "ggpkd_artifact", None),
         )
 
         if cfg.distill_method == "stella":
@@ -1068,7 +1068,7 @@ class KnowledgeDistiller:
             self.current_epoch = epoch
 
             use_row = (
-                cfg.distill_method == "heatgeo"
+                cfg.distill_method == "ggpkd"
                 and cfg.row_weight > 0
                 and epoch + 1 >= cfg.row_start_epoch
             )

@@ -18,7 +18,7 @@ def _gumbel_topk(probs: np.ndarray, k: int, rng: np.random.Generator) -> np.ndar
     return support[chosen]
 
 
-class HeatGeoCandidateSampler:
+class GGPKDCandidateSampler:
     """Draw the relational candidate set for one anchor.
 
     The candidate stream is seeded by ``(seed, epoch, idx)``. The rows ``L_row``
@@ -58,7 +58,7 @@ class HeatGeoCandidateSampler:
                 scales = (1,)
             else:
                 raise ValueError(
-                    "HeatGeo artifact metadata must provide one diffusion scale "
+                    "GGPKD artifact metadata must provide one diffusion scale "
                     f"per target tensor; got scales={scales}, n_scales={self.n_scales}"
                 )
         self.weights = normalized_diffusion_weights(scales)
@@ -275,7 +275,7 @@ class HeatGeoCandidateSampler:
 
         if support.size + n_hard + n_uniform != self.candidate_size:
             raise ValueError(
-                "HeatGeo candidate budget exceeds the available non-anchor corpus: "
+                "GGPKD candidate budget exceeds the available non-anchor corpus: "
                 f"budget={self.candidate_size}, n_items={self.n_items}"
             )
 

@@ -2,9 +2,9 @@
 from .dataset import TextPairRaw, DualTokenizerCollate
 from .dataset_cache import (
     DualTokenizerCollateWithTeacher,
-    HeatGeoCollate,
+    GGPKDCollate,
     TextPairWithTeacher,
-    TextPairWithTeacherAndHeatGeo,
+    TextPairWithTeacherAndGGPKD,
 )
 
 __all__ = [
@@ -12,6 +12,6 @@ __all__ = [
     'DualTokenizerCollate',
     'DualTokenizerCollateWithTeacher',
     'TextPairWithTeacher',
-    'TextPairWithTeacherAndHeatGeo',
-    'HeatGeoCollate'
+    'TextPairWithTeacherAndGGPKD',
+    'GGPKDCollate'
 ]

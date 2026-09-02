@@ -221,7 +221,7 @@ def step(ctx, batch: dict) -> tuple[torch.Tensor, dict]:
         restore_without_update(ctx)
         ctx.optimizer.zero_grad(set_to_none=True)
         ctx.scaler.update()
-        # Same policy as the heatgeo skip path: the schedule was sized for
+        # Same policy as the ggpkd skip path: the schedule was sized for
         # len(train_loader) * epochs steps, so a skipped update must still
         # advance it or the LR runs permanently behind its own curve.
         ctx.scheduler.step()

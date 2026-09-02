@@ -6,7 +6,7 @@ keys, and the fact that the student actually moved. A pure code move has to leav
 all three untouched.
 
 They also close a standing coverage gap -- before this file, `cdm`, `dskd`, `emo`
-and `stella` had no test of any kind, while `heatgeo`, `rkd` and `talas` each had
+and `stella` had no test of any kind, while `ggpkd`, `rkd` and `talas` each had
 one. The students and teachers here are deliberately tiny stand-ins: the point is
 to exercise the distiller's plumbing (device moves, pooling, task loss, criterion
 call, backward, optimizer/scheduler step), not to check the encoders.
@@ -177,7 +177,7 @@ def test_emo_train_step_contract():
 
 
 @pytest.mark.parametrize(
-    "method", ["heatgeo", "rkd", "talas", "cdm", "dskd", "emo", "stella"]
+    "method", ["ggpkd", "rkd", "talas", "cdm", "dskd", "emo", "stella"]
 )
 def test_every_method_still_routes_to_a_step(method):
     """`train_step` is a dispatcher now; every method must still reach a step.
@@ -189,13 +189,13 @@ def test_every_method_still_routes_to_a_step(method):
     """
     import inspect
 
-    from src.distill.steps import heatgeo, rkd, standard, talas
+    from src.distill.steps import ggpkd, rkd, standard, talas
 
     sources = "".join(
         inspect.getsource(obj)
         for obj in (
             KnowledgeDistiller.train_step,
-            heatgeo.step,
+            ggpkd.step,
             rkd.step,
             talas.step,
             standard.step,
@@ -209,8 +209,8 @@ def test_every_method_still_routes_to_a_step(method):
 def test_step_modules_do_not_import_each_other():
     """The point of the split: editing one method cannot reach another.
 
-    heatgeo is the active method and the six baselines are frozen, so nothing
-    should be able to break RIPPLE by touching a baseline step.
+    ggpkd is the active method and the six baselines are frozen, so nothing
+    should be able to break GGPKD by touching a baseline step.
     """
     import ast
     from pathlib import Path as _Path

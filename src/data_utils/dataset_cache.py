@@ -81,8 +81,8 @@ class TextPairWithTeacher(Dataset):
         return item, tcls
 
 
-class TextPairWithTeacherAndHeatGeo(Dataset):
-    """HeatGeo anchors with a candidate set redrawn every epoch.
+class TextPairWithTeacherAndGGPKD(Dataset):
+    """GGPKD anchors with a candidate set redrawn every epoch.
 
     `anchor_texts` is passed in explicitly rather than re-derived from the frame:
     the teacher graph is built over exactly these strings, and silently pulling a
@@ -113,7 +113,7 @@ class TextPairWithTeacherAndHeatGeo(Dataset):
     def __getitem__(self, idx):
         # Only corpus indices cross the worker boundary. Carrying the candidate
         # *texts* here shipped candidate_size strings per item through shared
-        # memory and re-tokenized every one of them; HeatGeoCollate holds the
+        # memory and re-tokenized every one of them; GGPKDCollate holds the
         # corpus tokenized once and looks them up by index instead.
         if self.sampler.unbiased_geometry:
             (
@@ -143,10 +143,10 @@ class TextPairWithTeacherAndHeatGeo(Dataset):
         return item
 
 
-class HeatGeoCollate:
+class GGPKDCollate:
     """Deduplicated, length-bucketed candidate batches.
 
-    Three things drive the cost of a HeatGeo step, and none of them are the loss:
+    Three things drive the cost of a GGPKD step, and none of them are the loss:
 
     * **Duplicate encodes.** In-batch sharing makes the criterion run
       ``torch.unique`` over the flattened candidate indices and keeps exactly one

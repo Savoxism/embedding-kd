@@ -1,8 +1,8 @@
 from .base_config import BaseConfig
 
 
-class HeatGeoConfig(BaseConfig):
-    distill_method = "heatgeo"
+class GGPKDConfig(BaseConfig):
+    distill_method = "ggpkd"
 
     student_model_name = "google-bert/bert-base-uncased"
     student_dtype = "float32"
@@ -122,7 +122,7 @@ class HeatGeoConfig(BaseConfig):
     # ---- Per-Epoch Candidate Sampling ---------------------------------------
     # None derives the support size from the graph artifact at startup: the
     # smallest k reaching ROW_COVERAGE_TAU mixture-mass coverage at the median
-    # anchor (src/heatgeo/policy.py, where the sweep evidence for the target is
+    # anchor (src/ggpkd/policy.py, where the sweep evidence for the target is
     # recorded). An int (CLI --diffusion_quota) still overrides for ablations.
     diffusion_quota = None
     # 40/26 is the best-known arm (75.29 on Qwen3-0.6B -> MiniLMv2-H384, graph
@@ -141,8 +141,8 @@ class HeatGeoConfig(BaseConfig):
     # negatives. Both were read by the distiller but declared nowhere, so they
     # could not be set through this class at all. None keeps the existing
     # behaviour: the anchor column is picked from task_type.
-    heatgeo_anchor_column = None
-    heatgeo_source_column = "source"
+    ggpkd_anchor_column = None
+    ggpkd_source_column = "source"
 
     # ---- Training Setup ------------------------------------------------------
     batch_size = 64
@@ -165,18 +165,18 @@ class HeatGeoConfig(BaseConfig):
     train_data_path = "data/train_set/merged_3_data_5k_each.csv"
     # cache_teacher removed: nothing read it. Teacher caching is gated purely by
     # whether cache_path already exists on disk (distiller.py).
-    cache_path = "cache/heatgeo/qwen3_4b_bert_base_teacher_train.pt"
-    heatgeo_cache_path = "cache/heatgeo/qwen3_4b_bert_base_graph.pt"
-    heatgeo_log_dir = "logs/heatgeo"
+    cache_path = "cache/ggpkd/qwen3_4b_bert_base_teacher_train.pt"
+    ggpkd_cache_path = "cache/ggpkd/qwen3_4b_bert_base_graph.pt"
+    ggpkd_log_dir = "logs/ggpkd"
     pooling_method = "last_token"
     normalize_cache = True
     cache_dtype = "float32"
 
-    save_dir = "models/heatgeo/qwen3_4b_to_bert_base"
+    save_dir = "models/ggpkd/qwen3_4b_to_bert_base"
     final_weights_only = False
 
     # ---- Multi-Layer Spec ----------------------------------------------------
-    # Defining both of these switches the distiller to its multi-layer HeatGeo
+    # Defining both of these switches the distiller to its multi-layer GGPKD
     # branch. They are off, so that branch never runs, and with it every knob that
     # only that branch reads.
     # kd_teacher_layers = [12, 24, 36, 36]
@@ -184,8 +184,8 @@ class HeatGeoConfig(BaseConfig):
 
     # ---- Removed: earlier auxiliary objectives -------------------------------
     # The active objective is L_rel + row_weight * L_row +
-    # unbiased_geometry_weight * E_hat inside the HeatGeo criterion.
-    # lambda_heatgeo,
+    # unbiased_geometry_weight * E_hat inside the GGPKD criterion.
+    # lambda_ggpkd,
     # lambda_cosine, lambda_infonce,
     # lambda_simcse, simcse_temp, simcse_start_epoch and lambda_sim used to sit
     # here at 0. Every one of them is read only inside the multi-layer branch
@@ -197,12 +197,12 @@ class HeatGeoConfig(BaseConfig):
 
     def __init__(self, **kwargs):
         # An unknown key is a typo, not a no-op. The previous version skipped it
-        # silently, so `HeatGeoConfig(walk_lenght=8)` ran the default 4 and looked
+        # silently, so `GGPKDConfig(walk_lenght=8)` ran the default 4 and looked
         # like the override had been applied.
         unknown = sorted(k for k in kwargs if not hasattr(self, k))
         if unknown:
             raise AttributeError(
-                f"HeatGeoConfig got unknown option(s): {', '.join(unknown)}"
+                f"GGPKDConfig got unknown option(s): {', '.join(unknown)}"
             )
         for k, v in kwargs.items():
             setattr(self, k, v)

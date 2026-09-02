@@ -30,7 +30,7 @@ because $p_i^T(C_i)\leq1$ and $0\leq\ell_{ij}\leq1$. Averaging over anchors prov
 \subsection{Proof of the Teacher-Proportional Missed-Mass Bound}
 \label{app:proportional-bound}
 
-Let $C_i^{(T)}$ be the union of relations selected for anchor $i$ through epoch $T$, and let $\bar\delta_T=N^{-1}\sum_i[1-p_i^T(C_i^{(T)})]$. Suppose RIPPLE makes at least $m$ teacher-proportional draws per anchor and epoch. A relation retained deterministically has zero miss probability. For any remaining relation $j$, proportional sampling without replacement selects $j$ at each draw with conditional probability at least $p_i^T(j)$, because removing other entries can only decrease the remaining normalizer. Its probability of being missed by at least $mT$ draws is therefore at most $(1-p_i^T(j))^{mT}$. Consequently,
+Let $C_i^{(T)}$ be the union of relations selected for anchor $i$ through epoch $T$, and let $\bar\delta_T=N^{-1}\sum_i[1-p_i^T(C_i^{(T)})]$. Suppose GGPKD makes at least $m$ teacher-proportional draws per anchor and epoch. A relation retained deterministically has zero miss probability. For any remaining relation $j$, proportional sampling without replacement selects $j$ at each draw with conditional probability at least $p_i^T(j)$, because removing other entries can only decrease the remaining normalizer. Its probability of being missed by at least $mT$ draws is therefore at most $(1-p_i^T(j))^{mT}$. Consequently,
 \begin{equation}
 \mathbb E[\bar\delta_T]
 \leq\frac1N\sum_i\sum_{j\neq i}

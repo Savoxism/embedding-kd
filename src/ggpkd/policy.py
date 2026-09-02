@@ -1,4 +1,4 @@
-"""Canonical RIPPLE invariants shared by graph, sampler, and loss code.
+"""Canonical GGPKD invariants shared by graph, sampler, and loss code.
 
 These values are implementation policy, not independently tunable method
 hyperparameters. Keeping their derivation here prevents the graph artifact,
@@ -10,12 +10,12 @@ from collections.abc import Sequence
 import numpy as np
 
 # Used only by the fixed-bandwidth baseline and by low-level tests without an
-# entropic-affinity artifact. Canonical RIPPLE uses the per-row temperatures
+# entropic-affinity artifact. Canonical GGPKD uses the per-row temperatures
 # stored in the graph artifact.
 FIXED_BANDWIDTH_TEMP = 0.05
 
 # Diagnostics and numerical/runtime choices are deliberately outside the method
-# config. Changing them does not define a new RIPPLE objective.
+# config. Changing them does not define a new GGPKD objective.
 EPS_NORM = 1e-8
 DIAG_TOPK = 8
 
