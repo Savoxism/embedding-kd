@@ -164,7 +164,19 @@ def figure_two(result_rows: list[dict], coverage_rows: list[dict], out_dir: Path
     panel and the paper is entitled to claim an empirical gain but not the
     mechanism. Panel (b) plots on its x-axis exactly the quantity panel (a) ends
     on, so the two compose and a reader can follow one policy across both.
+
+    S1 identifies the model pair. Full runs from transfer experiments must not
+    enter its hybrid mean or seed error bars. Coverage must be for the same pair.
     """
+    s1_pairs = {row.get("pair") for row in result_rows if row.get("ablation") == "s1"}
+    if len(s1_pairs) != 1 or not all(s1_pairs):
+        raise ValueError(
+            "Figure 2 requires S1 results for exactly one model pair; "
+            "filter the results CSV and use that pair's coverage replay."
+        )
+    pair = s1_pairs.pop()
+    print(f"figure 2 model pair: {pair}")
+
     # Coverage at the last replayed epoch: the total supervision an arm ever saw.
     final_coverage: dict[str, list[float]] = defaultdict(list)
     last_epoch = max(int(r["epoch"]) for r in coverage_rows)
@@ -175,7 +187,7 @@ def figure_two(result_rows: list[dict], coverage_rows: list[dict], out_dir: Path
     # The support arms only: S1 plus the full model, which *is* the hybrid arm.
     points: dict[str, dict[str, list[float]]] = defaultdict(lambda: defaultdict(list))
     for row in result_rows:
-        if row.get("ablation") not in ("s1", "full"):
+        if row.get("pair") != pair or row.get("ablation") not in ("s1", "full"):
             continue
         # `policy` is collect.py's canonical label, which the two baselines need:
         # neither draws support, so both leave `support_policy` at its default and

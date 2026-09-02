@@ -84,6 +84,11 @@ python scripts/ablation/figures.py --out-dir latex/figures
 share held by the top 1% of nodes). That block, not the downstream average, is
 G1's primary evidence: the mutual-kNN claim is about the graph.
 
+Figure 2 uses the single model pair represented by S1 and only that pair's
+`full` runs; X1's full runs must not enter its hybrid mean or seed error bars.
+Use coverage replay from the same pair. Missing or multiple S1 pair identities
+are rejected instead of silently averaging across settings.
+
 Figures are drawn at their final printed size, so include them **without** a
 width key:
 
