@@ -17,8 +17,8 @@ the objective is close to exhausted. Distinct per-scale temperatures break the
 identity, and then JS_w is a diagnostic bound rather than the exact minimum.
 
 Usage:
-    python scripts/ggpkd_floor.py cache/ggpkd/qwen3_4b_bert_base_graph.pt
-    python scripts/ggpkd_floor.py <artifact.pt> --observed-loss 0.83
+    python scripts/ggpkd/floor.py cache/ggpkd/qwen3_4b_bert_base_graph.pt
+    python scripts/ggpkd/floor.py <artifact.pt> --observed-loss 0.83
 """
 
 import argparse
@@ -28,7 +28,7 @@ from pathlib import Path
 import numpy as np
 import torch
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from src.ggpkd.policy import diffusion_weights
 

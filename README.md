@@ -128,28 +128,28 @@ batch 128, 80 epochs, learning rate `1e-4`, decays at epochs 40 and 60). Teacher
 embeddings are cached before student training.
 
 ```bash
-bash scripts/train_rkd.sh
+bash scripts/rkd/train.sh
 ```
 
 Select another supported teacher-student pair or prepare only its cache:
 
 ```bash
-bash scripts/train_rkd.sh bge_m3_to_minilmv2_h768
-bash scripts/train_rkd.sh qwen3_4b_to_bert_base --prepare-cache
+bash scripts/rkd/train.sh bge_m3_to_minilmv2_h768
+bash scripts/rkd/train.sh qwen3_4b_to_bert_base --prepare-cache
 ```
 
 For a quick smoke run, override the expensive paper defaults through environment
 variables:
 
 ```bash
-BATCH_SIZE=16 EPOCHS=1 bash scripts/train_rkd.sh
+BATCH_SIZE=16 EPOCHS=1 bash scripts/rkd/train.sh
 ```
 
 ### Using the shell script
 
 ```bash
 source venv/bin/activate
-bash scripts/train_ggpkd.sh
+bash scripts/ggpkd/train.sh
 ```
 
 Override settings via environment variables:
@@ -159,13 +159,13 @@ STUDENT_MODEL="nreimers/MiniLMv2-L6-H384-distilled-from-BERT-Base" \
 TEACHER_MODEL="Qwen/Qwen3-Embedding-0.6B" \
 BATCH_SIZE=32 \
 EPOCHS=5 \
-bash scripts/train_ggpkd.sh --no_wandb
+bash scripts/ggpkd/train.sh --no_wandb
 ```
 
 To persist student weights to a durable directory:
 
 ```bash
-WEIGHTS_DIR="/path/to/weights" bash scripts/train_ggpkd.sh --no_wandb
+WEIGHTS_DIR="/path/to/weights" bash scripts/ggpkd/train.sh --no_wandb
 ```
 
 ### Using Python directly
@@ -211,12 +211,12 @@ Validation runs after each epoch. Test evaluation runs once after training.
 
 This repository also includes implementations of other distillation baselines for comparison:
 
-- **TALAS** (`config/talas_config.py`, `scripts/train_talas.sh`)
-- **RKD** (`config/rkd_config.py`, `scripts/train_rkd.sh`)
-- **CDM** (`config/cdm_config.py`, `scripts/train_cdm.sh`)
-- **DSKD** (`config/dskd_config.py`, `scripts/train_dskd.sh`)
-- **EMO** (`config/emo_config.py`, `scripts/train_emo.sh`)
-- **Stella** (`config/stella_config.py`, `scripts/train_stella.sh`)
+- **TALAS** (`config/talas_config.py`, `scripts/talas/train.sh`)
+- **RKD** (`config/rkd_config.py`, `scripts/rkd/train.sh`)
+- **CDM** (`config/cdm_config.py`, `scripts/cdm/train.sh`)
+- **DSKD** (`config/dskd_config.py`, `scripts/dskd/train.sh`)
+- **EMO** (`config/emo_config.py`, `scripts/emo/train.sh`)
+- **Stella** (`config/stella_config.py`, `scripts/stella/train.sh`)
 
 ## Project Structure
 
@@ -240,7 +240,10 @@ This repository also includes implementations of other distillation baselines fo
 │   ├── cache_teacher.py             # Teacher embedding caching
 │   ├── pooling.py                   # Pooling strategies
 │   └── loss.py                      # Shared loss utilities
-├── scripts/                         # Training shell scripts
+├── scripts/                         # Launchers, one folder per method
+│   ├── <method>/train.sh            # Bash launcher (train.ps1 = PowerShell)
+│   ├── ggpkd/floor.py               # L_rel floor diagnostic
+│   └── talas/                       # + run_paper.sh, summarize.py
 ├── data/                            # Train/val/test CSV datasets
 ├── docs/                            # Reference papers
 ```

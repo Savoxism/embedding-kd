@@ -17,7 +17,7 @@ from config.talas_config import (
     get_talas_paper_pair,
 )
 from distiller import KnowledgeDistiller
-from scripts.summarize_talas import SEEDS, TASKS, aggregate_run
+from scripts.talas.summarize import SEEDS, TASKS, aggregate_run
 from src.cache_teacher import validate_cached_embeddings
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -92,7 +92,7 @@ def test_shell_launcher_resolves_root_and_pair_from_any_working_directory(
     result = subprocess.run(
         [
             "bash",
-            str(REPO_ROOT / "scripts" / "train_talas.sh"),
+            str(REPO_ROOT / "scripts" / "talas" / "train.sh"),
             pair,
             "--seed",
             "43",
@@ -119,7 +119,7 @@ def test_shell_launcher_resolves_root_and_pair_from_any_working_directory(
 
 def test_shell_launcher_rejects_unknown_pair(tmp_path):
     result = subprocess.run(
-        ["bash", str(REPO_ROOT / "scripts" / "train_talas.sh"), "bad-pair"],
+        ["bash", str(REPO_ROOT / "scripts" / "talas" / "train.sh"), "bad-pair"],
         cwd=tmp_path,
         text=True,
         capture_output=True,
@@ -129,7 +129,7 @@ def test_shell_launcher_rejects_unknown_pair(tmp_path):
 
 
 def test_powershell_launcher_contains_canonical_portable_mapping():
-    text = (REPO_ROOT / "scripts" / "train_talas.ps1").read_text(encoding="utf-8")
+    text = (REPO_ROOT / "scripts" / "talas" / "train.ps1").read_text(encoding="utf-8")
     assert "$PSScriptRoot" in text
     assert ".venv\\Scripts\\python.exe" in text
     for pair, preset in TALAS_PAPER_PAIRS.items():

@@ -1,6 +1,6 @@
 [tool.pytest.ini_options]
 # The tests import top-level modules (`main`, `distiller`, `config`, `src`, and
-# `scripts.summarize_talas`), which only resolve when the repo root is on the
+# `scripts.talas.summarize`), which only resolve when the repo root is on the
 # path. Without this, `pytest` works but bare `pytest` does not -- the kind of
 # difference that reads as a broken test suite.
 pythonpath = ["."]

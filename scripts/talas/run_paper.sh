@@ -2,7 +2,7 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
-REPO_ROOT="$(cd -- "$SCRIPT_DIR/.." && pwd)"
+REPO_ROOT="$(cd -- "$SCRIPT_DIR/../.." && pwd)"
 cd "$REPO_ROOT"
 PYTHON_BIN="${PYTHON_BIN:-$REPO_ROOT/.venv/bin/python}"
 RUN_ID="${RUN_ID:-$(date -u +%Y%m%d-%H%M%S)}"
@@ -96,7 +96,7 @@ for index in "${!PAIRS[@]}"; do
         set +e
         PAIR_KEY="$pair" GPU="$gpu" CACHE_ROOT="$CACHE_ROOT" \
             RUN_DIR="$RUN_ROOT/cache_setup/$pair" PYTHON_BIN="$PYTHON_BIN" \
-            bash "$SCRIPT_DIR/train_talas.sh" --prepare-cache >"$log" 2>&1
+            bash "$SCRIPT_DIR/train.sh" --prepare-cache >"$log" 2>&1
         code=$?
         printf '%s\n' "$code" > "$exit_file"
         exit "$code"
@@ -147,7 +147,7 @@ launch_training() {
         set +e
         PAIR_KEY="$pair" SEED="$seed" GPU="$gpu" CACHE_ROOT="$CACHE_ROOT" \
             RUN_DIR="$run_dir" WEIGHTS_DIR="$run_dir/weights" \
-            PYTHON_BIN="$PYTHON_BIN" bash "$SCRIPT_DIR/train_talas.sh" >"$log" 2>&1
+            PYTHON_BIN="$PYTHON_BIN" bash "$SCRIPT_DIR/train.sh" >"$log" 2>&1
         code=$?
         printf '%s\n' "$code" > "$exit_file"
         exit "$code"
@@ -205,5 +205,5 @@ if (( failed_runs != 0 )); then
     exit 1
 fi
 
-"$PYTHON_BIN" "$SCRIPT_DIR/summarize_talas.py" "$RUN_ROOT" | tee "$RUN_ROOT/summary.txt"
+"$PYTHON_BIN" "$SCRIPT_DIR/summarize.py" "$RUN_ROOT" | tee "$RUN_ROOT/summary.txt"
 echo "TALAS paper run complete: $RUN_ROOT"

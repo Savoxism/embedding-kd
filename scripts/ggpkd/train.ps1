@@ -6,7 +6,7 @@ $env:CUDA_VISIBLE_DEVICES = "0,1"
 $env:TOKENIZERS_PARALLELISM = "false"
 
 $METHOD = "ggpkd"
-$TRAIN_DATA = "../data/train_set/merged_3_data_5k_each.csv"
+$TRAIN_DATA = "../../data/train_set/merged_3_data_5k_each.csv"
 $STUDENT_MODEL = "google-bert/bert-base-uncased"
 $TEACHER_MODEL = "Qwen/Qwen3-Embedding-4B"
 $BATCH_SIZE = 16
@@ -15,7 +15,7 @@ $LR = 2e-5
 $MAX_LENGTH = 256
 $SAVE_DIR = "checkpoints/ggpkd"
 
-python3 ../main.py `
+python3 ../../main.py `
     --method $METHOD `
     --train_data $TRAIN_DATA `
     --student_model $STUDENT_MODEL `

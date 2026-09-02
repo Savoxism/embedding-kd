@@ -14,7 +14,7 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
-$RepoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
+$RepoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..\..")).Path
 $PythonBin = if ($env:PYTHON_BIN) {
     $env:PYTHON_BIN
 } else {
