@@ -42,24 +42,23 @@ GRID = "#e3e2dd"
 
 # Two neutral steps for the baselines. They are deliberately NOT categorical
 # slots: a baseline is a different kind of thing from a policy, grey reads that
-# way at a glance, and keeping them off the hue scale means the four policies
-# stay the validated all-pairs four rather than becoming an unvalidated six.
+# way at a glance, and keeping them off the hue scale means the three policies
+# stay the validated support comparison rather than mixing in two no-graph arms.
 # Both clear 3:1 against the white surface and are separated by dE 19 -- checked
 # with the palette validator, same as the categorical set. The obvious lighter
 # grey does not clear contrast, and a thin 1.3pt line at 2.5:1 disappears in
 # print.
 BASELINE = ("#52514e", "#8a8880")
 
-# The four support-selection arms of S1, in the order they are argued about:
-# the two deterministic-ish controls, then the stochastic control, then ours.
+# The three support-selection arms of S1, in the order they are argued about:
+# the stochastic controls, then the deterministic method.
 # The baselines lead, because they are where the argument starts.
 POLICY_COLOR = {
     "batch_local": BASELINE[0],
     "uniform_corpus": BASELINE[1],
     "uniform": SERIES[3],
-    "topk": SERIES[1],
+    "topk": SERIES[0],
     "proportional": SERIES[2],
-    "hybrid": SERIES[0],
 }
 POLICY_MARKER = {
     "batch_local": "v",
@@ -67,31 +66,27 @@ POLICY_MARKER = {
     "uniform": "s",
     "topk": "^",
     "proportional": "D",
-    "hybrid": "o",
 }
 POLICY_DASH = {
     "batch_local": (0, (1, 2)),
     "uniform_corpus": (0, (3, 2)),
     "uniform": (0, (1, 1.4)),
-    "topk": (0, (4, 1.6)),
+    "topk": (0, ()),
     "proportional": (0, (4, 1.4, 1, 1.4)),
-    "hybrid": (0, ()),
 }
 POLICY_LABEL = {
     "batch_local": "Batch-local RKD",
     "uniform_corpus": "Uniform corpus (matched)",
     "uniform": "Uniform",
-    "topk": "Teacher top-$K$",
+    "topk": "Teacher top-$K$ (ours)",
     "proportional": "Teacher-proportional",
-    "hybrid": "Head + prop. tail (ours)",
 }
 POLICY_ORDER = (
     "batch_local",
     "uniform_corpus",
     "uniform",
-    "topk",
     "proportional",
-    "hybrid",
+    "topk",
 )
 # Arms that form no graph relations at all. Their exposed graph-relation mass is
 # zero by construction, not by measurement, so nothing replays them -- Figure 2

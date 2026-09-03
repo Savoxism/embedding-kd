@@ -24,7 +24,7 @@
 
 | ID | So sánh (cùng encoder budget) | Seeds | Tín hiệu cần thấy | Nó hỗ trợ paper như nào |
 |---|---|---:|---|---|
-| S1 | Uniform/random support; teacher top-K; teacher-proportional; **head + proportional tail (GGPKD)** | 42–44 | Hybrid có coverage ban đầu gần top-K nhưng tiếp tục tăng; `E_hat` thấp hơn random/top-K | Kiểm chứng core thesis: teacher relevance, không phải random co-occurrence hay thêm compute, quyết định supervision hữu ích |
+| S1 | Uniform/random support; teacher-proportional; **teacher top-K (GGPKD)** | 42–44 | Top-K giữ teacher mass cao nhất trên mỗi update và đạt `E_hat` thấp hơn các stochastic controls | Kiểm chứng core thesis: teacher relevance, không phải random co-occurrence hay thêm compute, quyết định supervision hữu ích |
 | S2 | Full `R={1,2,4}` vs local-only `R={1}` | 42–44 | Multi-scale giảm `E_hat` và tăng STS ở cùng số encoded texts | Chứng minh diffusion tạo reach ngoài local neighborhood |
 | S3 | Full diffusion target vs **đúng cùng selected nodes** nhưng target là direct teacher cosine | 42–44 | Diffusion target tốt hơn direct target | Tách giá trị của composed graph relations khỏi lợi ích đơn thuần do chọn được farther nodes |
 | S4 | Factorial ambient × row: full; no ambient; no row (`row_weight=0`); neither | 42–44 | Ambient cải thiện calibration/pair-cls hoặc global geometry; row tăng hiệu quả/score với 0 extra encodes | Kiểm chứng riêng reconnect và amortization, đồng thời phát hiện interaction giữa hai term |
@@ -47,7 +47,7 @@ Không ưu tiên trước rebuttal: sweep rộng `k`, perplexity, truncation tol
 
 1. **Table: fixed-budget support selection** — policy, cumulative coverage, `epsilon`, `E_hat`, teacher–student Spearman, STS Avg, Pair-cls Avg, Avg, unique texts/tokens. Đây là bằng chứng trực tiếp nhất cho causal chain.
 2. **Table: full-model deletion/factorial** — Full, `R={1}`, same-nodes direct target, no ambient, no row, neither; báo `E_hat`, STS Avg, Pair-cls Avg, Avg và encoded texts. Table này trả lời component nào thực sự cần thiết.
-3. **Figure 1: cumulative teacher mass ever exposed vs epochs/opportunities** — random, top-K, proportional, hybrid. Top-K nên plateau; hybrid nên có high initial coverage và tiếp tục tăng. Figure có thể tạo bằng replay sampler offline, không cần thêm training.
+3. **Figure 1: cumulative teacher mass ever exposed vs epochs/opportunities** — random, proportional, top-K. Top-K nên có coverage mỗi update cao nhất nhưng plateau; các stochastic controls tiếp tục khám phá support mới qua epoch. Figure có thể tạo bằng replay sampler offline, không cần thêm training.
 4. **Figure 2: coverage → geometry → downstream** — hai panel: coverage vs `E_hat`, và `E_hat` vs STS Avg; mỗi điểm là policy/budget, kèm seed error bars. Đây là figure nối theory với empirical result mạnh nhất.
 
 ### Appendix

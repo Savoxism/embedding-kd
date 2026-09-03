@@ -20,10 +20,10 @@ p_i = sum_r omega_r p_i^(r) that the objective's diffusion group targets:
                    KL(ptilde || p) = -log m nats, so this is the target
                    perturbation the policy imposes, in the units of the loss.
 
-Top-K should show high coverage at epoch 1 and then a flat line: it draws the
-same columns every epoch. The hybrid draw should start close to it and keep
-climbing. That contrast is the figure's whole content, and if it does not appear,
-the mechanism claim does not survive.
+Top-K should maximize teacher-mass coverage under the per-epoch budget and then
+stay flat because it draws the same support every epoch. Proportional and uniform
+sampling expose new columns across epochs, while paying higher restriction
+distortion on each individual update.
 
 Usage:
     python scripts/ablation/replay_coverage.py \
@@ -90,9 +90,7 @@ def replay(
         for slot, anchor in enumerate(anchors):
             idx = int(anchor)
             rng = sampler._rng(idx, GGPKDCandidateSampler._STREAM_CANDIDATES)
-            _, positions, _, _, _ = sampler._select_support_impl(
-                idx, rng, estimate_geometry=False
-            )
+            _, positions = sampler._select_support_impl(idx, rng)
             row = mixture[idx]
             drawn = float(row[positions].sum()) if positions.size else 0.0
             # Clipped, not asserted: a row whose whole pool mass is below 1 after

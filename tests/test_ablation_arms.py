@@ -72,11 +72,7 @@ def test_every_policy_spends_the_same_budget(artifact, policy):
 
 
 def test_topk_is_the_only_policy_that_repeats_its_support(artifact):
-    """Figure 1's whole content: top-K plateaus, the others keep drawing anew.
-
-    If this ever ties, the coverage figure has nothing to show and the support
-    argument collapses into "top-K plus noise".
-    """
+    """Top-k is deterministic; the two stochastic controls keep exploring."""
     supports = {}
     for policy in SUPPORT_POLICIES:
         sampler = _sampler(artifact, policy)
@@ -87,32 +83,19 @@ def test_topk_is_the_only_policy_that_repeats_its_support(artifact):
         supports[policy] = per_epoch
 
     assert supports["topk"][0] == supports["topk"][1] == supports["topk"][2]
-    for policy in ("hybrid", "proportional", "uniform"):
+    for policy in ("proportional", "uniform"):
         assert supports[policy][0] != supports[policy][1], policy
 
 
 def test_topk_covers_more_teacher_mass_per_epoch_than_uniform(artifact):
     """The policies must actually order by teacher relevance, not just differ."""
     mass = {}
-    for policy in ("topk", "hybrid", "uniform"):
+    for policy in ("topk", "proportional", "uniform"):
         sampler = _sampler(artifact, policy)
         sampler.set_epoch(0)
         mass[policy] = float(sampler.sample(11)[1][0, :QUOTA].sum())
-    assert mass["topk"] > mass["hybrid"] > mass["uniform"]
-
-
-def test_unbiased_geometry_rejects_non_hybrid_policies(artifact):
-    """The head--tail estimator is defined against the hybrid draw and only it."""
-    with pytest.raises(ValueError, match="hybrid"):
-        GGPKDCandidateSampler(
-            artifact=artifact,
-            diffusion_quota=QUOTA,
-            hard_neg_k=HARD_K,
-            random_neg_k=RANDOM_K,
-            seed=42,
-            unbiased_geometry=True,
-            support_policy="topk",
-        )
+    assert mass["topk"] > mass["proportional"]
+    assert mass["topk"] > mass["uniform"]
 
 
 # --------------------------------------------------------------------------- #
@@ -288,7 +271,7 @@ def test_unknown_knn_mode_is_rejected():
 
 def test_config_defaults_are_the_unablated_method():
     config = GGPKDConfig()
-    assert config.support_policy == "hybrid"
+    assert config.support_policy == "topk"
     assert config.relation_target == "diffusion"
     assert config.use_ambient is True
     assert config.knn_mode == "mutual"

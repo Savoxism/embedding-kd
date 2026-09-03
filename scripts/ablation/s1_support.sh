@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
 # S1 -- fixed-budget support selection, plus the batch-local baseline.
-# P0, 3 seeds, 15 new runs (+ the shared full runs).
+# P0, 3 seeds, 12 new runs (+ the shared full Top-k runs).
 #
 # Question: is the gain bought by *teacher relevance*, or by random co-occurrence
 # and extra compute? Two groups of arms answer two halves of that.
 #
-# Fixed-budget policies (uniform / top-K / proportional / hybrid). All four spend
+# Fixed-budget policies (Top-k / proportional / uniform). All three spend
 # the same candidate budget on the same graph, so the only thing that moves is
 # which columns the diffusion quota lands on. `uniform` draws from the anchor's
 # own pool rather than the whole corpus -- outside the pool the diffusion target
@@ -28,9 +28,9 @@
 # diffusion mass is zero by construction and the graph group is dropped with it.
 # Between the two of them, "more compute" and "structured support" are separated.
 #
-# Expect: hybrid has coverage near top-K at epoch 1 and keeps climbing (Figure 1,
-# from replay_coverage.py), and reaches lower E_hat than uniform and top-K; both
-# baselines sit far below every policy on coverage and E_hat.
+# Expect: Top-k maximizes per-epoch teacher-mass coverage and reaches lower
+# geometry distortion than proportional and uniform; both no-graph baselines sit
+# far below every support policy on coverage and geometry preservation.
 source "$(dirname "${BASH_SOURCE[0]}")/_common.sh"
 
 # The matched baseline spends the whole candidate width on uniform corpus draws,
@@ -40,8 +40,7 @@ source "$(dirname "${BASH_SOURCE[0]}")/_common.sh"
 # the first run_full below, when the artifact is guaranteed to exist.
 
 for seed in ${SEEDS}; do
-    run_full "${seed}"                                            # head + proportional tail
-    run_arm s1 topk         "${seed}" --support_policy topk         # teacher top-K
+    run_full "${seed}"                                            # canonical teacher top-K
     run_arm s1 proportional "${seed}" --support_policy proportional # teacher-proportional
     run_arm s1 uniform      "${seed}" --support_policy uniform      # uniform over the pool
 

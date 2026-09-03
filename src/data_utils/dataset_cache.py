@@ -128,29 +128,12 @@ class TextPairWithTeacherAndGGPKD(Dataset):
         # *texts* here shipped candidate_size strings per item through shared
         # memory and re-tokenized every one of them; GGPKDCollate holds the
         # corpus tokenized once and looks them up by index instead.
-        if self.sampler.unbiased_geometry:
-            (
-                candidate_idx,
-                teacher_probs,
-                geometry_head_probs,
-                geometry_tail_positions,
-                geometry_tail_mass,
-            ) = self.sampler.sample_geometry_torch(idx)
-        else:
-            candidate_idx, teacher_probs = self.sampler.sample_torch(idx)
+        candidate_idx, teacher_probs = self.sampler.sample_torch(idx)
         item = {
             "idx": idx,
             "candidate_idx": candidate_idx,
             "teacher_probs": teacher_probs,
         }
-        if self.sampler.unbiased_geometry:
-            item.update(
-                {
-                    "geometry_head_probs": geometry_head_probs,
-                    "geometry_tail_positions": geometry_tail_positions,
-                    "geometry_tail_mass": geometry_tail_mass,
-                }
-            )
         if self.labels is not None:
             item["label"] = int(self.labels[idx])
         return item
@@ -289,20 +272,6 @@ class GGPKDCollate:
             "candidate_inverse": candidate_inverse,
             "teacher_probs": teacher_probs,
         }
-        if "geometry_head_probs" in batch[0]:
-            out.update(
-                {
-                    "geometry_head_probs": torch.stack(
-                        [item["geometry_head_probs"] for item in batch], dim=0
-                    ).float(),
-                    "geometry_tail_positions": torch.stack(
-                        [item["geometry_tail_positions"] for item in batch], dim=0
-                    ).long(),
-                    "geometry_tail_mass": torch.stack(
-                        [item["geometry_tail_mass"] for item in batch], dim=0
-                    ).float(),
-                }
-            )
         if ys is not None:
             out["labels"] = torch.tensor(ys, dtype=torch.long)
         return out

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # X1 -- does the support claim replicate on a different teacher family?  P1.
 #
-# BGE-M3 -> MiniLMv2-H768, two arms only: the full hybrid draw against the
+# BGE-M3 -> MiniLMv2-H768, two arms only: the full Top-k method against the
 # uniform control. Replicating the core claim on a second teacher is worth more
 # than any further hyperparameter sweep on the main setting, and two arms is what
 # fits the budget.
@@ -16,6 +16,6 @@ export POOLING_METHOD="cls"
 source "$(dirname "${BASH_SOURCE[0]}")/_common.sh"
 
 for seed in ${SEEDS}; do
-    run_full "${seed}"                                            # hybrid support
+    run_full "${seed}"                                            # Top-k support
     run_arm x1 uniform "${seed}" --support_policy uniform          # uniform control
 done

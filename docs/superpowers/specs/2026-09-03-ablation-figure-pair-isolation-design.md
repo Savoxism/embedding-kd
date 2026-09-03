@@ -4,7 +4,7 @@
 
 The completed 43-run ablation batch contains Qwen–MiniLM S1 arms and full runs
 for both Qwen–MiniLM and BGE–MiniLM. `figure_two` filters by ablation but not
-pair, mixing both full models into its hybrid point and seed error bars. The
+pair, mixing both full models into its method point and seed error bars. The
 training outputs and pair-specific tables are valid; only Figure 2 is affected.
 
 ## Decision
@@ -20,9 +20,9 @@ multi-pair figure redesign is outside this repair.
 ## Implementation and verification plan
 
 1. Add a regression test with one S1 pair and another pair's full runs. Verify
-   that the existing implementation incorrectly shifts the hybrid point.
+   that the existing implementation incorrectly shifts the method point.
 2. Add the pair guard and filter in `figure_two`; document the input contract.
-3. Test correct hybrid means, error bars and baseline labels, and rejection of
+3. Test correct method means, error bars and baseline labels, and rejection of
    missing or multiple S1 pairs in the server project virtual environment.
 4. Back up the old plotting script and Figure 2 artifacts on the server. Deploy
    only the repair and test, rerun Figure 2, and compare the plotted point with

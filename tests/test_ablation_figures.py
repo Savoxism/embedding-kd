@@ -26,15 +26,15 @@ def test_figure_two_excludes_other_pairs_full_runs(monkeypatch, tmp_path):
         _row("main", "s1", "batch_local"),
         _row("main", "s1", "uniform_corpus"),
         *[
-            _row("main", "full", "hybrid", distortion, sts)
+            _row("main", "full", "topk", distortion, sts)
             for distortion, sts in [(0.02, 70.0), (0.03, 71.0), (0.04, 72.0)]
         ],
-        _row("transfer", "full", "hybrid", 0.001, 99.0),
+        _row("transfer", "full", "topk", 0.001, 99.0),
         _row("transfer", "x1", "uniform", 0.002, 98.0),
     ]
     coverage = [
         {"policy": policy, "epoch": "5", "coverage_mean": str(mass)}
-        for policy, mass in [("hybrid", 0.8), ("uniform", 0.2)]
+        for policy, mass in [("topk", 0.8), ("uniform", 0.2)]
     ]
     saved = []
     monkeypatch.setattr(figures, "save", lambda fig, path: saved.append(fig))
@@ -45,12 +45,12 @@ def test_figure_two_excludes_other_pairs_full_runs(monkeypatch, tmp_path):
             containers = {
                 item.get_label(): item for item in fig.axes[index].containers
             }
-            hybrid = containers[figures.POLICY_LABEL["hybrid"]]
-            line = hybrid.lines[0]
+            topk = containers[figures.POLICY_LABEL["topk"]]
+            line = topk.lines[0]
             assert list(line.get_xdata()) == pytest.approx([expected_x])
             assert list(line.get_ydata()) == pytest.approx([expected_y])
             # y-error bars must use the three main-pair seeds, not the transfer.
-            y_segment = hybrid.lines[2][1].get_segments()[0]
+            y_segment = topk.lines[2][1].get_segments()[0]
             expected_std = 0.01 if index == 0 else 1.0
             assert y_segment[:, 1] == pytest.approx(
                 [expected_y - expected_std, expected_y + expected_std]
@@ -64,7 +64,7 @@ def test_figure_two_excludes_other_pairs_full_runs(monkeypatch, tmp_path):
 @pytest.mark.parametrize(
     "rows",
     [
-        [_row("main", "full", "hybrid")],
+        [_row("main", "full", "topk")],
         [_row("main", "s1", "uniform"), _row("transfer", "s1", "uniform")],
         [_row("", "s1", "uniform")],
         [{"ablation": "s1", "policy": "uniform"}],

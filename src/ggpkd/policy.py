@@ -19,20 +19,11 @@ FIXED_BANDWIDTH_TEMP = 0.05
 EPS_NORM = 1e-8
 DIAG_TOPK = 8
 
-# Deterministic head of the per-scale support draw (top-m columns kept before the
-# Gumbel tail). Variance control for the sampler, not a modelling choice: it was
-# never swept, and the support it protects is the same mass the Gumbel draw is
-# already proportional to.
-DETERMINISTIC_TOPM = 2
-
-# Support-selection arms for the fixed-budget ablation. Only `hybrid` is the
-# method; the other three exist to answer what the head and the tail each buy.
+# Support-selection arms for the fixed-budget ablation. `topk` is the method;
+# the other two are matched controls that remove deterministic teacher ranking.
 #
-#   hybrid        deterministic top-DETERMINISTIC_TOPM head, then a Gumbel top-k
-#                 tail drawn proportionally to the remaining teacher mass. GGPKD.
 #   topk          the whole quota taken deterministically by teacher mass. High
-#                 coverage on step one, and the same columns every epoch, so
-#                 cumulative exposed mass plateaus.
+#                 teacher-mass coverage under the fixed relational budget.
 #   proportional  the whole quota drawn by Gumbel top-k, no deterministic head.
 #                 Cumulative coverage keeps growing; per-epoch coverage is noisier.
 #   uniform       the quota drawn uniformly without replacement from the anchor's
@@ -41,7 +32,7 @@ DETERMINISTIC_TOPM = 2
 #                 discarded. Drawing uniformly from the whole corpus instead would
 #                 give every drawn column diffusion target exactly zero and delete
 #                 the objective rather than ablate the policy.
-SUPPORT_POLICIES = ("hybrid", "topk", "proportional", "uniform")
+SUPPORT_POLICIES = ("topk", "proportional", "uniform")
 
 # Coverage target for the derived diffusion quota: the support size is the
 # smallest k whose top-k mixture mass reaches this fraction at the median anchor.

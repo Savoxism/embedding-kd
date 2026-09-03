@@ -69,7 +69,6 @@ def parse_args():
     )
     parser.add_argument("--truncation_tolerance", type=float, default=None)
     parser.add_argument("--row_weight", type=float, default=None)
-    parser.add_argument("--unbiased_geometry_weight", type=float, default=None)
     parser.add_argument("--row_start_epoch", type=int, default=None)
     parser.add_argument(
         "--direct_temp",
@@ -88,9 +87,9 @@ def parse_args():
     # so omitting all four reproduces the full model exactly.
     parser.add_argument(
         "--support_policy",
-        choices=["hybrid", "topk", "proportional", "uniform"],
+        choices=["topk", "proportional", "uniform"],
         default=None,
-        help="Support-selection arm: hybrid (method), topk, proportional, uniform",
+        help="Support-selection arm: topk (method), proportional, uniform",
     )
     parser.add_argument(
         "--relation_target",
@@ -235,7 +234,6 @@ def get_config(method: str, args):
         "graph_k",
         "truncation_tolerance",
         "row_weight",
-        "unbiased_geometry_weight",
         "row_start_epoch",
         "direct_temp",
         "diffusion_quota",

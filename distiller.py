@@ -63,7 +63,6 @@ from src.evaluation.evaluation_automodel import (
 )
 from src.ggpkd import GGPKDCandidateSampler, build_or_load_ggpkd_artifact
 from src.ggpkd.policy import (
-    DETERMINISTIC_TOPM,
     FIXED_BANDWIDTH_TEMP,
     ROW_COVERAGE_TAU,
     derive_diffusion_quota,
@@ -205,7 +204,6 @@ class KnowledgeDistiller:
                 ),
                 direct_temp=config.direct_temp,
                 row_weight=config.row_weight,
-                unbiased_geometry_weight=config.unbiased_geometry_weight,
                 relation_target=config.relation_target,
                 row_temps=artifact["row_temps"],
                 transition_neighbors=artifact["transition_neighbors"],
@@ -590,8 +588,6 @@ class KnowledgeDistiller:
                     hard_neg_k=cfg.hard_neg_k,
                     random_neg_k=cfg.random_neg_k,
                     seed=cfg.seed,
-                    deterministic_topm=DETERMINISTIC_TOPM,
-                    unbiased_geometry=cfg.unbiased_geometry_weight > 0.0,
                     support_policy=cfg.support_policy,
                 )
                 anchor_texts = df[self.ggpkd_anchor_column].astype(str).tolist()
@@ -929,11 +925,6 @@ class KnowledgeDistiller:
                     "loss_row_weighted",
                         getattr(self.config, "row_weight", 0.0) > 0,
                     ),
-                    (
-                        "geom",
-                        "loss_geometry_weighted",
-                        getattr(self.config, "unbiased_geometry_weight", 0.0) > 0,
-                    ),
                 ("grad", "grad_norm", True),
             )
             for label, key, enabled in concise_metrics:
@@ -975,10 +966,6 @@ class KnowledgeDistiller:
                 "loss_nbr",
                 "loss_diff",
                 "loss_row_weighted",
-                "loss_geometry_weighted",
-                "geometry_head_loss",
-                "geometry_tail_loss",
-                "geometry_tail_mass",
                 "row_count",
                 "row_exposed_mass",
                 "row_valid_ratio",

@@ -71,24 +71,25 @@ Each diffusion scale uses its own temperature $\tau_r$ to avoid the single-tempe
 
 ### 6. Loss Function
 
-All relational scales form one objective, augmented by transition-row supervision
-and an optional unbiased geometry estimator:
+All relational scales form one objective, augmented by transition-row supervision:
 
-$$\mathcal{L} = \mathcal{L}_{\text{rel}} + \lambda_{\text{row}} \mathcal{L}_{\text{row}} + \lambda_{\text{geom}} \widehat{\mathcal E}$$
+$$\mathcal{L} = \mathcal{L}_{\text{rel}} + \lambda_{\text{row}} \mathcal{L}_{\text{row}}$$
 
 where:
 
 - $\mathcal{L}_{\text{rel}} = \sum_{r\in\{0,1,2,4\}}\omega_r\,\mathrm{KL}(q_{i,r}\|p^S_{i,r})$, with the single fixed rule $\omega_r\propto1/\max(1,r)$, normalized over the scales. Here $r=0$ is ambient, $r=1$ is direct-neighbor matching, and $r>1$ is multi-hop diffusion; these are diagnostic names rather than separately weighted auxiliary losses.
 - $\mathcal{L}_{\text{row}}$ promotes every pool column the teacher selected (the diffusion support, excluding hard and uniform negatives) to an auxiliary row and matches its available teacher transition row with a dense KL, weighted uniformly. Batch anchors are excluded, since $\mathcal{L}_{\text{rel}}$ already matches their transition row at $r=1$. The row set is a deterministic function of the candidate pool, so this term carries no selection hyperparameter.
-- $\widehat{\mathcal E}$ evaluates the sampled head exactly and weights one teacher-proportional tail draw by its remaining mass. It is unbiased for teacher-weighted cosine distortion on each cached diffusion target. `unbiased_geometry_weight=0` keeps the established KL objective unchanged.
 
 ### 7. Per-Epoch Candidate Sampling
 
-Each epoch, every anchor draws a fresh candidate set composed of:
+Each epoch, every anchor uses a candidate set composed of:
 
-- **Diffusion neighbors** from the graph's diffusion pools
+- **Top-k diffusion neighbors** selected by teacher mass from the graph's diffusion pools
 - **Hard negatives** (high teacher similarity but outside the mutual kNN graph)
 - **Random negatives** from the remaining complement
+
+Top-k support is deterministic. Hard and random negatives are redrawn each epoch;
+the proportional support arm also redraws its support.
 
 In-batch sharing deduplicates candidates and exposes each anchor to the full union of candidates in the batch.
 
@@ -102,12 +103,11 @@ weights, capacities, and correctness policies are resolved internally:
 | Teacher Graph | `graph_k`, `perplexity`, `diffusion_scales`, `truncation_tolerance` | kNN construction, adaptive row bandwidths, and diffusion |
 | Candidate Sampling | `diffusion_quota`, `hard_neg_k`, `random_neg_k` | Per-anchor composition; total size is their sum |
 | Row Supervision | `row_weight` | Weight of the auxiliary transition-row KL (`row_start_epoch` defaults to 1, i.e. always on) |
-| Geometry estimator | `unbiased_geometry_weight` | Weight of the optional unbiased head--tail cosine-distortion term; default `0` |
 | Training | `batch_size`, `epochs`, `learning_rate`, `min_lr` | Standard training setup |
 | Ambient profile | `direct_temp` | Shared teacher/student temperature for scale 0 |
 
-GGPKD always uses in-batch sharing, per-epoch stochastic resampling, and corpus
-deduplication. Scale weights are `1/r`, the ambient
+GGPKD always uses Top-k support, in-batch sharing, per-epoch negative resampling,
+and corpus deduplication. Scale weights are `1/r`, the ambient
 weight equals the `r=1` weight, hard-negative storage equals `graph_k`, and the
 fixed-bandwidth baseline uses temperature `0.05`; none is a tunable method knob.
 
@@ -179,7 +179,6 @@ python3 main.py \
   --batch_size 32 \
   --epochs 5 \
   --lr 2e-5 \
-  --unbiased_geometry_weight 0.1 \
   --save_dir models/ggpkd/qwen3_0_6b_to_minilmv2
 ```
 

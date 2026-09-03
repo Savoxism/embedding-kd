@@ -87,10 +87,9 @@ def figure_one(coverage_rows: list[dict], out_dir: Path) -> None:
 
     The shape is the argument. Top-K draws the same columns every epoch, so its
     line is flat after epoch 1: extra epochs buy it no new supervision at all.
-    The hybrid draw starts close to it -- the deterministic head is doing the same
-    job -- and then keeps climbing, because its tail is a fresh draw each epoch.
-    If those two curves do not separate, the support story reduces to "top-K plus
-    noise" and the paper should say so.
+    Proportional and uniform sampling can expose new columns over time, but they
+    trade away teacher-mass coverage on each update. The figure therefore shows
+    the distinction between immediate support quality and cumulative exploration.
 
     The S1 baselines are absent by construction rather than by omission: neither
     batch-local RKD nor the uniform-corpus control forms a graph relation, so
@@ -134,7 +133,7 @@ def figure_one(coverage_rows: list[dict], out_dir: Path) -> None:
             markeredgecolor="white",
             markeredgewidth=0.5,
             # Ours reads slightly heavier without a second colour channel.
-            linewidth=1.6 if policy == "hybrid" else 1.2,
+            linewidth=1.6 if policy == "topk" else 1.2,
             label=POLICY_LABEL[policy],
             zorder=3,
         )
@@ -166,7 +165,7 @@ def figure_two(result_rows: list[dict], coverage_rows: list[dict], out_dir: Path
     on, so the two compose and a reader can follow one policy across both.
 
     S1 identifies the model pair. Full runs from transfer experiments must not
-    enter its hybrid mean or seed error bars. Coverage must be for the same pair.
+    enter its Top-k mean or seed error bars. Coverage must be for the same pair.
     """
     s1_pairs = {row.get("pair") for row in result_rows if row.get("ablation") == "s1"}
     if len(s1_pairs) != 1 or not all(s1_pairs):
@@ -184,7 +183,7 @@ def figure_two(result_rows: list[dict], coverage_rows: list[dict], out_dir: Path
         if int(row["epoch"]) == last_epoch:
             final_coverage[row["policy"]].append(float(row["coverage_mean"]))
 
-    # The support arms only: S1 plus the full model, which *is* the hybrid arm.
+    # The support arms only: S1 plus the full model, which is the Top-k arm.
     points: dict[str, dict[str, list[float]]] = defaultdict(lambda: defaultdict(list))
     for row in result_rows:
         if row.get("pair") != pair or row.get("ablation") not in ("s1", "full"):

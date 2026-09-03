@@ -47,12 +47,12 @@ are independent.
 
 ## Budget
 
-At 3 seeds, P0 is 45 new training runs plus the 3 shared `full` runs:
+At 3 seeds, P0 is 42 new training runs plus the 3 shared `full` runs:
 
 | | arms x seeds | new runs |
 |---|---|---|
 | full (shared by S1-S4) | 1 x 3 | 3 |
-| S1 | 5 x 3 | 15 |
+| S1 | 4 x 3 | 12 |
 | S2 | 1 x 3 | 3 |
 | S3 | 1 x 3 | 3 |
 | S4 | 3 x 3 | 9 |
@@ -87,7 +87,7 @@ share held by the top 1% of nodes). That block, not the downstream average, is
 G1's primary evidence: the mutual-kNN claim is about the graph.
 
 Figure 2 uses the single model pair represented by S1 and only that pair's
-`full` runs; X1's full runs must not enter its hybrid mean or seed error bars.
+`full` runs; X1's full runs must not enter its Top-k mean or seed error bars.
 Use coverage replay from the same pair. Missing or multiple S1 pair identities
 are rejected instead of silently averaging across settings.
 
@@ -109,7 +109,7 @@ The flags exist on `main.py`; none of them is a code branch you have to maintain
 
 | Arm | Flag | Touches |
 |---|---|---|
-| S1 | `--support_policy {hybrid,topk,proportional,uniform}` | sampler only |
+| S1 | `--support_policy {topk,proportional,uniform}` | sampler only |
 | S1 | `--batch_local` | data path: candidates are the batch |
 | S1 | `--relation_target ambient_only` + `--diffusion_quota 0` | objective + quotas |
 | S2 | `--diffusion_scales 1` | graph artifact (own `GRAPH_KEY`) |
@@ -181,7 +181,7 @@ The plan's decision criteria, restated as what to check in the collected table:
 - Both S1 baselines have exposed graph-relation mass of exactly zero, by
   construction rather than by measurement. That is why they appear at coverage 0
   in Figure 2 and are absent from Figure 1: neither has a curve to draw. The
-  guide line in Figure 2 joins only the four fixed-budget policies -- the
+  guide line in Figure 2 joins only the three fixed-budget policies -- the
   baselines differ in more than the support policy, so connecting them would
   assert a comparability they do not have.
 - `STS Avg` and `Pair-cls Avg` are always reported next to `Avg`. The gain over

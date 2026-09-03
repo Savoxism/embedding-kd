@@ -49,21 +49,13 @@ class GGPKDConfig(BaseConfig):
     # retuned across teachers.
     direct_temp = 0.0
 
-    # Optional head--tail estimator of teacher-weighted cosine distortion. The
-    # deterministic stratum is evaluated exactly and one teacher-proportional tail
-    # draw supplies an unbiased estimate of the remaining cached-target mass. It is
-    # additive to the KL stack, not a replacement, so multi-scale distribution
-    # matching and ambient calibration remain intact. Off until its coefficient is
-    # selected by the matched-budget ablation.
-    unbiased_geometry_weight = 0.0
-
     # ---- Ablation switches ---------------------------------------------------
     # Every one of these sits at the method's value. They exist so the ablation
     # arms in scripts/ablation/ are one flag away from the full model instead of a
     # branch, and so a run manifest records which arm produced a number.
     #
     # support_policy  which columns the diffusion quota is spent on (S1):
-    #                 hybrid (method) / topk / proportional / uniform.
+    #                 topk (method) / proportional / uniform.
     # relation_target what the selected columns are supervised *against* (S3):
     #                 diffusion (method, composed multi-scale transition rows) or
     #                 direct (the teacher's raw cosine over the same columns).
@@ -80,7 +72,7 @@ class GGPKDConfig(BaseConfig):
     #                 gap is the point, not a flaw. The budget-matched counterpart
     #                 is diffusion_quota=0 with the whole quota spent on uniform
     #                 corpus draws, which needs no flag of its own.
-    support_policy = "hybrid"
+    support_policy = "topk"
     relation_target = "diffusion"
     use_ambient = True
     knn_mode = "mutual"
@@ -165,10 +157,9 @@ class GGPKDConfig(BaseConfig):
     # candidate budget.
     hard_neg_k = 40
     random_neg_k = 26
-    # candidate_size is derived as the sum of the three quotas. Candidates are
-    # always resampled per epoch with mass-proportional stochastic tails; the
-    # deterministic head of each draw is DETERMINISTIC_TOPM in policy.py, not a
-    # config knob.
+    # candidate_size is derived as the sum of the three quotas. Canonical Top-k
+    # support is deterministic; hard and random negatives are redrawn per epoch.
+    # The proportional control redraws support as well.
 
     # ---- Corpus Columns ------------------------------------------------------
     # Which column is the graph node, and which defines "same source" for hard
@@ -224,8 +215,8 @@ class GGPKDConfig(BaseConfig):
     # kd_student_layers = [4, 8, 12, 12]
 
     # ---- Removed: earlier auxiliary objectives -------------------------------
-    # The active objective is L_rel + row_weight * L_row +
-    # unbiased_geometry_weight * E_hat inside the GGPKD criterion.
+    # The active objective is L_rel + row_weight * L_row inside the GGPKD
+    # criterion.
     # lambda_ggpkd,
     # lambda_cosine, lambda_infonce,
     # lambda_simcse, simcse_temp, simcse_start_epoch and lambda_sim used to sit
@@ -262,8 +253,6 @@ class GGPKDConfig(BaseConfig):
             raise ValueError("row_weight must be non-negative")
         if self.direct_temp < 0:
             raise ValueError("direct_temp must be positive, or 0 to derive it")
-        if self.unbiased_geometry_weight < 0:
-            raise ValueError("unbiased_geometry_weight must be non-negative")
         if self.row_start_epoch < 1:
             raise ValueError("row_start_epoch must be at least 1")
         if self.diffusion_quota is not None and self.diffusion_quota < 0:
