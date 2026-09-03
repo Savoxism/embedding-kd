@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # S1 -- fixed-budget support selection, plus the batch-local baseline.
-# P0, 3 seeds, 18 new runs (+ the shared full runs).
+# P0, 3 seeds, 15 new runs (+ the shared full runs).
 #
 # Question: is the gain bought by *teacher relevance*, or by random co-occurrence
 # and extra compute? Two groups of arms answer two halves of that.
@@ -42,12 +42,6 @@ source "$(dirname "${BASH_SOURCE[0]}")/_common.sh"
 for seed in ${SEEDS}; do
     run_full "${seed}"                                            # head + proportional tail
     run_arm s1 topk         "${seed}" --support_policy topk         # teacher top-K
-    # Notebook-matched Top-K arm. Row reuse and ambient remain enabled; spelling
-    # the row settings out here makes the intended composition visible in the
-    # manifest. The trailing direct_temp override wins over the locked 0.10
-    # protocol value and derives tau_0 from the graph, as in train_colab.ipynb.
-    run_arm s1 topk_row_ambient_t0 "${seed}" \
-        --support_policy topk --row_weight 1 --row_start_epoch 1 --direct_temp 0
     run_arm s1 proportional "${seed}" --support_policy proportional # teacher-proportional
     run_arm s1 uniform      "${seed}" --support_policy uniform      # uniform over the pool
 

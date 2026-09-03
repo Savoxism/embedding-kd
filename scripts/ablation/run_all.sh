@@ -22,13 +22,14 @@ GPUS="${GPUS:-$(nvidia-smi --query-gpu=index --format=csv,noheader 2>/dev/null |
 GPUS="${GPUS:-0}"
 read -ra GPU_LIST <<< "${GPUS}"
 # P0 first, then P1: if the budget runs out, it runs out on the optional half.
-PLAN="${PLAN:-s1 s2 s3 s4 g1 n1 x1}"
+PLAN="${PLAN:-s1 s2 s3 s4 k1 g1 n1 x1}"
 read -ra PLAN_LIST <<< "${PLAN}"
 LOG_DIR="${LOG_DIR:-runs/ablation/_dispatch}"
 mkdir -p "${LOG_DIR}"
 
 declare -A SCRIPT_OF=(
     [s1]=s1_support.sh [s2]=s2_scales.sh [s3]=s3_target.sh [s4]=s4_factorial.sh
+    [k1]=k1_topk_t0.sh
     [g1]=g1_knn.sh     [n1]=n1_negatives.sh [x1]=x1_transfer.sh
 )
 
