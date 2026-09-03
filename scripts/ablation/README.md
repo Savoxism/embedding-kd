@@ -10,6 +10,7 @@ s1_support.sh       P0  support selection + the two no-graph baselines
 s2_scales.sh        P0  R={1,2,4} vs R={1}
 s3_target.sh        P0  diffusion target vs teacher cosine on the same nodes
 s4_factorial.sh     P0  ambient x row, full 2x2
+k1_topk_t0.sh       P0  Top-K/t0 row/ambient deletions + fixed-quota scale ladder
 g1_knn.sh           P1  mutual / directed / symmetrized kNN
 n1_negatives.sh     P1  hard:uniform negative mix at fixed total quota
 x1_transfer.sh      P1  BGE-M3 -> MiniLMv2-H768 replication of the support claim
@@ -46,7 +47,7 @@ are independent.
 
 ## Budget
 
-At 3 seeds, P0 is 30 new training runs plus the 3 shared `full` runs:
+At 3 seeds, P0 is 45 new training runs plus the 3 shared `full` runs:
 
 | | arms x seeds | new runs |
 |---|---|---|
@@ -55,6 +56,7 @@ At 3 seeds, P0 is 30 new training runs plus the 3 shared `full` runs:
 | S2 | 1 x 3 | 3 |
 | S3 | 1 x 3 | 3 |
 | S4 | 3 x 3 | 9 |
+| K1 | 5 x 3 | 15 |
 | G1, N1 (seed 42 screen) | 2 + 2 | 4 |
 | X1 (second pair) | 2 x 3 | 6 |
 

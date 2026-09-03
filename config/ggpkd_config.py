@@ -8,9 +8,13 @@ from .base_config import BaseConfig
 class GGPKDConfig(BaseConfig):
     distill_method = "ggpkd"
 
-    student_model_name = "google-bert/bert-base-uncased"
+    # Keep the no-CLI defaults aligned with notebooks/train_colab.ipynb's
+    # selected paper pair.
+    student_model_name = (
+        "nreimers/MiniLMv2-L6-H384-distilled-from-BERT-Base"
+    )
     student_dtype = "float32"
-    teacher_model_name = "Qwen/Qwen3-Embedding-4B"
+    teacher_model_name = "Qwen/Qwen3-Embedding-0.6B"
     teacher_dtype = "float32"
 
     student_special_token = "##"
@@ -38,15 +42,12 @@ class GGPKDConfig(BaseConfig):
 
     # ---- Direct Scale (r=0) --------------------------------------------------
     # omega_0 is derived as omega_1 inside the criterion; it is not configurable.
-    # Measured flat: 0.07 vs 0.10 on Qwen3-0.6B -> MiniLMv2-H384 (seed 42) was a
-    # tie (75.25 vs 75.21), so the Hinton-convention default is kept rather than
-    # tuned. This is the last student temperature that is still a free choice; 0
-    # derives it at startup as the median entropic-affinity bandwidth of the graph
-    # (the ambient target is the transition-row construction with the
-    # sparsification removed, so the graph's typical bandwidth is its natural
-    # scale). If the derived arm measures flat too, 0 becomes the default and no
-    # student temperature anywhere in the method is a hyperparameter.
-    direct_temp = 0.10  # shared by both sides of the direct scale; 0 = derived
+    # The notebook requests 0, which derives this value at startup as the median
+    # entropic-affinity bandwidth of the graph. The ambient target is the
+    # transition-row construction with sparsification removed, so the graph's
+    # typical bandwidth is its natural scale and no fixed temperature has to be
+    # retuned across teachers.
+    direct_temp = 0.0
 
     # Optional head--tail estimator of teacher-weighted cosine distortion. The
     # deterministic stratum is evaluated exactly and one teacher-proportional tail
@@ -198,15 +199,22 @@ class GGPKDConfig(BaseConfig):
     train_data_path = "data/train_set/merged_3_data_5k_each.csv"
     # cache_teacher removed: nothing read it. Teacher caching is gated purely by
     # whether cache_path already exists on disk (distiller.py).
-    cache_path = "cache/ggpkd/qwen3_4b_bert_base_teacher_train.pt"
-    ggpkd_cache_path = "cache/ggpkd/qwen3_4b_bert_base_graph.pt"
-    ggpkd_log_dir = "logs/ggpkd"
+    cache_path = "cache/ggpkd/qwen3_0_6b_to_minilmv2_h384/teacher_train.pt"
+    ggpkd_cache_path = "cache/ggpkd/qwen3_0_6b_to_minilmv2_h384/graph.pt"
+    ggpkd_log_dir = "logs/ggpkd/qwen3_0_6b_to_minilmv2_h384"
     pooling_method = "last_token"
     normalize_cache = True
     cache_dtype = "float32"
 
-    save_dir = "models/ggpkd/qwen3_4b_to_bert_base"
-    final_weights_only = False
+    save_dir = (
+        "models/ggpkd/qwen3_0_6b_to_minilmv2_h384/"
+        "base_w1_e1_qauto_lr3e-05_seed42"
+    )
+    weights_dir = (
+        "models/ggpkd_weights/qwen3_0_6b_to_minilmv2_h384/"
+        "base_w1_e1_qauto_lr3e-05_seed42"
+    )
+    final_weights_only = True
 
     # ---- Multi-Layer Spec ----------------------------------------------------
     # Defining both of these switches the distiller to its multi-layer GGPKD
