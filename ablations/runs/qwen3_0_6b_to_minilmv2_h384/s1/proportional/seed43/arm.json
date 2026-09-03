@@ -1,0 +1,12 @@
+{
+ "ablation": "s1",
+ "arm": "proportional",
+ "extra_args": [
+  "--support_policy",
+  "proportional"
+ ],
+ "graph_key": "base",
+ "seed": 43,
+ "started_at": "2026-09-02T16:54:35Z",
+ "wall_clock_seconds": 296
+}

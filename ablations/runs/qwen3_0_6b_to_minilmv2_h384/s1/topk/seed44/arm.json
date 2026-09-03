@@ -1,0 +1,12 @@
+{
+ "ablation": "s1",
+ "arm": "topk",
+ "extra_args": [
+  "--support_policy",
+  "topk"
+ ],
+ "graph_key": "base",
+ "seed": 44,
+ "started_at": "2026-09-02T17:13:58Z",
+ "wall_clock_seconds": 333
+}

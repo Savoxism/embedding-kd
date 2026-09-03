@@ -1,0 +1,20 @@
+{
+ "ablation": "s1",
+ "arm": "uniform_corpus",
+ "extra_args": [
+  "--relation_target",
+  "ambient_only",
+  "--row_weight",
+  "0",
+  "--diffusion_quota",
+  "0",
+  "--hard_neg_k",
+  "0",
+  "--random_neg_k",
+  "89"
+ ],
+ "graph_key": "base",
+ "seed": 44,
+ "started_at": "2026-09-02T17:33:52Z",
+ "wall_clock_seconds": 310
+}

@@ -1,0 +1,14 @@
+{
+ "ablation": "n1",
+ "arm": "all_hard",
+ "extra_args": [
+  "--hard_neg_k",
+  "66",
+  "--random_neg_k",
+  "0"
+ ],
+ "graph_key": "base",
+ "seed": 42,
+ "started_at": "2026-09-02T19:16:51Z",
+ "wall_clock_seconds": 348
+}

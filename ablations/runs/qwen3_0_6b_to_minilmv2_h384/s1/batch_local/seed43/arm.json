@@ -1,0 +1,13 @@
+{
+ "ablation": "s1",
+ "arm": "batch_local",
+ "extra_args": [
+  "--batch_local",
+  "--row_weight",
+  "0"
+ ],
+ "graph_key": "base",
+ "seed": 43,
+ "started_at": "2026-09-02T17:05:28Z",
+ "wall_clock_seconds": 147
+}

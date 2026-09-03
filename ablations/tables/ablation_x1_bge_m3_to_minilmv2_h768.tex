@@ -1,0 +1,13 @@
+\begin{table}[t]
+\centering
+\caption{Ablation X1 on bge\_m3\_to\_minilmv2\_h768. Mean $\pm$ std over 3 seeds. $\hat{E}$ is the teacher-weighted cosine distortion on the held-out geometry probe (lower is better); $\rho$ is the teacher--student Spearman correlation of pairwise similarity. Encoded texts is the cumulative number of student forward passes, the budget the arms are matched on.}
+\label{tab:ablation_x1_bge_m3_to_minilmv2_h768}
+\begin{tabular}{lcccccc}
+\toprule
+Arm & STS Avg & Pair-cls Avg & Avg & $\hat{E}$ $\downarrow$ & $\rho$ $\uparrow$ & Enc.\ texts \\
+\midrule
+full & $77.72 \pm 0.05$ & $76.67 \pm 0.06$ & $77.10 \pm 0.05$ & $0.0032 \pm 0.0001$ & $0.8962 \pm 0.0004$ & 4.64M \\
+uniform & $76.36 \pm 0.08$ & $76.58 \pm 0.17$ & $76.68 \pm 0.08$ & $0.0060 \pm 0.0000$ & $0.8674 \pm 0.0025$ & 4.62M \\
+\bottomrule
+\end{tabular}
+\end{table}

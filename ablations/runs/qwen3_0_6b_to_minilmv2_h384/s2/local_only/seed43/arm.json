@@ -1,0 +1,12 @@
+{
+ "ablation": "s2",
+ "arm": "local_only",
+ "extra_args": [
+  "--diffusion_scales",
+  "1"
+ ],
+ "graph_key": "r1",
+ "seed": 43,
+ "started_at": "2026-09-02T17:44:33Z",
+ "wall_clock_seconds": 320
+}

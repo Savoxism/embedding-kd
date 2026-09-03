@@ -1,0 +1,12 @@
+{
+ "ablation": "x1",
+ "arm": "uniform",
+ "extra_args": [
+  "--support_policy",
+  "uniform"
+ ],
+ "graph_key": "base",
+ "seed": 43,
+ "started_at": "2026-09-02T19:46:02Z",
+ "wall_clock_seconds": 338
+}

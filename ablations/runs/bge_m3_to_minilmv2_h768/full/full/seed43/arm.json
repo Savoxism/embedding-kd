@@ -1,0 +1,9 @@
+{
+ "ablation": "full",
+ "arm": "full",
+ "extra_args": [],
+ "graph_key": "base",
+ "seed": 43,
+ "started_at": "2026-09-02T19:40:25Z",
+ "wall_clock_seconds": 337
+}

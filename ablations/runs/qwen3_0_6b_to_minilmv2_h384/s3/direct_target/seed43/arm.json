@@ -1,0 +1,12 @@
+{
+ "ablation": "s3",
+ "arm": "direct_target",
+ "extra_args": [
+  "--relation_target",
+  "direct"
+ ],
+ "graph_key": "base",
+ "seed": 43,
+ "started_at": "2026-09-02T18:00:26Z",
+ "wall_clock_seconds": 358
+}

@@ -1,0 +1,12 @@
+{
+ "ablation": "g1",
+ "arm": "directed",
+ "extra_args": [
+  "--knn_mode",
+  "directed"
+ ],
+ "graph_key": "directed",
+ "seed": 42,
+ "started_at": "2026-09-02T19:03:40Z",
+ "wall_clock_seconds": 392
+}

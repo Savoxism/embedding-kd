@@ -1,0 +1,11 @@
+{
+ "ablation": "s4",
+ "arm": "no_ambient",
+ "extra_args": [
+  "--no_ambient"
+ ],
+ "graph_key": "base",
+ "seed": 43,
+ "started_at": "2026-09-02T18:29:06Z",
+ "wall_clock_seconds": 359
+}

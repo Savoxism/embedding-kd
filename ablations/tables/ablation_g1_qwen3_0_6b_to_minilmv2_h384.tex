@@ -1,0 +1,14 @@
+\begin{table}[t]
+\centering
+\caption{Ablation G1 on qwen3\_0\_6b\_to\_minilmv2\_h384. Mean $\pm$ std over 3 seeds. $\hat{E}$ is the teacher-weighted cosine distortion on the held-out geometry probe (lower is better); $\rho$ is the teacher--student Spearman correlation of pairwise similarity. Encoded texts is the cumulative number of student forward passes, the budget the arms are matched on.}
+\label{tab:ablation_g1_qwen3_0_6b_to_minilmv2_h384}
+\begin{tabular}{lcccccc}
+\toprule
+Arm & STS Avg & Pair-cls Avg & Avg & $\hat{E}$ $\downarrow$ & $\rho$ $\uparrow$ & Enc.\ texts \\
+\midrule
+full & $74.87 \pm 0.08$ & $76.84 \pm 0.09$ & $75.16 \pm 0.08$ & $0.0188 \pm 0.0005$ & $0.8083 \pm 0.0010$ & 4.69M \\
+directed & $74.64 \pm 0.00$ & $76.54 \pm 0.00$ & $75.28 \pm 0.00$ & $0.0277 \pm 0.0000$ & $0.8052 \pm 0.0000$ & 4.91M \\
+symmetrized & $74.64 \pm 0.00$ & $76.67 \pm 0.00$ & $75.26 \pm 0.00$ & $0.0229 \pm 0.0000$ & $0.8100 \pm 0.0000$ & 4.85M \\
+\bottomrule
+\end{tabular}
+\end{table}
