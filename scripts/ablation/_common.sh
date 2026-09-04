@@ -1,15 +1,5 @@
-# Shared protocol for the GGPKD ablations. Sourced, never executed.
-#
-# Everything the ablation plan calls "locked before running" lives here and
-# nowhere else, so no arm can drift from another by editing one script. An arm
-# script sets only what it is ablating; if a value is not in this file it is not
-# part of the protocol.
-#
-# One run occupies one GPU. Pass GPU=<id> to pin it:
-#     GPU=0 bash scripts/ablation/s1_support.sh
-#     GPU=1 bash scripts/ablation/s2_scales.sh    # concurrently, different card
-# Arms inside a script are sequential -- they share a teacher cache and a graph
-# artifact, and two processes building the same artifact would race on it.
+#!/usr/bin/env bash
+# Shared, locked protocol for the paper ablations. Source this file; do not run it.
 
 set -euo pipefail
 
@@ -17,15 +7,14 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 cd "${REPO_ROOT}"
 
-# ---- Locked protocol --------------------------------------------------------
-# Qwen3-0.6B -> MiniLMv2-H384 is the setting the plan fixes on: cheapest per run
-# and where the reported gain is largest.
+# Paper setting. Override from the environment only when intentionally starting
+# a separate experiment root.
 PAIR_KEY="${PAIR_KEY:-qwen3_0_6b_to_minilmv2_h384}"
 TEACHER_MODEL="${TEACHER_MODEL:-Qwen/Qwen3-Embedding-0.6B}"
 STUDENT_MODEL="${STUDENT_MODEL:-nreimers/MiniLMv2-L6-H384-distilled-from-BERT-Base}"
 POOLING_METHOD="${POOLING_METHOD:-last_token}"
-
 TRAIN_DATA="${TRAIN_DATA:-data/train_set/merged_3_data_5k_each.csv}"
+
 BATCH_SIZE="${BATCH_SIZE:-64}"
 EPOCHS="${EPOCHS:-5}"
 LR="${LR:-3e-5}"
@@ -33,67 +22,89 @@ MAX_LENGTH="${MAX_LENGTH:-256}"
 NUM_WORKERS="${NUM_WORKERS:-4}"
 SEEDS="${SEEDS:-42 43 44}"
 
-# The ambient-scale temperature. 0.10 is the config default (Hinton convention);
-# `0` derives it as the median graph bandwidth. It is pinned explicitly rather
-# than left to the config so that every arm -- and the shared `full` runs that
-# S1-S4 all compare against -- provably used the same value, and so run.json
-# records it. Change it here, once, or the reuse of `full` across ablations is
-# no longer valid.
-DIRECT_TEMP="${DIRECT_TEMP:-0.10}"
+# Pin every method-defining value so all arms stay comparable if config defaults
+# later move. The canonical support quota remains derived from the graph.
+GRAPH_K="${GRAPH_K:-200}"
+PERPLEXITY="${PERPLEXITY:-30}"
+TRUNCATION_TOLERANCE="${TRUNCATION_TOLERANCE:-0.01}"
+DIFFUSION_SCALES="${DIFFUSION_SCALES:-1,2,4}"
+ROW_WEIGHT="${ROW_WEIGHT:-1.0}"
+ROW_START_EPOCH="${ROW_START_EPOCH:-1}"
+DIRECT_TEMP="${DIRECT_TEMP:-0}"
+HARD_NEG_K="${HARD_NEG_K:-40}"
+RANDOM_NEG_K="${RANDOM_NEG_K:-26}"
 
-# ---- Layout -----------------------------------------------------------------
-ABL_ROOT="${ABL_ROOT:-runs/ablation/${PAIR_KEY}}"
-CACHE_ROOT="${CACHE_ROOT:-cache/ggpkd/${PAIR_KEY}}"
-LOG_ROOT="${LOG_ROOT:-logs/ggpkd/${PAIR_KEY}}"
-# Teacher embeddings depend on the pair alone, so every arm shares one cache.
-TEACHER_CACHE="${TEACHER_CACHE:-${CACHE_ROOT}/teacher_train.pt}"
+EXPERIMENT_KEY="${EXPERIMENT_KEY:-paper_v1}"
+ABL_ROOT="${ABL_ROOT:-runs/ablation/${PAIR_KEY}/${EXPERIMENT_KEY}}"
+CACHE_ROOT="${CACHE_ROOT:-cache/ggpkd/${PAIR_KEY}/${EXPERIMENT_KEY}}"
+LOG_ROOT="${LOG_ROOT:-logs/ggpkd/${PAIR_KEY}/${EXPERIMENT_KEY}}"
+TEACHER_CACHE="${TEACHER_CACHE:-cache/ggpkd/${PAIR_KEY}/teacher_train.pt}"
 
 export CUDA_VISIBLE_DEVICES="${GPU:-0}"
 export TOKENIZERS_PARALLELISM="${TOKENIZERS_PARALLELISM:-false}"
 export WANDB_MODE="${WANDB_MODE:-disabled}"
 export PYTHONUNBUFFERED=1
+
 PYTHON_BIN="${PYTHON_BIN:-python3}"
 if [[ -x "${REPO_ROOT}/.venv/bin/python" && "${PYTHON_BIN}" == "python3" ]]; then
     PYTHON_BIN="${REPO_ROOT}/.venv/bin/python"
 fi
 
-# ---- run_arm ----------------------------------------------------------------
-# run_arm <ablation-id> <arm-name> <seed> [extra main.py flags...]
-#
-# GRAPH_KEY selects which graph artifact the arm reads. Arms that change the
-# graph itself (diffusion_scales, knn_mode, graph_k, perplexity) MUST set it:
-# the builder validates its metadata and rebuilds on mismatch, so two arms
-# pointed at one path would rebuild the graph on every alternation. Arms that
-# only change the objective or the sampler leave it at "base" and share one
-# build. Default reset per call so a stale value cannot leak between arms.
-run_arm() {
-    local ablation="$1" arm="$2" seed="$3"
-    shift 3
-    # Bash does not reliably restore a `VAR=x func` prefix assignment after a
-    # *function* returns, so read it once and clear it. Left set, the next arm in
-    # the loop would silently inherit the previous arm's graph.
-    local graph_key="${GRAPH_KEY:-base}"
-    unset GRAPH_KEY
+base_graph_path() {
+    printf '%s\n' "${CACHE_ROOT}/graph_base.pt"
+}
 
-    local save_dir="${ABL_ROOT}/${ablation}/${arm}/seed${seed}"
-    local weights_dir="${ABL_ROOT}/${ablation}/${arm}/seed${seed}/weights"
+# run_arm <group> <arm> <seed> [main.py overrides ...]
+#
+# A graph-changing arm must set GRAPH_KEY immediately before this call. All
+# other arms share graph_base.pt. A completed arm is safely resumable via its
+# .done marker; an interrupted arm is rerun with a fresh run_id in the same
+# directory, which the repository telemetry keeps distinguishable.
+run_arm() {
+    local group="$1"
+    local arm="$2"
+    local seed="$3"
+    shift 3
+
+    local graph_key="${GRAPH_KEY:-base}"
+    unset GRAPH_KEY || true
+
+    local save_dir="${ABL_ROOT}/${group}/${arm}/seed${seed}"
+    local weights_dir="${save_dir}/weights"
     local graph_cache="${CACHE_ROOT}/graph_${graph_key}.pt"
     local graph_log="${LOG_ROOT}/graph_${graph_key}"
 
-    if [[ -f "${save_dir}/.done" && "${FORCE:-0}" != "1" ]]; then
-        echo "[skip] ${ablation}/${arm}/seed${seed} already complete (FORCE=1 to rerun)"
+    if [[ "${DRY_RUN:-0}" == "1" ]]; then
+        echo "[dry ] ${group}/${arm}/seed${seed} | GPU=${CUDA_VISIBLE_DEVICES} graph=${graph_key}"
+        echo "       overrides: $*"
+        return 0
+    fi
+
+    # Different group scripts can request the same shared arm concurrently.
+    # flock is process-scoped and automatically releases on exit, including a
+    # failed or interrupted training process, so it cannot leave a stale lock.
+    local lock_dir="${ABL_ROOT}/.locks"
+    local lock_path="${lock_dir}/${group}_${arm}_seed${seed}.lock"
+    local lock_fd
+    mkdir -p "${lock_dir}"
+    exec {lock_fd}>"${lock_path}"
+    flock "${lock_fd}"
+
+    if [[ -f "${save_dir}/.done" ]]; then
+        echo "[skip] ${group}/${arm}/seed${seed} already complete"
+        flock -u "${lock_fd}"
+        exec {lock_fd}>&-
         return 0
     fi
 
     mkdir -p "${save_dir}" "${weights_dir}" "$(dirname "${graph_cache}")" "${graph_log}"
-    echo "==================================================================="
-    echo "[run ] ${ablation} / ${arm} / seed ${seed}  (GPU ${CUDA_VISIBLE_DEVICES}, graph ${graph_key})"
-    echo "       extra: $*"
-    echo "==================================================================="
+    echo "[run ] ${group}/${arm}/seed${seed} | GPU=${CUDA_VISIBLE_DEVICES} graph=${graph_key}"
+    echo "       overrides: $*"
 
     local started_at
+    local elapsed
+    local start_seconds=${SECONDS}
     started_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-    local t0=${SECONDS}
 
     "${PYTHON_BIN}" main.py \
         --method ggpkd \
@@ -107,7 +118,17 @@ run_arm() {
         --max_length "${MAX_LENGTH}" \
         --num_workers "${NUM_WORKERS}" \
         --seed "${seed}" \
+        --graph_k "${GRAPH_K}" \
+        --perplexity "${PERPLEXITY}" \
+        --truncation_tolerance "${TRUNCATION_TOLERANCE}" \
+        --diffusion_scales "${DIFFUSION_SCALES}" \
+        --row_weight "${ROW_WEIGHT}" \
+        --row_start_epoch "${ROW_START_EPOCH}" \
         --direct_temp "${DIRECT_TEMP}" \
+        --hard_neg_k "${HARD_NEG_K}" \
+        --random_neg_k "${RANDOM_NEG_K}" \
+        --support_policy topk \
+        --relation_target diffusion \
         --cache_path "${TEACHER_CACHE}" \
         --ggpkd_cache_path "${graph_cache}" \
         --ggpkd_log_dir "${graph_log}" \
@@ -116,18 +137,18 @@ run_arm() {
         --final_weights_only \
         "$@" 2>&1 | tee "${save_dir}/train.log"
 
-    local elapsed=$(( SECONDS - t0 ))
-    # The arm's identity, written by the runner rather than parsed back out of a
-    # directory name: collect.py groups on these fields, and a path is not a
-    # record. wall_clock_seconds belongs to the appendix efficiency table and is
-    # only observable here.
-    "${PYTHON_BIN}" - "$save_dir" "$ablation" "$arm" "$seed" "$graph_key" "$elapsed" "$started_at" "$@" <<'PYEOF'
-import json, sys
-save_dir, ablation, arm, seed, graph_key, elapsed, started_at, *extra = sys.argv[1:]
-with open(f"{save_dir}/arm.json", "w", encoding="utf-8") as fh:
+    elapsed=$(( SECONDS - start_seconds ))
+    "${PYTHON_BIN}" - "${save_dir}" "${group}" "${arm}" "${seed}" \
+        "${graph_key}" "${elapsed}" "${started_at}" "$@" <<'PYEOF'
+import json
+import sys
+
+save_dir, group, arm, seed, graph_key, elapsed, started_at, *extra = sys.argv[1:]
+with open(f"{save_dir}/arm.json", "w", encoding="utf-8") as handle:
     json.dump(
         {
-            "ablation": ablation,
+            "ablation": group,
+            "group": group,
             "arm": arm,
             "seed": int(seed),
             "graph_key": graph_key,
@@ -135,22 +156,67 @@ with open(f"{save_dir}/arm.json", "w", encoding="utf-8") as fh:
             "started_at": started_at,
             "extra_args": extra,
         },
-        fh,
-        indent=1,
+        handle,
+        indent=2,
         sort_keys=True,
     )
 PYEOF
     touch "${save_dir}/.done"
-    echo "[done] ${ablation}/${arm}/seed${seed} in ${elapsed}s -> ${save_dir}"
+    flock -u "${lock_fd}"
+    exec {lock_fd}>&-
+    echo "[done] ${group}/${arm}/seed${seed} in ${elapsed}s"
 }
 
-# The unablated model. S1-S4 all compare against it, so it is trained once per
-# seed under its own id and reused; the plan's budget arithmetic assumes exactly
-# this. Any arm script may call it -- the .done guard makes repeat calls free.
 run_full() {
     local seed="$1"
-    GRAPH_KEY="base" run_arm full full "${seed}"
+    GRAPH_KEY=base run_arm full full "${seed}"
 }
 
-echo "protocol: ${TEACHER_MODEL} -> ${STUDENT_MODEL} | lr=${LR} epochs=${EPOCHS} bs=${BATCH_SIZE} seeds=[${SEEDS}] direct_temp=${DIRECT_TEMP}"
-echo "outputs : ${ABL_ROOT}"
+canonical_quota() {
+    if [[ -n "${CANONICAL_QUOTA:-}" ]]; then
+        printf '%s\n' "${CANONICAL_QUOTA}"
+        return 0
+    fi
+    "${PYTHON_BIN}" scripts/ablation/budget.py \
+        --artifact "$(base_graph_path)" \
+        --hard "${HARD_NEG_K}" \
+        --random "${RANDOM_NEG_K}" \
+        --format quota
+}
+
+canonical_width() {
+    if [[ -n "${CANONICAL_QUOTA:-}" ]]; then
+        printf '%s\n' "$(( CANONICAL_QUOTA + HARD_NEG_K + RANDOM_NEG_K ))"
+        return 0
+    fi
+    "${PYTHON_BIN}" scripts/ablation/budget.py \
+        --artifact "$(base_graph_path)" \
+        --hard "${HARD_NEG_K}" \
+        --random "${RANDOM_NEG_K}" \
+        --format width
+}
+
+# Extreme deletion shared by the support and component tables. Candidates are
+# uniform over the corpus, the graph objective is absent, and L_row is absent.
+# Keeping the canonical candidate width prevents the deletion from winning or
+# losing merely because it encoded a different number of columns per anchor.
+run_no_graph_diffusion() {
+    local seed="$1"
+    local width
+    width="$(canonical_width)"
+    GRAPH_KEY=base run_arm shared no_graph_diffusion "${seed}" \
+        --relation_target ambient_only \
+        --row_weight 0 \
+        --diffusion_quota 0 \
+        --hard_neg_k 0 \
+        --random_neg_k "${width}"
+}
+
+# Shared between the component table and row-weight sensitivity (lambda=0).
+run_no_row() {
+    local seed="$1"
+    GRAPH_KEY=base run_arm components no_row "${seed}" --row_weight 0
+}
+
+echo "protocol: ${TEACHER_MODEL} -> ${STUDENT_MODEL} | lr=${LR} epochs=${EPOCHS} bs=${BATCH_SIZE}"
+echo "seeds: [${SEEDS}] | output: ${ABL_ROOT}"
