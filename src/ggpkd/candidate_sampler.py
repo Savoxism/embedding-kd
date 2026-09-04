@@ -139,6 +139,17 @@ class GGPKDCandidateSampler:
         valid = pool >= 0
         if self.support_policy == "uniform":
             return self._select_support_uniform(idx, pool, valid, rng)
+        if self.support_policy == "local_topk":
+            # Clean no-diffusion control. Select from the one-step transition
+            # row only, but read it from the full multi-scale artifact. This is
+            # intentionally distinct from rebuilding an R={1} artifact: keeping
+            # all configured scales lets relation_target="direct" collapse the
+            # graph group with the exact same total graph weight as the method.
+            probs = np.where(valid, self.pool_probs[0, idx], 0.0).astype(np.float64)
+            order = np.argsort(-probs)
+            positions = order[: min(self.diffusion_quota, int((probs > 0).sum()))]
+            positions = positions[probs[positions] > 0].astype(np.int64)
+            return pool[positions].astype(np.int64), positions
         quotas = self._scale_quotas(self.diffusion_quota)
         taken = np.zeros(pool.size, dtype=bool)
         positions: list[int] = []

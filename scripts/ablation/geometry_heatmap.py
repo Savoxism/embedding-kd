@@ -28,8 +28,8 @@ import os
 import re
 import statistics
 import sys
+from collections.abc import Iterable
 from pathlib import Path
-from typing import Iterable
 
 # Matplotlib tries the user's config directory at import time. It is read-only in
 # several training environments, so select a disposable cache before importing.
@@ -48,7 +48,6 @@ from transformers import AutoModel, AutoTokenizer
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from src.distill.geometry import PROBE_DISTORTION_TEMP, build_probe_index
-
 
 CHECKPOINT_RE = re.compile(r"student_epoch_(\d+)\.pt$")
 SEED_RE = re.compile(r"seed(\d+)$")
@@ -352,9 +351,7 @@ def plot_heatmaps(
             spine.set_color("#555555")
 
     assert image is not None
-    colorbar = fig.colorbar(
-        image, ax=axes, location="right", fraction=0.035, pad=0.02
-    )
+    colorbar = fig.colorbar(image, ax=axes, location="right", fraction=0.035, pad=0.02)
     colorbar.set_label("Teacher-weighted squared cosine error")
     colorbar.ax.tick_params(labelsize=7, width=0.5, length=2)
 
@@ -425,9 +422,7 @@ def main() -> int:
     order = teacher_graph_order(
         args.graph_artifact, probe_index, corpus_size=corpus_size
     )
-    ours_checkpoints = latest_checkpoints(
-        args.runs_root, args.ours_pattern, args.seeds
-    )
+    ours_checkpoints = latest_checkpoints(args.runs_root, args.ours_pattern, args.seeds)
     batch_checkpoints = latest_checkpoints(
         args.runs_root, args.batch_pattern, args.seeds
     )

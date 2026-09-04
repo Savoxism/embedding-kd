@@ -218,5 +218,16 @@ run_no_row() {
     GRAPH_KEY=base run_arm components no_row "${seed}" --row_weight 0
 }
 
+# Clean no-diffusion control. Keep the full artifact, candidate width, ambient
+# scale, row loss, and total graph-group weight. Only the information supplied
+# by multi-hop diffusion is removed: support comes from P^1 and its relation
+# target is the teacher's raw cosine profile over those local columns.
+run_no_diffusion_clean() {
+    local seed="$1"
+    GRAPH_KEY=base run_arm components no_diffusion_clean "${seed}" \
+        --support_policy local_topk \
+        --relation_target direct
+}
+
 echo "protocol: ${TEACHER_MODEL} -> ${STUDENT_MODEL} | lr=${LR} epochs=${EPOCHS} bs=${BATCH_SIZE}"
 echo "seeds: [${SEEDS}] | output: ${ABL_ROOT}"

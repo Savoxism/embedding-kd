@@ -87,9 +87,10 @@ def parse_args():
     # so omitting all four reproduces the full model exactly.
     parser.add_argument(
         "--support_policy",
-        choices=["topk", "proportional", "uniform"],
+        choices=["topk", "proportional", "uniform", "local_topk"],
         default=None,
-        help="Support-selection arm: topk (method), proportional, uniform",
+        help="Support-selection arm: topk (method), proportional, uniform, or "
+        "local_topk (r=1-only support for the clean no-diffusion control)",
     )
     parser.add_argument(
         "--relation_target",

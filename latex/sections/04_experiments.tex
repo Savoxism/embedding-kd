@@ -3,3 +3,100 @@
 
 \input{tables/main_results}
 \clearpage
+
+\subsection{Ablation analysis}
+\label{sec:ablations}
+
+We ablate GGP-KD on the Qwen3-Embedding-0.6B $\rightarrow$ MiniLMv2-H384
+setting using three seeds.  Unless stated otherwise, all arms share the same
+training data, optimization schedule, 89-candidate relational budget, and
+2,048-example held-out geometry probe.  We report the downstream average over
+the nine evaluation datasets and the teacher-weighted cosine distortion
+\begin{equation}
+    \hat{E}
+    = \frac{1}{N}\sum_i\sum_j p_i^T(j)
+      \left(\cos_S(i,j)-\cos_T(i,j)\right)^2,
+\end{equation}
+where lower values indicate better preservation of teacher-relevant geometry.
+
+\paragraph{Support selection.}
+Table~\ref{tab:support_ablation} isolates how relational support is chosen.
+Teacher top-$K$ attains the lowest distortion and the best downstream average.
+Teacher-proportional sampling eventually exposes more distinct teacher mass,
+but each update has a larger restriction error.  This distinction is visible in
+Figure~\ref{fig:support_coverage}: deterministic top-$K$ provides strong
+immediate coverage and then plateaus, while stochastic policies continue to
+explore across epochs.  The large gap to batch-relational KD shows that local
+co-occurrence alone does not recover the corpus-level geometry.
+
+\input{tables/support_ablation}
+
+\begin{figure}[t]
+    \centering
+    \includegraphics[width=\textwidth]{figures/fig_support_coverage.pdf}
+    \caption{Cumulative teacher probability mass exposed by graph-support
+    policies. Bands show the mean 10th--90th percentile range across anchors;
+    lines are averaged over three sampling seeds. Top-$K$ maximizes mass per
+    update, whereas proportional and uniform sampling trade immediate support
+    quality for continued exploration. Batch-relational and uniform-corpus
+    controls form no graph relations and therefore have zero graph-support
+    coverage by construction.}
+    \label{fig:support_coverage}
+\end{figure}
+
+\paragraph{Method components.}
+Table~\ref{tab:component_ablation} separates graph construction, multi-hop
+propagation, the diffused target, ambient sharing, and the row objective.
+Multi-hop propagation and the diffused target substantially reduce geometry
+distortion, although the small downstream difference for multi-hop is not
+directionally aligned with $\hat{E}$. Removing ambient sharing hurts both
+metrics, and jointly removing ambient sharing and the row objective produces
+the largest downstream component regression.  The row objective improves the
+downstream average but leaves $\hat{E}$ nearly unchanged, suggesting that the
+probe is a geometry diagnostic rather than a complete surrogate for downstream
+quality.
+
+\input{tables/component_ablation}
+
+\paragraph{Sensitivity.}
+Figure~\ref{fig:sensitivity} replaces a dense hyperparameter table.  Increasing
+the diffusion-support quota improves the downstream average while increasing
+distortion; this sweep keeps total candidate width fixed by reallocating
+hard-negative and random-negative slots.  The downstream average also rises
+slightly with the row-loss weight, whereas geometry changes little around the
+canonical value.  We retain the graph-derived $K=23$ and
+$\lambda_{\mathrm{row}}=1$ as the method defaults rather than selecting separate
+values on the test results.
+
+\begin{figure}[t]
+    \centering
+    \includegraphics[width=\textwidth]{figures/fig_sensitivity.pdf}
+    \caption{Sensitivity to the diffusion-support quota (left) and row-loss
+    weight (right). The top row reports downstream Avg.; the bottom row reports
+    teacher-weighted distortion $\hat{E}$. Points and error bars are mean
+    $\pm$ standard deviation over three seeds; open circles mark the canonical
+    configuration.}
+    \label{fig:sensitivity}
+\end{figure}
+
+\paragraph{Where geometry errors occur.}
+Figure~\ref{fig:geometry_heatmap} visualizes each relation's contribution to
+$\hat{E}$ under a shared teacher-graph ordering and color scale. Batch-relational
+KD reduces distortion relative to the pretrained student, but its errors remain
+widespread. GGP-KD suppresses error across the teacher-relevant corpus structure,
+reducing $\hat{E}$ by 83.1\% relative to batch-relational KD and by 93.5\%
+relative to the student base.
+
+\begin{figure}[t]
+    \centering
+    \includegraphics[width=\textwidth]{figures/fig_geometry_heatmap.pdf}
+    \caption{Teacher-weighted geometry distortion on the same 2,048-example
+    probe. Each pixel is
+    $p_i^T(j)(\cos_S(i,j)-\cos_T(i,j))^2$; brighter values indicate larger error
+    on a relation important to the teacher. All panels use the same ordering and
+    color scale. Trained-model maps and reported values are averaged over three
+    seeds.}
+    \label{fig:geometry_heatmap}
+\end{figure}
+
+\clearpage

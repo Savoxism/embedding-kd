@@ -20,7 +20,10 @@ EPS_NORM = 1e-8
 DIAG_TOPK = 8
 
 # Support-selection arms for the fixed-budget ablation. `topk` is the method;
-# the other two are matched controls that remove deterministic teacher ranking.
+# proportional and uniform remove deterministic teacher ranking. `local_topk`
+# is reserved for the clean no-diffusion control: it spends the same quota on
+# r=1 relations only, while retaining the full artifact so the loss can keep the
+# method's graph/ambient weighting unchanged.
 #
 #   topk          the whole quota taken deterministically by teacher mass. High
 #                 teacher-mass coverage under the fixed relational budget.
@@ -32,7 +35,10 @@ DIAG_TOPK = 8
 #                 discarded. Drawing uniformly from the whole corpus instead would
 #                 give every drawn column diffusion target exactly zero and delete
 #                 the objective rather than ablate the policy.
-SUPPORT_POLICIES = ("topk", "proportional", "uniform")
+#   local_topk    deterministic top-k under P^1 only. Together with the direct
+#                 relation target, this removes multi-hop diffusion without also
+#                 changing candidate width, ambient calibration, or row loss.
+SUPPORT_POLICIES = ("topk", "proportional", "uniform", "local_topk")
 
 # Coverage target for the derived diffusion quota: the support size is the
 # smallest k whose top-k mixture mass reaches this fraction at the median anchor.

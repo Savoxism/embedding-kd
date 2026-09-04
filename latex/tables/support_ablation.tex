@@ -1,0 +1,35 @@
+\begin{table}[t]
+\centering
+\caption{Fixed-budget support selection for Qwen3-Embedding-0.6B $\rightarrow$
+MiniLMv2-H384. $C_5$ is the cumulative teacher probability mass exposed after
+five epochs, and $\epsilon_5$ is the mean per-update restriction KL at epoch 5.
+Graph-policy arms use 89 candidates per anchor. The uniform-corpus control is
+candidate-width matched, whereas batch-relational KD is reported as a cheaper
+reference. Downstream and geometry results are mean $\pm$ standard deviation
+over three seeds.}
+\label{tab:support_ablation}
+\small
+\setlength{\tabcolsep}{4.0pt}
+\begin{tabular}{lccccc}
+\toprule
+Support policy & $C_5\uparrow$ & $\epsilon_5\downarrow$ & Enc. texts
+& Avg.$\uparrow$ & $\hat{E}\downarrow$ \\
+\midrule
+\textbf{Teacher top-$K$ (ours)}
+& 0.699 & \textbf{0.365} & 4.673M
+& $\mathbf{75.39 \pm 0.04}$ & $\mathbf{0.0143 \pm 0.0006}$ \\
+Teacher-proportional
+& \textbf{0.811} & 0.612 & 4.690M
+& $75.34 \pm 0.07$ & $0.0151 \pm 0.0004$ \\
+Uniform within pool
+& 0.204 & 3.855 & 4.664M
+& $75.07 \pm 0.10$ & $0.0315 \pm 0.0006$ \\
+Uniform corpus (no graph)
+& 0 & -- & 4.987M
+& $75.14 \pm 0.04$ & $0.0201 \pm 0.0007$ \\
+Batch-relational KD
+& 0 & -- & 0.135M
+& $71.78 \pm 0.16$ & $0.0844 \pm 0.0015$ \\
+\bottomrule
+\end{tabular}
+\end{table}

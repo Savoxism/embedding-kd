@@ -55,7 +55,10 @@ class GGPKDConfig(BaseConfig):
     # branch, and so a run manifest records which arm produced a number.
     #
     # support_policy  which columns the diffusion quota is spent on (S1):
-    #                 topk (method) / proportional / uniform.
+    #                 topk (method) / proportional / uniform / local_topk.
+    #                 local_topk is only for the clean no-diffusion control: it
+    #                 selects the quota under P^1 while preserving the full
+    #                 artifact and therefore the method's graph/ambient balance.
     # relation_target what the selected columns are supervised *against* (S3):
     #                 diffusion (method, composed multi-scale transition rows) or
     #                 direct (the teacher's raw cosine over the same columns).

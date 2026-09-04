@@ -71,8 +71,8 @@ def test_every_policy_spends_the_same_budget(artifact, policy):
         assert idx not in candidates.tolist()
 
 
-def test_topk_is_the_only_policy_that_repeats_its_support(artifact):
-    """Top-k is deterministic; the two stochastic controls keep exploring."""
+def test_ranked_policies_are_deterministic_and_sampling_controls_explore(artifact):
+    """Ranked policies repeat; the two stochastic controls keep exploring."""
     supports = {}
     for policy in SUPPORT_POLICIES:
         sampler = _sampler(artifact, policy)
@@ -82,9 +82,25 @@ def test_topk_is_the_only_policy_that_repeats_its_support(artifact):
             per_epoch.append(set(sampler.sample(11)[0][:QUOTA].tolist()))
         supports[policy] = per_epoch
 
-    assert supports["topk"][0] == supports["topk"][1] == supports["topk"][2]
+    for policy in ("topk", "local_topk"):
+        assert supports[policy][0] == supports[policy][1] == supports[policy][2]
     for policy in ("proportional", "uniform"):
         assert supports[policy][0] != supports[policy][1], policy
+
+
+def test_local_topk_uses_only_the_one_step_row(artifact):
+    """The clean no-diffusion control must never spend quota on r>1 mass."""
+    sampler = _sampler(artifact, "local_topk")
+    candidates, targets = sampler.sample(11)
+    support = candidates[:QUOTA]
+
+    pool = artifact["pool_indices"][11].numpy()
+    p1 = artifact["pool_probs"][0, 11].numpy()
+    expected_positions = np.argsort(-p1)[:QUOTA]
+    expected = pool[expected_positions]
+
+    assert np.array_equal(support, expected)
+    assert np.all(targets[0, :QUOTA] > 0)
 
 
 def test_topk_covers_more_teacher_mass_per_epoch_than_uniform(artifact):
