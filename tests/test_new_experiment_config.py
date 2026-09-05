@@ -30,6 +30,8 @@ def test_ggpkd_cli_overrides(monkeypatch):
             "main.py",
             "--method",
             "ggpkd",
+            "--eval_every",
+            "0",
             "--row_weight",
             "0.8",
             "--row_start_epoch",
@@ -94,6 +96,25 @@ def test_ggpkd_cli_overrides(monkeypatch):
     assert config.pooling_method == "last_token"
     assert config.weights_dir == "weights"
     assert config.final_weights_only is True
+
+
+def test_eval_every_cli_is_explicit_and_rejects_negative_values(monkeypatch):
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["main.py", "--method", "ggpkd", "--eval_every", "0"],
+    )
+    args = main.parse_args()
+    assert main.get_config(args.method, args).eval_every == 0
+
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["main.py", "--method", "ggpkd", "--eval_every", "-1"],
+    )
+    args = main.parse_args()
+    with pytest.raises(ValueError, match="non-negative"):
+        main.get_config(args.method, args)
 
 
 def test_evaluation_table_renders_every_family(capsys):
@@ -209,7 +230,9 @@ def test_ggpkd_temperature_ties():
             FIXED_BANDWIDTH_TEMP * 2.0,
         ]
     )
-    assert criterion.scale_weights.tolist() == pytest.approx([1.0, 0.5, 0.25])
+    assert criterion.scale_weights.tolist() == pytest.approx(
+        np.asarray([1.0, 0.5, 0.25]) / 1.75
+    )
     assert criterion.direct_weight.item() == pytest.approx(1.0)
 
     for removed in (
@@ -294,12 +317,12 @@ def test_ggpkd_relational_loss_reports_semantic_decomposition():
     ]
     assert metrics["loss_diff"] == pytest.approx(expected_diff, rel=1e-6)
 
-    # The original raw weights [1, 1, 1/2, 1/4] normalize to the grouped
-    # coefficients [4/11, 4/11, 3/11].
+    # Ambient and graph retain a fixed 50/50 split. Inside the graph group,
+    # [1, 1/2, 1/4] normalizes to [4/7, 2/7, 1/7].
     expected_rel = (
-        (4.0 / 11.0) * metrics["loss_amb"]
-        + (4.0 / 11.0) * metrics["loss_nbr"]
-        + (3.0 / 11.0) * metrics["loss_diff"]
+        0.5 * metrics["loss_amb"]
+        + (2.0 / 7.0) * metrics["loss_nbr"]
+        + (3.0 / 14.0) * metrics["loss_diff"]
     )
     assert metrics["loss_rel"] == pytest.approx(expected_rel, rel=1e-6)
     assert loss.item() == pytest.approx(metrics["loss_rel"], rel=1e-6)

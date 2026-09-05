@@ -5,66 +5,47 @@
   \providecommand{\doi}[1]{doi: #1}\else
   \providecommand{\doi}{doi: \begingroup \urlstyle{rm}\Url}\fi
 
-\bibitem[Akram et~al.(2026)Akram, Sturua, Havriushenko, Herreros, G{\"u}nther,
-  Werk, and Xiao]{akram2026jinaembeddingsv5}
-Mohammad~Kalim Akram, Saba Sturua, Nastia Havriushenko, Quentin Herreros,
-  Michael G{\"u}nther, Maximilian Werk, and Han Xiao.
+\bibitem[Akram et~al.(2026)Akram, Sturua, Havriushenko, Herreros, G{\"u}nther, Werk, and Xiao]{akram2026jinaembeddingsv5}
+Mohammad~Kalim Akram, Saba Sturua, Nastia Havriushenko, Quentin Herreros, Michael G{\"u}nther, Maximilian Werk, and Han Xiao.
 \newblock jina-embeddings-v5-text: Task-targeted embedding distillation.
 \newblock \emph{CoRR}, abs/2602.15547, 2026.
 \newblock \doi{10.48550/arXiv.2602.15547}.
 \newblock URL \url{https://arxiv.org/abs/2602.15547}.
 
-\bibitem[Anshumann et~al.(2025)Anshumann, Zaidi, Kedia, Ahn, Kwon, Lee, Lee,
-  and Lee]{anshumann2025sparse}
-Anshumann, Mohd~Abbas Zaidi, Akhil Kedia, Jinwoo Ahn, Taehwak Kwon, Kangwook
-  Lee, Haejun Lee, and Joohyung Lee.
+\bibitem[Anshumann et~al.(2025)Anshumann, Zaidi, Kedia, Ahn, Kwon, Lee, Lee, and Lee]{anshumann2025sparse}
+Anshumann, Mohd~Abbas Zaidi, Akhil Kedia, Jinwoo Ahn, Taehwak Kwon, Kangwook Lee, Haejun Lee, and Joohyung Lee.
 \newblock Sparse logit sampling: Accelerating knowledge distillation in {LLM}s.
-\newblock In Wanxiang Che, Joyce Nabende, Ekaterina Shutova, and Mohammad~Taher
-  Pilehvar (eds.), \emph{Proceedings of the 63rd Annual Meeting of the
-  Association for Computational Linguistics (Volume 1: Long Papers)}, pp.\
-  18085--18108, Vienna, Austria, July 2025. Association for Computational
-  Linguistics.
+\newblock In Wanxiang Che, Joyce Nabende, Ekaterina Shutova, and Mohammad~Taher Pilehvar (eds.), \emph{Proceedings of the 63rd Annual Meeting of the Association for Computational Linguistics (Volume 1: Long Papers)}, pp.\  18085--18108, Vienna, Austria, July 2025. Association for Computational Linguistics.
 \newblock \doi{10.18653/v1/2025.acl-long.885}.
 \newblock URL \url{https://aclanthology.org/2025.acl-long.885/}.
 
 \bibitem[Belkin \& Niyogi(2003)Belkin and Niyogi]{belkin2003laplacian}
 Mikhail Belkin and Partha Niyogi.
-\newblock Laplacian eigenmaps for dimensionality reduction and data
-  representation.
-\newblock \emph{Neural Computation}, 15\penalty0 (6):\penalty0 1373--1396,
-  2003.
+\newblock Laplacian eigenmaps for dimensionality reduction and data representation.
+\newblock \emph{Neural Computation}, 15\penalty0 (6):\penalty0 1373--1396, 2003.
 \newblock \doi{10.1162/089976603321780317}.
 
 \bibitem[Coifman \& Lafon(2006)Coifman and Lafon]{coifman2006diffusionmaps}
 Ronald~R. Coifman and St{\'e}phane Lafon.
 \newblock Diffusion maps.
-\newblock \emph{Applied and Computational Harmonic Analysis}, 21\penalty0
-  (1):\penalty0 5--30, 2006.
+\newblock \emph{Applied and Computational Harmonic Analysis}, 21\penalty0 (1):\penalty0 5--30, 2006.
 \newblock \doi{10.1016/j.acha.2006.04.006}.
 
-\bibitem[Dao et~al.(2026)Dao, Nguyen, Pham, Ngo~Van, Nguyen, Nguyen, and
-  Le]{dao2026talas}
-Quoc~Phong Dao, Hoang~Son Nguyen, Khanh~Chi Pham, Linh Ngo~Van, Diep Thi-Ngoc
-  Nguyen, Thien~Huu Nguyen, and Trung Le.
-\newblock {TALAS}: Teacher-anchored layer alignment with adaptive
-  sharpness-aware minimization for embedding distillation, 2026.
+\bibitem[Dao et~al.(2026)Dao, Nguyen, Pham, Ngo~Van, Nguyen, Nguyen, and Le]{dao2026talas}
+Quoc~Phong Dao, Hoang~Son Nguyen, Khanh~Chi Pham, Linh Ngo~Van, Diep Thi-Ngoc Nguyen, Thien~Huu Nguyen, and Trung Le.
+\newblock {TALAS}: Teacher-anchored layer alignment with adaptive sharpness-aware minimization for embedding distillation, 2026.
 \newblock Manuscript.
 
-\bibitem[Gao et~al.(2021)Gao, Wu, Wang, Wang, Zang, Wang, and
-  Hu]{gao2021distilcse}
-Chaochen Gao, Xing Wu, Peng Wang, Jue Wang, Liangjun Zang, Zhongyuan Wang, and
-  Songlin Hu.
-\newblock {DistilCSE}: Effective knowledge distillation for contrastive
-  sentence embeddings.
+\bibitem[Gao et~al.(2021)Gao, Wu, Wang, Wang, Zang, Wang, and Hu]{gao2021distilcse}
+Chaochen Gao, Xing Wu, Peng Wang, Jue Wang, Liangjun Zang, Zhongyuan Wang, and Songlin Hu.
+\newblock {DistilCSE}: Effective knowledge distillation for contrastive sentence embeddings.
 \newblock \emph{CoRR}, abs/2112.05638, 2021.
 \newblock \doi{10.48550/arXiv.2112.05638}.
 \newblock URL \url{https://arxiv.org/abs/2112.05638}.
 
 \bibitem[Gou et~al.(2025)Gou, Xin, Yu, Song, Zhang, and Wan]{xin2025nrkd}
-Jianping Gou, Xiaomeng Xin, Baosheng Yu, Heping Song, Weiyong Zhang, and
-  Shaohua Wan.
-\newblock Neighborhood relation-based knowledge distillation for image
-  classification.
+Jianping Gou, Xiaomeng Xin, Baosheng Yu, Heping Song, Weiyong Zhang, and Shaohua Wan.
+\newblock Neighborhood relation-based knowledge distillation for image classification.
 \newblock \emph{Neural Networks}, 188:\penalty0 107429, 2025.
 
 \bibitem[Hinton et~al.(2015)Hinton, Vinyals, and Dean]{hinton2015distilling}
@@ -73,149 +54,104 @@ Geoffrey~E. Hinton, Oriol Vinyals, and Jeffrey Dean.
 \newblock \emph{CoRR}, abs/1503.02531, 2015.
 \newblock URL \url{http://arxiv.org/abs/1503.02531}.
 
-\bibitem[Huguet et~al.(2023)Huguet, Tong, De~Brouwer, Zhang, Wolf, Adelstein,
-  and Krishnaswamy]{huguet2023heatgeo}
-Guillaume Huguet, Alexander Tong, Edward De~Brouwer, Yanlei Zhang, Guy Wolf,
-  Ian Adelstein, and Smita Krishnaswamy.
-\newblock A heat diffusion perspective on geodesic preserving dimensionality
-  reduction.
-\newblock In \emph{Advances in Neural Information Processing Systems},
-  volume~36, 2023.
+\bibitem[Huguet et~al.(2023)Huguet, Tong, De~Brouwer, Zhang, Wolf, Adelstein, and Krishnaswamy]{huguet2023heatgeo}
+Guillaume Huguet, Alexander Tong, Edward De~Brouwer, Yanlei Zhang, Guy Wolf, Ian Adelstein, and Smita Krishnaswamy.
+\newblock A heat diffusion perspective on geodesic preserving dimensionality reduction.
+\newblock In \emph{Advances in Neural Information Processing Systems}, volume~36, 2023.
 
-\bibitem[Jiao et~al.(2020)Jiao, Yin, Shang, Jiang, Chen, Li, Wang, and
-  Liu]{jiao2019tinybert}
-Xiaoqi Jiao, Yichun Yin, Lifeng Shang, Xin Jiang, Xiao Chen, Linlin Li, Fang
-  Wang, and Qun Liu.
+\bibitem[Jiao et~al.(2020)Jiao, Yin, Shang, Jiang, Chen, Li, Wang, and Liu]{jiao2019tinybert}
+Xiaoqi Jiao, Yichun Yin, Lifeng Shang, Xin Jiang, Xiao Chen, Linlin Li, Fang Wang, and Qun Liu.
 \newblock {T}iny{BERT}: Distilling {BERT} for natural language understanding.
-\newblock In Trevor Cohn, Yulan He, and Yang Liu (eds.), \emph{Findings of the
-  Association for Computational Linguistics: EMNLP 2020}, pp.\  4163--4174,
-  Online, November 2020. Association for Computational Linguistics.
+\newblock In Trevor Cohn, Yulan He, and Yang Liu (eds.), \emph{Findings of the Association for Computational Linguistics: EMNLP 2020}, pp.\  4163--4174, Online, November 2020. Association for Computational Linguistics.
 \newblock \doi{10.18653/v1/2020.findings-emnlp.372}.
 \newblock URL \url{https://aclanthology.org/2020.findings-emnlp.372/}.
 
 \bibitem[Kim et~al.(2024)Kim, You, Lee, Kim, and Jung]{kim2024topkd}
 Jungeun Kim, Junwon You, Dongjin Lee, Ha~Young Kim, and Jae-Hun Jung.
 \newblock Do topological characteristics help in knowledge distillation?
-\newblock In \emph{Proceedings of the 41st International Conference on Machine
-  Learning}, volume 235, pp.\  24674--24693. PMLR, 2024.
+\newblock In \emph{Proceedings of the 41st International Conference on Machine Learning}, volume 235, pp.\  24674--24693. PMLR, 2024.
 \newblock URL \url{https://proceedings.mlr.press/v235/kim24aj.html}.
 
-\bibitem[Kim et~al.(2023)Kim, Rawat, Zaheer, Jayasumana, Sadhanala, Jitkrittum,
-  Menon, Fergus, and Kumar]{kim2023embeddistill}
-Seungyeon Kim, Ankit~Singh Rawat, Manzil Zaheer, Sadeep Jayasumana,
-  Veeranjaneyulu Sadhanala, Wittawat Jitkrittum, Aditya~Krishna Menon, Rob
-  Fergus, and Sanjiv Kumar.
-\newblock Embeddistill: A geometric knowledge distillation for information
-  retrieval.
+\bibitem[Kim et~al.(2023)Kim, Rawat, Zaheer, Jayasumana, Sadhanala, Jitkrittum, Menon, Fergus, and Kumar]{kim2023embeddistill}
+Seungyeon Kim, Ankit~Singh Rawat, Manzil Zaheer, Sadeep Jayasumana, Veeranjaneyulu Sadhanala, Wittawat Jitkrittum, Aditya~Krishna Menon, Rob Fergus, and Sanjiv Kumar.
+\newblock Embeddistill: A geometric knowledge distillation for information retrieval.
 \newblock \emph{arXiv preprint arXiv:2301.12005}, 2023.
 
-\bibitem[Lee et~al.(2024)Lee, Dai, Ren, Chen, Cer, Cole, Hui, Boratko, Kapadia,
-  Ding, Luan, Duddu, Abrego, Shi, Gupta, Kusupati, Jain, Jonnalagadda, Chang,
-  and Naim]{lee2024gecko}
-Jinhyuk Lee, Zhuyun Dai, Xiaoqi Ren, Blair Chen, Daniel Cer, Jeremy~R. Cole,
-  Kai Hui, Michael Boratko, Rajvi Kapadia, Wen Ding, Yi~Luan, Sai Meher~Karthik
-  Duddu, Gustavo~Hernandez Abrego, Weiqiang Shi, Nithi Gupta, Aditya Kusupati,
-  Prateek Jain, Siddhartha~Reddy Jonnalagadda, Ming-Wei Chang, and Iftekhar
-  Naim.
-\newblock Gecko: Versatile text embeddings distilled from large language
-  models.
+\bibitem[Lee et~al.(2024)Lee, Dai, Ren, Chen, Cer, Cole, Hui, Boratko, Kapadia, Ding, Luan, Duddu, Abrego, Shi, Gupta, Kusupati, Jain, Jonnalagadda, Chang, and Naim]{lee2024gecko}
+Jinhyuk Lee, Zhuyun Dai, Xiaoqi Ren, Blair Chen, Daniel Cer, Jeremy~R. Cole, Kai Hui, Michael Boratko, Rajvi Kapadia, Wen Ding, Yi~Luan, Sai Meher~Karthik Duddu, Gustavo~Hernandez Abrego, Weiqiang Shi, Nithi Gupta, Aditya Kusupati, Prateek Jain, Siddhartha~Reddy Jonnalagadda, Ming-Wei Chang, and Iftekhar Naim.
+\newblock Gecko: Versatile text embeddings distilled from large language models.
 \newblock \emph{CoRR}, abs/2403.20327, 2024.
 \newblock \doi{10.48550/arXiv.2403.20327}.
 \newblock URL \url{https://arxiv.org/abs/2403.20327}.
 
 \bibitem[Liu et~al.(2019)Liu, Cao, Li, Yuan, Hu, Li, and Duan]{liu2019irg}
-Yufan Liu, Jiajiong Cao, Bing Li, Chunfeng Yuan, Weiming Hu, Yangxi Li, and
-  Yunqiang Duan.
+Yufan Liu, Jiajiong Cao, Bing Li, Chunfeng Yuan, Weiming Hu, Yangxi Li, and Yunqiang Duan.
 \newblock Knowledge distillation via instance relationship graph.
-\newblock In \emph{Proceedings of the IEEE/CVF Conference on Computer Vision
-  and Pattern Recognition}, pp.\  7096--7104, 2019.
+\newblock In \emph{Proceedings of the IEEE/CVF Conference on Computer Vision and Pattern Recognition}, pp.\  7096--7104, 2019.
 
 \bibitem[Park et~al.(2019)Park, Kim, Lu, and Cho]{park2019rkd}
 Wonpyo Park, Dongju Kim, Yan Lu, and Minsu Cho.
 \newblock Relational knowledge distillation.
-\newblock In \emph{Proceedings of the IEEE/CVF Conference on Computer Vision
-  and Pattern Recognition}, pp.\  3967--3976, 2019.
+\newblock In \emph{Proceedings of the IEEE/CVF Conference on Computer Vision and Pattern Recognition}, pp.\  3967--3976, 2019.
 \newblock URL \url{https://arxiv.org/abs/1904.05068}.
 
 \bibitem[Passalis et~al.(2021)Passalis, Tzelepi, and Tefas]{passalis2020pkt}
 Nikolaos Passalis, Maria Tzelepi, and Anastasios Tefas.
-\newblock Probabilistic knowledge transfer for lightweight deep representation
-  learning.
-\newblock \emph{IEEE Transactions on Neural Networks and Learning Systems},
-  32\penalty0 (5):\penalty0 2030--2039, 2021.
+\newblock Probabilistic knowledge transfer for lightweight deep representation learning.
+\newblock \emph{IEEE Transactions on Neural Networks and Learning Systems}, 32\penalty0 (5):\penalty0 2030--2039, 2021.
 \newblock \doi{10.1109/TNNLS.2020.2995884}.
 
 \bibitem[Qian et~al.(2022)Qian, Li, and Hu]{qian2022fullkernel}
 Qi~Qian, Hao Li, and Juhua Hu.
 \newblock Improved knowledge distillation via full kernel matrix transfer.
-\newblock In \emph{Proceedings of the 2022 SIAM International Conference on
-  Data Mining (SDM)}, pp.\  612--620, 2022.
+\newblock In \emph{Proceedings of the 2022 SIAM International Conference on Data Mining (SDM)}, pp.\  612--620, 2022.
 \newblock \doi{10.1137/1.9781611977172.69}.
 
 \bibitem[Sanh et~al.(2019)Sanh, Debut, Chaumond, and Wolf]{sanh2019distilbert}
 Victor Sanh, Lysandre Debut, Julien Chaumond, and Thomas Wolf.
-\newblock Distilbert, a distilled version of {BERT:} smaller, faster, cheaper
-  and lighter.
+\newblock Distilbert, a distilled version of {BERT:} smaller, faster, cheaper and lighter.
 \newblock \emph{CoRR}, abs/1910.01108, 2019.
 \newblock URL \url{http://arxiv.org/abs/1910.01108}.
 
 \bibitem[Sun et~al.(2009)Sun, Ovsjanikov, and Guibas]{sun2009hks}
 Jian Sun, Maks Ovsjanikov, and Leonidas~J. Guibas.
-\newblock A concise and provably informative multi-scale signature based on
-  heat diffusion.
-\newblock \emph{Computer Graphics Forum (Proc. SGP)}, 28\penalty0 (5):\penalty0
-  1383--1392, 2009.
+\newblock A concise and provably informative multi-scale signature based on heat diffusion.
+\newblock \emph{Computer Graphics Forum (Proc. SGP)}, 28\penalty0 (5):\penalty0 1383--1392, 2009.
 
-\bibitem[Tian et~al.(2025)Tian, Pei, Zhang, Zhang, and
-  Chawla]{yang2023graphkd_survey}
+\bibitem[Tian et~al.(2025)Tian, Pei, Zhang, Zhang, and Chawla]{yang2023graphkd_survey}
 Yijun Tian, Shichao Pei, Xiangliang Zhang, Chuxu Zhang, and Nitesh~V. Chawla.
 \newblock Knowledge distillation on graphs: {A} survey.
-\newblock \emph{{ACM} Comput. Surv.}, 57\penalty0 (8):\penalty0 189:1--189:16,
-  2025.
+\newblock \emph{{ACM} Comput. Surv.}, 57\penalty0 (8):\penalty0 189:1--189:16, 2025.
 \newblock \doi{10.1145/3711121}.
 \newblock URL \url{https://doi.org/10.1145/3711121}.
 
-\bibitem[Truong et~al.(2025)Truong, Vu, Vu, Diep, Van, Nguyen, and
-  Le]{truong2025emo}
-Minh-Phuc Truong, Hai~An Vu, Tu~Vu, Nguyen Thi~Ngoc Diep, Linh~Ngo Van,
-  Thien~Huu Nguyen, and Trung Le.
-\newblock {EMO}: Embedding model distillation via intra-model relation and
-  optimal transport alignments.
-\newblock In \emph{Proceedings of the 2025 Conference on Empirical Methods in
-  Natural Language Processing}, pp.\  7594--7606. Association for Computational
-  Linguistics, 2025.
+\bibitem[Truong et~al.(2025)Truong, Vu, Vu, Diep, Van, Nguyen, and Le]{truong2025emo}
+Minh-Phuc Truong, Hai~An Vu, Tu~Vu, Nguyen Thi~Ngoc Diep, Linh~Ngo Van, Thien~Huu Nguyen, and Trung Le.
+\newblock {EMO}: Embedding model distillation via intra-model relation and optimal transport alignments.
+\newblock In \emph{Proceedings of the 2025 Conference on Empirical Methods in Natural Language Processing}, pp.\  7594--7606. Association for Computational Linguistics, 2025.
 \newblock \doi{10.18653/v1/2025.emnlp-main.385}.
 \newblock URL \url{https://aclanthology.org/2025.emnlp-main.385/}.
 
 \bibitem[Tung \& Mori(2019)Tung and Mori]{tung2019similarity}
 Frederick Tung and Greg Mori.
 \newblock Similarity-preserving knowledge distillation.
-\newblock In \emph{Proceedings of the IEEE/CVF International Conference on
-  Computer Vision}, pp.\  1365--1374, 2019.
+\newblock In \emph{Proceedings of the IEEE/CVF International Conference on Computer Vision}, pp.\  1365--1374, 2019.
 
 \bibitem[Vujanic \& Rueckstiess(2025)Vujanic and Rueckstiess]{vujanic2025leaf}
 Robin Vujanic and Thomas Rueckstiess.
-\newblock {LEAF}: Knowledge distillation of text embedding models with
-  teacher-aligned representations.
+\newblock {LEAF}: Knowledge distillation of text embedding models with teacher-aligned representations.
 \newblock \emph{CoRR}, abs/2509.12539, 2025.
 \newblock \doi{10.48550/arXiv.2509.12539}.
 \newblock URL \url{https://arxiv.org/abs/2509.12539}.
 
 \bibitem[Wang et~al.(2020)Wang, Wei, Dong, Bao, Yang, and Zhou]{wang2020minilm}
 Wenhui Wang, Furu Wei, Li~Dong, Hangbo Bao, Nan Yang, and Ming Zhou.
-\newblock Minilm: Deep self-attention distillation for task-agnostic
-  compression of pre-trained transformers.
-\newblock In Hugo Larochelle, Marc'Aurelio Ranzato, Raia Hadsell,
-  Maria{-}Florina Balcan, and Hsuan{-}Tien Lin (eds.), \emph{Advances in Neural
-  Information Processing Systems 33: Annual Conference on Neural Information
-  Processing Systems 2020, NeurIPS 2020, December 6-12, 2020, virtual}, 2020.
-\newblock URL
-  \url{https://proceedings.neurips.cc/paper/2020/hash/3f5ee243547dee91fbd053c1c4a845aa-Abstract.html}.
+\newblock Minilm: Deep self-attention distillation for task-agnostic compression of pre-trained transformers.
+\newblock In Hugo Larochelle, Marc'Aurelio Ranzato, Raia Hadsell, Maria{-}Florina Balcan, and Hsuan{-}Tien Lin (eds.), \emph{Advances in Neural Information Processing Systems 33: Annual Conference on Neural Information Processing Systems 2020, NeurIPS 2020, December 6-12, 2020, virtual}, 2020.
+\newblock URL \url{https://proceedings.neurips.cc/paper/2020/hash/3f5ee243547dee91fbd053c1c4a845aa-Abstract.html}.
 
-\bibitem[Xu et~al.(2022)Xu, Fang, Zhang, Xie, Wang, Dai, Xiong, and
-  Tian]{xu2022bingo}
-Haohang Xu, Jiemin Fang, Xiaopeng Zhang, Lingxi Xie, Xinggang Wang, Wenrui Dai,
-  Hongkai Xiong, and Qi~Tian.
+\bibitem[Xu et~al.(2022)Xu, Fang, Zhang, Xie, Wang, Dai, Xiong, and Tian]{xu2022bingo}
+Haohang Xu, Jiemin Fang, Xiaopeng Zhang, Lingxi Xie, Xinggang Wang, Wenrui Dai, Hongkai Xiong, and Qi~Tian.
 \newblock Bag of instances aggregation boosts self-supervised distillation.
 \newblock In \emph{International Conference on Learning Representations}, 2022.
 
@@ -226,10 +162,8 @@ Jiahao Xu, Wei Shao, Lihui Chen, and Lemao Liu.
 \newblock \doi{10.48550/arXiv.2310.13499}.
 \newblock URL \url{https://arxiv.org/abs/2310.13499}.
 
-\bibitem[Xu et~al.(2024)Xu, Li, Tao, Shen, Cheng, Li, Xu, Tao, and
-  Zhou]{xu2024survey}
-Xiaohan Xu, Ming Li, Chongyang Tao, Tao Shen, Reynold Cheng, Jinyang Li, Can
-  Xu, Dacheng Tao, and Tianyi Zhou.
+\bibitem[Xu et~al.(2024)Xu, Li, Tao, Shen, Cheng, Li, Xu, Tao, and Zhou]{xu2024survey}
+Xiaohan Xu, Ming Li, Chongyang Tao, Tao Shen, Reynold Cheng, Jinyang Li, Can Xu, Dacheng Tao, and Tianyi Zhou.
 \newblock A survey on knowledge distillation of large language models.
 \newblock \emph{CoRR}, abs/2402.13116, 2024.
 \newblock \doi{10.48550/arXiv.2402.13116}.
@@ -237,10 +171,8 @@ Xiaohan Xu, Ming Li, Chongyang Tao, Tao Shen, Reynold Cheng, Jinyang Li, Can
 
 \bibitem[Yang et~al.(2022)Yang, Wu, and Yan]{yang2022geometrickd}
 Chenxiao Yang, Qitian Wu, and Junchi Yan.
-\newblock Geometric knowledge distillation: Topology compression for graph
-  neural networks.
-\newblock In \emph{Advances in Neural Information Processing Systems},
-  volume~35, pp.\  29761--29775, 2022.
+\newblock Geometric knowledge distillation: Topology compression for graph neural networks.
+\newblock In \emph{Advances in Neural Information Processing Systems}, volume~35, pp.\  29761--29775, 2022.
 
 \bibitem[Zhang et~al.(2024)Zhang, Li, Zeng, and Wang]{zhang2024jasperstella}
 Dun Zhang, Jiacheng Li, Ziyang Zeng, and Fulong Wang.
@@ -251,11 +183,8 @@ Dun Zhang, Jiacheng Li, Ziyang Zeng, and Fulong Wang.
 
 \bibitem[Zhang et~al.(2022)Zhang, Liu, Sun, and Shah]{zhang2022glnn}
 Shichang Zhang, Yozen Liu, Yizhou Sun, and Neil Shah.
-\newblock Graph-less neural networks: Teaching old mlps new tricks via
-  distillation.
-\newblock In \emph{The Tenth International Conference on Learning
-  Representations, {ICLR} 2022, Virtual Event, April 25-29, 2022}.
-  OpenReview.net, 2022.
+\newblock Graph-less neural networks: Teaching old mlps new tricks via distillation.
+\newblock In \emph{The Tenth International Conference on Learning Representations, {ICLR} 2022, Virtual Event, April 25-29, 2022}. OpenReview.net, 2022.
 \newblock URL \url{https://openreview.net/forum?id=4p6\_5HBWPCw}.
 
 \end{thebibliography}

@@ -1051,12 +1051,13 @@ def build_or_load_ggpkd_artifact(
         artifact = torch.load(artifact_path, map_location="cpu", weights_only=False)
         matches, reason = _metadata_matches(artifact, metadata)
         if matches:
-            graph_log_path = artifact.get("graph_log_path")
-            if graph_log_path and os.path.exists(graph_log_path):
-                print(f"Loaded GGPKD artifact from: {artifact_path}")
-                _print_graph_summary(artifact.get("graph_stats", {}), scales)
-                return artifact
-            print(f"GGPKD graph log missing, rebuilding artifact: {graph_log_path}")
+            # graph_stats are embedded in the artifact. The verbose neighbour
+            # JSONL is disposable after a successful paper run and must not make
+            # an otherwise valid cache rebuild itself merely because that log was
+            # compacted away.
+            print(f"Loaded GGPKD artifact from: {artifact_path}")
+            _print_graph_summary(artifact.get("graph_stats", {}), scales)
+            return artifact
         else:
             print(f"GGPKD artifact config mismatch, rebuilding: {artifact_path}")
             print(f"  first mismatch -> {reason}")

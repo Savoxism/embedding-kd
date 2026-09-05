@@ -14,19 +14,12 @@ from __future__ import annotations
 
 import argparse
 import csv
-import json
 import statistics
-import sys
 from collections import defaultdict
 from pathlib import Path
 
 import matplotlib as mpl
 import matplotlib.pyplot as plt
-
-sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
-
-from src.distill.benchmarks import primary_scores  # noqa: E402
-
 
 FULL_WIDTH = 5.5
 INK = "#171717"
@@ -209,7 +202,9 @@ def _float(value: str | None) -> float | None:
         return None
 
 
-def figure_two(result_rows: list[dict], coverage_rows: list[dict], out_dir: Path) -> None:
+def figure_two(
+    result_rows: list[dict], coverage_rows: list[dict], out_dir: Path
+) -> None:
     """Legacy coverage-to-geometry diagnostic, isolated to one model pair."""
     s1_pairs = {row.get("pair") for row in result_rows if row.get("ablation") == "s1"}
     if len(s1_pairs) != 1 or not all(s1_pairs):
@@ -269,28 +264,19 @@ def figure_two(result_rows: list[dict], coverage_rows: list[dict], out_dir: Path
     save(fig, out_dir / "fig_causal_chain_legacy")
 
 
-def _read_jsonl(path: Path) -> list[dict]:
-    return [json.loads(line) for line in path.read_text().splitlines() if line.strip()]
-
-
 def _run_metrics(run_dir: Path) -> tuple[float, float]:
-    tests = [
-        row["test"]
-        for row in _read_jsonl(run_dir / "metrics.jsonl")
-        if isinstance(row.get("test"), dict)
-    ]
-    if not tests:
-        raise ValueError(f"missing final test result: {run_dir}")
-    scores = primary_scores(tests[-1])
-    avg = 100.0 * statistics.fmean(scores.values())
-    final_epoch = _read_jsonl(run_dir / "epochs.jsonl")[-1]
-    distortion = float(final_epoch["geometry"]["teacher_weighted_distortion"])
-    return avg, distortion
+    rows = read_csv(run_dir / "result.csv")
+    if len(rows) != 1:
+        raise ValueError(f"expected one compact result row: {run_dir}")
+    return float(rows[0]["avg"]), float(rows[0]["teacher_weighted_distortion"])
 
 
 def _arm_seed_values(runs_root: Path, relative_arm: str) -> list[tuple[float, float]]:
     arm_dir = runs_root / relative_arm
-    seed_dirs = sorted(path for path in arm_dir.glob("seed*") if path.is_dir())
+    seed_dirs = sorted(
+        path for path in arm_dir.glob("seed*")
+        if path.is_dir() and (path / "result.csv").is_file()
+    )
     if not seed_dirs:
         raise ValueError(f"no seed runs found under {arm_dir}")
     return [_run_metrics(path) for path in seed_dirs]
@@ -299,33 +285,49 @@ def _arm_seed_values(runs_root: Path, relative_arm: str) -> list[tuple[float, fl
 def figure_sensitivity(runs_root: Path, out_dir: Path) -> None:
     """Plot mean and seed spread for both sensitivity axes without dual y-axes."""
     topk = {
-        0.5: _arm_seed_values(runs_root, "sensitivity/topk_half"),
+        0.5: _arm_seed_values(runs_root, "sensitivity/topk_0_5x"),
+        0.75: _arm_seed_values(runs_root, "sensitivity/topk_0_75x"),
         1.0: _arm_seed_values(runs_root, "full/full"),
-        2.0: _arm_seed_values(runs_root, "sensitivity/topk_double"),
+        1.5: _arm_seed_values(runs_root, "sensitivity/topk_1_5x"),
+        2.0: _arm_seed_values(runs_root, "sensitivity/topk_2x"),
+        2.5: _arm_seed_values(runs_root, "sensitivity/topk_2_5x"),
+        3.0: _arm_seed_values(runs_root, "sensitivity/topk_3x"),
     }
     row = {
         0.0: _arm_seed_values(runs_root, "components/no_row"),
-        0.5: _arm_seed_values(runs_root, "sensitivity/row_weight_0_5"),
+        0.1: _arm_seed_values(runs_root, "sensitivity/row_0_1"),
+        0.25: _arm_seed_values(runs_root, "sensitivity/row_0_25"),
+        0.5: _arm_seed_values(runs_root, "sensitivity/row_0_5"),
+        0.75: _arm_seed_values(runs_root, "sensitivity/row_0_75"),
         1.0: _arm_seed_values(runs_root, "full/full"),
-        1.5: _arm_seed_values(runs_root, "sensitivity/row_weight_1_5"),
     }
 
     fig, axes = plt.subplots(2, 2, figsize=(FULL_WIDTH, 3.45))
     studies = (
         (
             topk,
-            r"Diffusion-support multiplier",
-            [r"0.5$\times$", r"1$\times$", r"2$\times$"],
+            r"Support-quota multiplier",
+            [
+                r"0.5$\times$",
+                r"0.75$\times$",
+                r"1$\times$",
+                r"1.5$\times$",
+                r"2$\times$",
+                r"2.5$\times$",
+                r"3$\times$",
+            ],
         ),
         (
             row,
             r"Row-loss weight $\lambda_{\mathrm{row}}$",
-            ["0", "0.5", "1", "1.5"],
+            ["0", "0.1", "0.25", "0.5", "0.75", "1"],
         ),
     )
     for column, (study, x_label, tick_labels) in enumerate(studies):
         xs = list(study)
-        for metric_index, (metric_name, color) in enumerate((("Avg.", BLUE), (r"$\hat{E}$", ORANGE))):
+        for metric_index, (metric_name, color) in enumerate(
+            (("Avg.", BLUE), (r"$\hat{E}$", ORANGE))
+        ):
             ax = axes[metric_index, column]
             value_index = metric_index
             means, stds = zip(
@@ -381,19 +383,21 @@ def figure_sensitivity(runs_root: Path, out_dir: Path) -> None:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--coverage", type=Path, default=Path("ablations/coverage.csv"))
+    parser.add_argument(
+        "--coverage",
+        type=Path,
+        default=Path(
+            "runs/ablation/qwen3_0_6b_to_minilmv2_h384/"
+            "paper_r1_v2/tables/table2_coverage.csv"
+        ),
+    )
     parser.add_argument(
         "--runs-root",
         type=Path,
-        default=Path(
-            "runs/ablations_c79eb23_no_weights/runs/ablation/"
-            "qwen3_0_6b_to_minilmv2_h384/paper_v1"
-        ),
+        default=Path("runs/ablation/qwen3_0_6b_to_minilmv2_h384/paper_r1_v2"),
     )
     parser.add_argument("--out-dir", type=Path, default=Path("latex/figures"))
-    parser.add_argument(
-        "--only", choices=("coverage", "sensitivity"), default=None
-    )
+    parser.add_argument("--only", choices=("coverage", "sensitivity"), default=None)
     args = parser.parse_args()
 
     use_paper_style()

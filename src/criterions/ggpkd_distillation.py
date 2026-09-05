@@ -11,7 +11,6 @@ from src.ggpkd.policy import (
     diffusion_weights,
 )
 
-
 RELATION_TARGETS = ("diffusion", "direct", "ambient_only")
 
 
@@ -210,10 +209,13 @@ class GGPKDDistillation(nn.Module):
       last free student temperatures, and under ``row_temps`` it inherits the
       per-row tie automatically: tau_r(i) = sqrt(r) * tau_i.
 
-    **Scale weights.** ``omega_r = 1/r`` with ``omega_0 = omega_1``: a scale's
-    influence falls off with the diffusion time it describes, and the ambient scale
-    sits at the sharpest scale's weight. The full vector is derived from
-    ``diffusion_scales`` and normalized together once in ``forward``.
+    **Scale weights.** Within the graph group, ``omega_r`` is proportional to
+    ``1/r``.  Those graph weights are normalized to sum to one, and the ambient
+    group receives the same total unnormalized weight.  The final normalization
+    therefore keeps a 50/50 ambient--graph split whenever ambient supervision is
+    active, independent of how many diffusion radii are requested.  This makes the
+    radius ablation change the graph target ladder without also increasing the
+    graph group's effective loss weight.
 
     Passing removed or derived knobs raises rather than being silently absorbed.
     """
@@ -237,8 +239,10 @@ class GGPKDDistillation(nn.Module):
         ),
         "num_walks": "removed with walk-based row selection",
         "walk_length": "removed with walk-based row selection",
-        "scale_weights": "derived from diffusion_scales by omega_r = 1/r",
-        "direct_weight": "derived from omega_0 = omega_1",
+        "scale_weights": (
+            "derived from diffusion_scales by normalized omega_r proportional to 1/r"
+        ),
+        "direct_weight": "derived to equal the total graph-group weight",
         "share_in_batch": "in-batch sharing is always used when corpus indices exist",
         "graph_temp": (
             "canonical rows use their stored bandwidths; the scalar fixed-bandwidth "
@@ -283,9 +287,7 @@ class GGPKDDistillation(nn.Module):
         super().__init__()
         for name, why in self._TIED_KNOBS.items():
             if name in kwargs:
-                raise ValueError(
-                    f"GGPKDDistillation no longer accepts {name!r}: {why}"
-                )
+                raise ValueError(f"GGPKDDistillation no longer accepts {name!r}: {why}")
         self.graph_temp = FIXED_BANDWIDTH_TEMP
 
         # Per-row temperatures (entropic affinities). The tie tau_1 =
@@ -378,8 +380,9 @@ class GGPKDDistillation(nn.Module):
             self.teacher_bank = None
             self.direct_temp = float(direct_temp)
 
-        # Weights stay unnormalized until the ambient and diffusion entries have
-        # been concatenated. This preserves omega_0 = omega_1 exactly.
+        # Relative graph weights follow 1/r but sum to one as a group. The ambient
+        # entry also has unnormalized weight one, so adding broader radii cannot
+        # silently move weight from ambient supervision into graph supervision.
         # The whole diffusion ladder is derived from the sharpest scale by
         # tau_r = sqrt(r) * tau_1. The sharpest scale is itself tied (its target IS
         # the transition row), so no student temperature on this ladder is free.
@@ -422,9 +425,11 @@ class GGPKDDistillation(nn.Module):
             )
         self.diffusion_scales = scales
         weights = torch.tensor(diffusion_weights(scales), dtype=torch.float32)
+        weights = weights / weights.sum().clamp_min(1e-12)
         self.register_buffer("scale_weights", weights)
-        # The ambient profile has the same unnormalized weight as r=1.
-        self.register_buffer("direct_weight", weights[:1].clone())
+        # The ambient profile has the same unnormalized weight as the complete
+        # graph group, giving a fixed 50/50 split after the runtime normalization.
+        self.register_buffer("direct_weight", weights.new_ones(1))
         sqrt_r = torch.tensor(
             [(r / scales[0]) ** 0.5 for r in scales], dtype=torch.float32
         )
@@ -742,15 +747,11 @@ class GGPKDDistillation(nn.Module):
             mixture = 0.5 * (a_own + g_nbr)
 
             def _entropy(p: torch.Tensor) -> torch.Tensor:
-                logp = torch.where(
-                    p > 0, p.clamp_min(1e-12).log(), torch.zeros_like(p)
-                )
+                logp = torch.where(p > 0, p.clamp_min(1e-12).log(), torch.zeros_like(p))
                 return -(p * logp).sum(dim=-1)
 
             js = (
-                _entropy(mixture)
-                - 0.5 * _entropy(a_own)
-                - 0.5 * _entropy(g_nbr)
+                _entropy(mixture) - 0.5 * _entropy(a_own) - 0.5 * _entropy(g_nbr)
             ).clamp_min(0.0)
             js_mean = js.mean()
         else:
@@ -856,9 +857,13 @@ class GGPKDDistillation(nn.Module):
             # `selected_columns` was already read off the diffusion target above, so
             # L_row keeps supervising exactly the rows it does in the full method:
             # this arm changes the target, not the row set.
-            target = self._direct_relation_target(
-                anchor_idx, column_idx, own_mask, self_mask, share
-            ).unsqueeze(1).to(target.dtype)
+            target = (
+                self._direct_relation_target(
+                    anchor_idx, column_idx, own_mask, self_mask, share
+                )
+                .unsqueeze(1)
+                .to(target.dtype)
+            )
             # One scale carrying the diffusion group's whole weight, so the
             # graph-group / ambient balance is identical to the full method.
             weights = weights.sum(dim=0, keepdim=True)
@@ -947,8 +952,8 @@ class GGPKDDistillation(nn.Module):
         # ambient teacher-similarity profile, r=1 is the direct transition row,
         # and r>1 are the genuinely multi-hop diffusion targets. The grouped
         # diagnostics are normalized within their own groups; ``loss_rel`` keeps
-        # the original all-scale weighting exactly, so this split does not alter
-        # the optimized objective.
+        # the configured fixed group weighting exactly, so this split does not
+        # alter the optimized objective.
         loss_rel = (kl_per_scale * weights.view(1, -1)).sum(dim=-1).mean()
         zero = loss_rel.new_zeros(())
         loss_amb = kl_per_scale[:, 0].mean() if offset else zero
@@ -1018,9 +1023,11 @@ class GGPKDDistillation(nn.Module):
         audit_entries = [
             *self._ambient_diffusion_audit(target, self_mask, own_mask).items(),
         ]
-        audit_values = torch.stack(
-            [value.detach().float() for _, value in audit_entries]
-        ).cpu().tolist()
+        audit_values = (
+            torch.stack([value.detach().float() for _, value in audit_entries])
+            .cpu()
+            .tolist()
+        )
         metrics.update(
             {
                 name: float(value)
@@ -1212,9 +1219,7 @@ class GGPKDDistillation(nn.Module):
         # aimed at index `offset`, which is then past the end of the stack. The
         # `*_amb` block below is that arm's whole report.
         if kl_per_scale.size(1) > offset:
-            entries.append(
-                ("teacher_entropy_scale", target_entropy[:, offset].mean())
-            )
+            entries.append(("teacher_entropy_scale", target_entropy[:, offset].mean()))
             entries.extend(
                 _distribution_stats(
                     log_probs_per_scale[offset], target[:, offset, :], diffusion_mask

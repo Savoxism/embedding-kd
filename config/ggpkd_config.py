@@ -10,9 +10,7 @@ class GGPKDConfig(BaseConfig):
 
     # Keep the no-CLI defaults aligned with notebooks/train_colab.ipynb's
     # selected paper pair.
-    student_model_name = (
-        "nreimers/MiniLMv2-L6-H384-distilled-from-BERT-Base"
-    )
+    student_model_name = "nreimers/MiniLMv2-L6-H384-distilled-from-BERT-Base"
     student_dtype = "float32"
     teacher_model_name = "Qwen/Qwen3-Embedding-0.6B"
     teacher_dtype = "float32"
@@ -41,7 +39,8 @@ class GGPKDConfig(BaseConfig):
     # indices are available.
 
     # ---- Direct Scale (r=0) --------------------------------------------------
-    # omega_0 is derived as omega_1 inside the criterion; it is not configurable.
+    # The ambient group is assigned the same total weight as the complete graph
+    # group inside the criterion; it is not configurable.
     # The notebook requests 0, which derives this value at startup as the median
     # entropic-affinity bandwidth of the graph. The ambient target is the
     # transition-row construction with sparsification removed, so the graph's
@@ -95,8 +94,13 @@ class GGPKDConfig(BaseConfig):
     # Sorted, unique, and starting at 1. All three are enforced: the artifact stores
     # its scales sorted, and the temperature ladder is anchored to the r=1 target
     # being the transition row.
-    diffusion_scales = (1, 2, 4)
-    # omega_r = 1/r and omega_0 = omega_1 are derived centrally from these scales.
+    # One-hop transition matching is the paper default. Broader {1,2} and
+    # {1,2,4} ladders are reported as the radius ablation rather than being
+    # bundled into the canonical method.
+    diffusion_scales = (1,)
+    # Within the graph group omega_r is proportional to 1/r. The graph group is
+    # normalized to total weight 1 and matched by ambient weight 1, so Table 4
+    # changes radius without changing the ambient--graph balance.
 
     # ---- Row Supervision -----------------------------------------------------
     # L_row promotes the teacher-selected pool columns (the diffusion support, not
@@ -201,8 +205,7 @@ class GGPKDConfig(BaseConfig):
     cache_dtype = "float32"
 
     save_dir = (
-        "models/ggpkd/qwen3_0_6b_to_minilmv2_h384/"
-        "base_w1_e1_qauto_lr3e-05_seed42"
+        "models/ggpkd/qwen3_0_6b_to_minilmv2_h384/base_w1_e1_qauto_lr3e-05_seed42"
     )
     weights_dir = (
         "models/ggpkd_weights/qwen3_0_6b_to_minilmv2_h384/"

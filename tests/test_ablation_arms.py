@@ -12,6 +12,7 @@ import pytest
 import torch
 
 from config import GGPKDConfig
+from scripts.ablation.replay_coverage import replay
 from src.criterions.ggpkd_distillation import GGPKDDistillation
 from src.ggpkd.candidate_sampler import GGPKDCandidateSampler
 from src.ggpkd.graph_builder import _build_transition, _hubness_stats
@@ -112,6 +113,70 @@ def test_topk_covers_more_teacher_mass_per_epoch_than_uniform(artifact):
         mass[policy] = float(sampler.sample(11)[1][0, :QUOTA].sum())
     assert mass["topk"] > mass["proportional"]
     assert mass["topk"] > mass["uniform"]
+
+
+def test_zero_hard_quota_makes_hard_pool_eligible_for_uniform_corpus(artifact):
+    """The no-graph control samples every non-anchor corpus row uniformly.
+
+    A zero hard quota must merge the nominal hard pool into the uniform stratum;
+    otherwise the control systematically avoids the teacher's nearest rows.
+    """
+    anchor = 11
+    hard_pool = {
+        int(node)
+        for node in artifact["hard_neg_indices"][anchor].tolist()
+        if int(node) != anchor
+    }
+    sampler = GGPKDCandidateSampler(
+        artifact=artifact,
+        diffusion_quota=0,
+        hard_neg_k=0,
+        random_neg_k=1,
+        seed=42,
+        support_policy="topk",
+    )
+    seen = set()
+    for epoch in range(200):
+        sampler.set_epoch(epoch)
+        seen.add(int(sampler.sample(anchor)[0][0]))
+    assert seen & hard_pool
+
+
+def test_table2_coverage_replay_is_cumulative_and_policy_sensitive(artifact):
+    anchors = np.arange(24)
+    common = {
+        "quota": QUOTA,
+        "hard_neg_k": HARD_K,
+        "random_neg_k": RANDOM_K,
+        "seed": 42,
+        "epochs": 3,
+        "anchors": anchors,
+    }
+    topk_coverage, topk_epsilon = replay(artifact, "topk", **common)
+    uniform_coverage, uniform_epsilon = replay(artifact, "uniform", **common)
+
+    assert np.all(np.diff(topk_coverage, axis=0) >= -1e-9)
+    assert np.all(np.diff(uniform_coverage, axis=0) >= -1e-9)
+    assert np.allclose(topk_coverage[0], topk_coverage[-1])
+    assert topk_coverage[0].mean() > uniform_coverage[0].mean()
+    assert topk_epsilon[0].mean() < uniform_epsilon[0].mean()
+
+
+def test_table2_coverage_preserves_mass_missing_outside_cached_pool(artifact):
+    truncated = dict(artifact)
+    truncated["pool_probs"] = artifact["pool_probs"] * 0.8
+    coverage, epsilon = replay(
+        truncated,
+        "topk",
+        quota=POOL_WIDTH,
+        hard_neg_k=0,
+        random_neg_k=0,
+        seed=42,
+        epochs=1,
+        anchors=np.asarray([11]),
+    )
+    assert coverage[0, 0] == pytest.approx(0.8, rel=1e-6)
+    assert epsilon[0, 0] == pytest.approx(-np.log(0.8), rel=1e-6)
 
 
 # --------------------------------------------------------------------------- #
@@ -291,6 +356,7 @@ def test_config_defaults_are_the_unablated_method():
     assert config.relation_target == "diffusion"
     assert config.use_ambient is True
     assert config.knn_mode == "mutual"
+    assert config.diffusion_scales == (1,)
 
 
 def test_config_rejects_the_one_impossible_combination():
@@ -373,9 +439,9 @@ def test_ambient_only_gives_the_ambient_scale_the_whole_weight():
     """The reason the graph group is dropped rather than zeroed.
 
     A scale with a zero target still holds its weight in the normalization. Left
-    in, the baseline's loss would be scaled by the ambient share alone -- 0.36 at
-    R={1,2,4} -- which is a different effective learning rate, not a different
-    objective. Under `ambient_only` the loss must equal the ambient KL exactly.
+    in, the baseline's loss would be scaled by the ambient share alone -- 0.5 for
+    every radius ladder -- which is a different effective learning rate, not a
+    different objective. Under `ambient_only` the loss must equal the ambient KL.
     """
     data = _criterion_inputs()
     zero_targets = torch.zeros_like(data["probs"])
@@ -406,7 +472,7 @@ def test_ambient_only_gives_the_ambient_scale_the_whole_weight():
         data["anchor"], data["candidates"], zero_targets,
         candidate_idx=data["candidate_idx"], anchor_idx=data["anchor_idx"],
     )
-    assert scaled_loss.item() < 0.5 * loss.item()
+    assert scaled_loss.item() == pytest.approx(0.5 * loss.item(), rel=1e-5)
     assert scaled_metrics["loss_amb"] == pytest.approx(metrics["loss_amb"], rel=1e-5)
 
 

@@ -1111,9 +1111,9 @@ class KnowledgeDistiller:
                 print(f"L_row is ENABLED for Epoch {epoch + 1}")
 
             avg_loss = self.train_epoch(epoch)
-            # Model selection reads the test split directly, so the validation
-            # pass is not run at all: one evaluation per epoch, on the numbers
-            # the paper reports.
+            # The paper protocol performs no epoch selection. Per-epoch records
+            # contain training and geometry diagnostics; test benchmarks are run
+            # once on the final model after the fixed training budget.
             epoch_results = None
 
             eval_every = int(getattr(cfg, "eval_every", 0))

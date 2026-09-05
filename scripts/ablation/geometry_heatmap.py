@@ -15,9 +15,9 @@ panel annotation reports mean +/- sample standard deviation of per-seed E_hat.
 Typical usage is through ``heatmap.sh``. Direct usage:
 
     python scripts/ablation/geometry_heatmap.py \
-      --runs-root runs/ablation/qwen3_0_6b_to_minilmv2_h384/paper_v1 \
+      --runs-root runs/ablation/qwen3_0_6b_to_minilmv2_h384/paper_r1_v2 \
       --teacher-cache cache/ggpkd/qwen3_0_6b_to_minilmv2_h384/teacher_train.pt \
-      --graph-artifact cache/ggpkd/qwen3_0_6b_to_minilmv2_h384/paper_v1/graph_base.pt
+      --graph-artifact cache/ggpkd/qwen3_0_6b_to_minilmv2_h384/paper_r1_v2/graph_base.pt
 """
 
 from __future__ import annotations

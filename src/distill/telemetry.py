@@ -8,11 +8,10 @@ graph a run was produced by -- so recovering what a number meant took reading
 notebook output. Every file written now carries a `run_id`, and `run.json` pins
 the config, the git commit, the graph artifact and the environment.
 
-*Runs produced one number.* With `eval_every = 0` a five-epoch run reported a
-single score at the end, which is a poor trade when an epoch costs ~23 s: there
-was no way to see whether the model had converged, which epoch was best, or which
-benchmark an arm moved. `epochs.jsonl` records train means, test scores and
-embedding geometry once per epoch, so a run answers those without being re-run.
+*Runs need training diagnostics even without checkpoint selection.* With
+`eval_every = 0`, `epochs.jsonl` records train means and embedding geometry once
+per epoch, while the benchmark suite is evaluated once on the final model. This
+preserves convergence diagnostics without using test results to choose an epoch.
 """
 
 import json

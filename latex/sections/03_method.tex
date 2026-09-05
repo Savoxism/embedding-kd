@@ -1,7 +1,7 @@
 \section{GGPKD: Global Geometry through Local Alignment}
 \label{sec:method}
 
-GGPKD approximates corpus-level teacher geometry through three operations. A teacher graph selects \emph{relevant} local relations, diffusion gives those relations broader \emph{reach}, and a shared candidate pool \emph{amortizes} both anchor-centered and auxiliary-row supervision. All teacher-side quantities are cached before optimization.
+GGPKD approximates corpus-level teacher geometry through three operations. A teacher graph selects \emph{relevant} local relations, an ambient target \emph{calibrates} omitted graph relations over the scored pool, and a shared candidate pool \emph{amortizes} both anchor-centered and auxiliary-row supervision. All teacher-side quantities are cached before optimization.
 
 \subsection{From Global Geometry to Local Alignment}
 \label{sec:relation-selection}
@@ -68,9 +68,9 @@ P^T_{ij}
 \end{equation}
 The row $P_i^T$ defines the immediate local geometry around anchor $i$. Mutuality suppresses one-directional hub edges while preserving relations endorsed from both endpoints. We choose $\tau_i$ by bisection to satisfy $H(P_i^T)=\log\rho$ whenever the row degree permits, where $\rho$ is a shared target perplexity. Lower-degree rows use their maximum feasible entropy, and an isolated mutual-neighbor row falls back to the teacher's nearest neighbor. This entropy calibration gives every non-degenerate row a comparable effective neighborhood size while adapting its bandwidth to local density.
 
-\subsection{Reach: Diffusion over Overlapping Neighborhoods}
+\subsection{Optional Radius Extension}
 
-One hop preserves immediate local structure; diffusion composes overlapping neighborhoods to expose broader structure. With the lazy operator $\widetilde P^T=\tfrac12(I+P^T)$, GGPKD defines
+The reference method uses the one-hop transition target $g^T_{i,1}=P_i^T$. To test whether broader graph propagation is necessary, we also define an optional radius extension with the lazy operator $\widetilde P^T=\tfrac12(I+P^T)$:
 \begin{equation}
 g^T_{i,1}=P_i^T,
 \qquad
@@ -80,18 +80,18 @@ g^T_{i,r}
 \quad r>1.
 \label{eq:diffusion-targets}
 \end{equation}
-Here $\operatorname{Norm}_A$ restricts a nonnegative vector to $A$ and renormalizes it. The lazy walk prevents periodic oscillation, while the scales $r\in\mathcal R$ describe progressively broader teacher neighborhoods without constructing a student graph. To keep the cached targets sparse, after each multiplication we retain the smallest support carrying at least $1-\eta$ of the row mass and renormalize. Discarding mass $\eta$ changes the row by total variation $\eta$ and reverse KL $-\log(1-\eta)$, making $\eta$ an explicit approximation tolerance rather than an arbitrary width.
+Here $\operatorname{Norm}_A$ restricts a nonnegative vector to $A$ and renormalizes it. The lazy walk prevents periodic oscillation, while $r>1$ describes progressively broader teacher neighborhoods without constructing a student graph. To keep these optional targets sparse, after each multiplication we retain the smallest support carrying at least $1-\eta$ of the row mass and renormalize. Discarding mass $\eta$ changes the row by total variation $\eta$ and reverse KL $-\log(1-\eta)$, making $\eta$ an explicit approximation tolerance rather than an arbitrary width. The radius study compares $\mathcal R=\{1\}$, $\{1,2\}$, and $\{1,2,4\}$ while fixing the support budget and the total graph-group weight; $\mathcal R=\{1\}$ is the paper default.
 
-\subsection{Sparse Multi-Scale Matching}
+\subsection{Sparse Relation Matching}
 \label{sec:candidates}
 
-Full-corpus student scoring would defeat the purpose of sparse supervision. At a fixed budget, deterministic top-$K$ selection retains a high-mass head but assigns every tail relation zero inclusion probability across all subsequent epochs. GGPKD instead retains high-mass diffusion entries, samples additional entries in proportion to teacher mass, and adds hard and uniform negatives. The deterministic head controls one-step omitted mass, while stochastic tail selection progressively exposes non-head relations within each cached target. Let $\Omega_i$ be the resulting candidate set. Sets are pooled and deduplicated across a batch $B$,
+Full-corpus student scoring would defeat the purpose of sparse supervision. At a fixed graph-support budget, GGPKD deterministically retains the top-$K$ entries of the configured graph target and adds hard and uniform negatives. Top-$K$ directly minimizes omitted cached teacher mass for that budget; teacher-proportional and uniform support sampling are evaluated as controls rather than bundled into the method. Let $\Omega_i$ be the resulting candidate set. Sets are pooled and deduplicated across a batch $B$,
 \begin{equation}
 \mathcal P_B=\bigcup_{i\in B}\Omega_i,
 \end{equation}
 so every distinct candidate text is encoded once even when several anchors select it.
 
-The resulting conditional losses are sparse objectives, not unbiased Monte Carlo estimators of the full-corpus softmax: both teacher and student distributions are renormalized on the realized support. Their guarantee is instead one of coverage. Every positive-mass relation in the sampled tail has nonzero inclusion probability, and Appendix~\ref{app:proportional-bound} bounds the teacher mass that remains unobserved after a finite number of epochs.
+The resulting graph loss is a sparse objective, not an unbiased Monte Carlo estimator of the full-corpus softmax: both teacher and student distributions are renormalized on the selected support. Its coverage is therefore reported explicitly as the original teacher mass retained by the selected entries, including residual mass discarded when the graph artifact was truncated. The ambient target complements this graph objective by assigning teacher affinity across every scored candidate, including hard and uniform negatives outside the selected graph support.
 
 All supervision in GGPKD takes a single form: a teacher-derived relation vector is restricted to a realized support and matched by a student softmax over that same support. For a center node $v$ with student similarities $c^S_v$, a nonnegative target $g$, a support $\Omega$ not containing $v$, and a temperature $\tau$, define
 \begin{equation}
@@ -122,10 +122,14 @@ The relational objective matches the whole family at once:
 \sum_{r\in\{0\}\cup\mathcal R}
 \omega_r\,\mathcal D_i\!\left(g^T_{i,r},\Omega_{i,r},\tau_{i,r}\right),
 \qquad
-\omega_r\propto\frac1{\max(r,1)},
+\omega_0=\frac12,
+\quad
+\omega_r=\frac12\,
+\frac{r^{-1}}{\sum_{q\in\mathcal R}q^{-1}}
+\quad(r\in\mathcal R),
 \label{eq:relational-loss}
 \end{equation}
-with the weights normalized to sum to one. A scale's influence decays with the diffusion time it describes, and the ambient scale sits at the sharpest scale's weight. Thus diffusion ranks the selected neighborhood at several resolutions, whereas the ambient scale calibrates each anchor against the broader shared pool.
+The ambient and graph groups therefore retain equal total weight as the radius set changes, while a graph scale's share within its group decays with diffusion time. Thus diffusion ranks the selected neighborhood at the requested resolutions, whereas the ambient scale calibrates each anchor against the broader shared pool.
 
 \subsection{Amortization: Exposed-Support Row Reuse}
 

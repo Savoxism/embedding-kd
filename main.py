@@ -52,6 +52,12 @@ def parse_args():
     parser.add_argument(
         "--epochs", type=int, default=None, help="Number of training epochs"
     )
+    parser.add_argument(
+        "--eval_every",
+        type=int,
+        default=None,
+        help="Evaluate every N epochs; 0 disables per-epoch evaluation",
+    )
     parser.add_argument("--lr", type=float, default=None, help="Learning rate")
     parser.add_argument(
         "--max_length", type=int, default=None, help="Maximum sequence length"
@@ -226,6 +232,10 @@ def get_config(method: str, args):
         config.batch_size = args.batch_size
     if args.epochs is not None:
         config.epochs = args.epochs
+    if args.eval_every is not None:
+        if args.eval_every < 0:
+            raise ValueError("--eval_every must be non-negative")
+        config.eval_every = args.eval_every
     if args.lr is not None:
         config.learning_rate = args.lr
     if args.max_length is not None:

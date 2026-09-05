@@ -209,7 +209,14 @@ class GGPKDCandidateSampler:
             for node in self.hard_neg_indices[idx]
             if int(node) >= 0 and int(node) != idx and int(node) not in support_set
         }
-        uniform_excluded = {int(idx), *support_set, *hard_pool}
+        # When the hard stratum is active, keep the two draws disjoint so their
+        # marginal inclusion probabilities remain exact.  With hard_neg_k=0,
+        # however, there is no hard draw: excluding the hard pool would turn the
+        # advertised uniform-corpus control into "uniform except for the nearest
+        # neighbours".  Fold that pool back into the uniform population.
+        uniform_excluded = {int(idx), *support_set}
+        if self.hard_neg_k > 0:
+            uniform_excluded.update(hard_pool)
         uniform_population = self.n_items - len(uniform_excluded)
         remaining = self.candidate_size - support.size
 

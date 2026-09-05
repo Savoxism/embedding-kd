@@ -1,113 +1,118 @@
-# GGPKD paper ablations
+# GGPKD paper experiment suite (R={1})
 
-This directory runs the paper ablation plan: the main results table, two
-ablation tables, and three ablation figures. The runners here produce the
-trained arms; the existing training telemetry records final benchmark scores,
-held-out geometry distortion (`teacher_weighted_distortion`, reported as
-`E_hat`), encoded texts/tokens, time, and peak memory.
+These runners implement the six paper tables under one locked protocol. The
+canonical method uses teacher Top-K support, ambient alignment, auxiliary-row
+reuse, and `diffusion_scales=1`. Multi-hop is an ablation axis, not part of the
+reference arm.
 
-## Experiment groups
+## Tables and runners
 
-| Script | Paper output | Arms |
+| Table | Runner | Arms or source |
 |---|---|---|
-| `full.sh` | Main reference | canonical Top-K GGPKD |
-| `s1_support.sh` | support table + coverage inputs | Top-K, proportional, uniform pool, batch-local, matched uniform corpus |
-| `components.sh` | component table | full, no multi-hop, direct target, no ambient, no row, neither, no graph/diffusion |
-| `sensitivity.sh` | sensitivity figure inputs | Top-K 0.5x/1x/2x; row weight 0/0.5/1/1.5 |
-| `heatmap.sh` | geometry figure | Student base / batch-relational KD / GGPKD |
-| `batching_heatmap.sh` | batching motivation figure | old exposure / graph-aware exposure / error reduction |
-| `diffusion.sh` | focused diffusion study | clean no-diffusion; $R=\{1\},\{1,2\},\{1,2,4\}$ |
-| `figures.py` | coverage + sensitivity figures | coverage replay and completed ablation runs |
+| 1. Main results | `main_results.sh` | Canonical GGPKD on all three teacher-student pairs |
+| 2. Support selection | `s1_support.sh` | Top-K, proportional, uniform within pool, uniform corpus, batch-relational KD |
+| 3. Components | `components.sh` | Full, no ambient, no row, neither, no graph support |
+| 4. Radius | `radius.sh` | R={1}, R={1,2}, R={1,2,4} |
+| 5. Sensitivity | `sensitivity.sh` | Top-K 0.5x/0.75x/1x/1.5x/2x/2.5x/3x; row weight 0/0.1/0.25/0.5/0.75/1 |
+| 6. Efficiency | run telemetry | Wall time, seconds/step, encoded texts/tokens, and peak VRAM from the runs above |
 
-Shared arms are stored once and reused. With seeds 42/43/44 the complete suite
-contains 14 unique configurations per seed: **42 training runs**.
+`replay_coverage.py` creates Table 2's cumulative coverage and restriction-error
+columns offline. It is called automatically by `s1_support.sh` after training.
+
+The baseline rows of Table 1 retain their method-specific launchers. The main
+runner here produces only the three GGPKD rows so that every GGPKD table uses
+the same canonical protocol. GGPKD is evaluated once after epoch 5 and reports
+that final model; it does not evaluate each epoch or select a validation
+checkpoint. Every runner explicitly passes `--eval_every 0`; this is locked for
+all 66 runs rather than inherited implicitly from a config default.
+
+## Shared arms
+
+Runs are stored by semantic group rather than duplicated per table:
+
+- `full/full` is Table 1's canonical Qwen-MiniLM row, Table 2's Top-K row,
+  Table 3's Full row, Table 4's R={1} row, and both default points in Table 5.
+- `components/no_row` is reused as row weight 0.
+- `shared/no_graph_support` is reused by Tables 2 and 3.
+
+With seeds 42/43/44 there are 20 unique configurations on the primary
+Qwen3-0.6B -> MiniLMv2-H384 setting (60 runs), plus six full-model runs for the
+other two Table 1 settings: 66 training runs total. Table 6 adds no training.
 
 ## Run
 
 ```bash
-# Complete suite. The full model is warmed up first to build shared caches.
+# All GGPKD rows needed by Tables 1--5.
 GPUS="0 1 2" bash scripts/ablation/run_all.sh
 
-# Run everything, then generate the three-panel geometry heatmap.
-MAKE_HEATMAP=1 GPUS="0 1 2" bash scripts/ablation/run_all.sh
+# Selected tables only.
+PLAN="support components radius" GPUS="0 1 2" \
+  bash scripts/ablation/run_all.sh
 
-# One group on one GPU.
-GPU=0 bash scripts/ablation/components.sh
+# One table on one GPU.
+GPU=0 bash scripts/ablation/radius.sh
 
-# One-seed clean no-diffusion control and R sweep (seed 42 by default).
-GPU=0 bash scripts/ablation/diffusion.sh
+# Validate the complete arm matrix without model loading or GPU training.
+DRY_RUN=1 CANONICAL_QUOTA=15 SEEDS="42" GPUS="0 1 2" \
+  bash scripts/ablation/run_all.sh
 
-# Smoke protocol with one seed and isolated outputs.
-SEEDS="42" EXPERIMENT_KEY="smoke" GPU=0 bash scripts/ablation/sensitivity.sh
-
-# Validate all arm construction without loading models or touching run outputs.
-DRY_RUN=1 CANONICAL_QUOTA=23 SEEDS="42" \
-  GPUS="0 1 2" bash scripts/ablation/run_all.sh
+# After all 66 runs finish, validate completeness and produce Tables 1--6 CSVs.
+python scripts/ablation/collect.py
 ```
 
-Useful environment overrides include `SEEDS`, `GPUS`, `PLAN`, `EXPERIMENT_KEY`,
-`ABL_ROOT`, `CACHE_ROOT`, `LR`, and `EPOCHS`. Use a new `EXPERIMENT_KEY` whenever
-the locked protocol changes; this prevents stale full runs from being compared
-with new arms.
+The default experiment key is `paper_r1_v2`, intentionally distinct from the
+old `paper_v1` R={1,2,4}/hybrid artifacts. Override `EXPERIMENT_KEY` only when
+starting another locked protocol.
 
-The runners take an atomic per-arm file lock. It is therefore safe for parallel
-groups to request shared rows such as `no_row` and `no_graph_diffusion`; only one
-training process runs and the others reuse its completed output.
+Useful suite-wide overrides are `SEEDS`, `GPUS`, `PLAN`, `EXPERIMENT_KEY`,
+`RUNS_BASE`, `CACHE_BASE`, `LOG_BASE`, `LR`, and `EPOCHS`. `ABL_ROOT`,
+`CACHE_ROOT`, and `LOG_ROOT` are single-pair overrides and are rejected when a
+`run_all.sh` plan contains `main`. Table-specific runners use
+`PAIR_KEY=qwen3_0_6b_to_minilmv2_h384` unless explicitly overridden;
+`main_results.sh` supplies the three paper pairs itself.
 
-Each completed arm writes:
+Each completed arm is compacted to exactly one persistent file:
 
 ```text
 runs/ablation/<pair>/<experiment>/<group>/<arm>/seed<seed>/
-  .done
-  arm.json
-  run.json
-  epochs.jsonl
-  metrics.jsonl
-  train.log
+  result.csv
 ```
 
-The canonical diffusion quota is graph-derived. `budget.py` resolves it and
-constructs fixed-total-width Top-K sensitivity arms. The extreme
-`no_graph_diffusion` deletion uses ambient-only supervision over uniform corpus
-candidates at the same candidate width as the full method; it does not leak
-teacher-graph selection through its candidate pool.
+JSONL telemetry, the console log, and final weights exist only while a run is in
+progress. After the final-model evaluation is validated, they are compacted into
+`result.csv` and deleted. Failed/interrupted runs retain their temporary files
+for debugging. Graph/teacher tensor caches remain because subsequent arms reuse
+them, but verbose graph-neighbour logs are removed.
 
-## Geometry heatmap
+The runners use atomic per-arm locks, so concurrent tables safely reuse shared
+arms. Before reusing `result.csv`, they compare its stored request fingerprint,
+including every locked parameter and a training-code fingerprint; a mismatch
+fails instead of silently mixing protocols. Top-K sensitivity is a fixed-width allocation sweep:
+support slots are traded against hard/random negatives in their canonical
+ratio. Radius arms keep the R={1} support quota and the 50/50 ambient--graph
+group weighting fixed, so the graph target radius is isolated.
 
-After `full` and `support/batch_local` have completed for every seed:
+## Reporting contract
 
-```bash
-GPU=0 bash scripts/ablation/heatmap.sh
+- Tables 2--5 report mean +/- standard deviation and paired seed deltas for
+  STS Avg, pair-classification Avg, classification Avg, overall Avg, and E_hat.
+- Table 2 additionally reports final cumulative global teacher-mass coverage,
+  restriction error, and encoded texts. Cached-pool residual mass is not
+  renormalized away.
+- Table 4 additionally reports wall time and encoded texts so the radius tradeoff
+  is explicit.
+- Table 6 reports mean training-step time, encoded texts/tokens, peak VRAM, and
+  launcher end-to-end time. The latter is tagged by whether both teacher and
+  graph caches existed before launch; the collector reports warm-cache
+  end-to-end time separately. It is not labeled as pure training time because
+  model initialization and final evaluation are included. Do not compare
+  literature timing numbers measured on different hardware.
 
-# Three-panel batching motivation figure (seed 42 by default).
-GPU=0 bash scripts/ablation/batching_heatmap.sh
-```
+`collect.py` reads only compact `paper_r1_v2/result.csv` files, requires the
+exact 66-run matrix by default, and writes `runs.csv` plus one CSV
+per table under `runs/ablation/tables/paper_r1_v2/`. Pass `--allow-incomplete`
+only for smoke-test inspection.
 
-The script reproduces the fixed geometry probe, uses the teacher graph for one
-shared row/column ordering, averages each trained method's error map over seeds,
-and writes:
-
-```text
-latex/figures/fig_geometry_heatmap.pdf
-latex/figures/fig_geometry_heatmap.png
-latex/figures/fig_geometry_heatmap.json
-latex/figures/fig_geometry_heatmap.npz
-```
-
-Every pixel is `p_teacher(i,j) * (cos_student(i,j)-cos_teacher(i,j))^2`.
-Consequently, the mean row sum is exactly `E_hat`; the JSON records the per-seed
-values and checkpoint provenance, and the NPZ preserves the plotted matrices.
-
-The remaining paper figures are generated without retraining:
-
-```bash
-python scripts/ablation/figures.py \
-  --coverage ablations/coverage.csv \
-  --runs-root runs/ablations_c79eb23_no_weights/runs/ablation/\
-qwen3_0_6b_to_minilmv2_h384/paper_v1 \
-  --out-dir latex/figures
-```
-
-This writes `fig_support_coverage.{pdf,png}` and
-`fig_sensitivity.{pdf,png}`. The sensitivity figure uses separate panels for
-`Avg.` and `E_hat`, so it does not rely on a dual y-axis.
+`figures.py` reads the compact CSVs. Weight-dependent geometry heatmaps are not
+part of this suite because successful runs intentionally do not retain model
+weights.
