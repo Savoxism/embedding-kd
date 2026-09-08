@@ -26,14 +26,20 @@ DIAG_TOPK = 8
 # do not define the objective.
 #
 # The trade-off is real and it is GPU-specific. Measured on the production corpus
-# (13553 texts, mean 16.4 tokens, p50 13, p90 31) for one step's pool of ~4445
-# unique candidates, against 72,900 real tokens:
+# (13553 texts, mean 16.4 tokens, p50 13, p90 31) for one step's pool, against
+# 23,000 real tokens:
 #
-#     chunk    pad=1     pad=8    pad=16   forward calls
-#       128   77,722    94,338   107,982        35
-#       256   80,727    97,091   109,644        18   <- the values below
-#       512   93,254   109,430   127,490         9
-#      1024  100,984   124,646   142,784         5
+#     chunk    pad=1    pad=8   pad=16   forward calls
+#       128   28,119   33,158   36,408        11
+#       256   29,834   35,702   38,829         6   <- the values below
+#       512   40,226   47,413   52,997         3
+#      1024   44,901   51,881   61,486         2
+#
+# That pool is ~1,400 unique candidates per step. It was ~4,445 while the method
+# still drew 40 hard and 26 uniform negatives per anchor, and the same table then
+# read 97,091 padded tokens at chunk 256 -- removing the negatives cut the encoder
+# by 63% of its padded tokens and 67% of its forward calls, which is most of the
+# training step.
 #
 # Two things that table says. Wider chunks buy fewer launches at strictly more
 # padding, because a length-sorted chunk pads to its own longest member and a
@@ -41,11 +47,12 @@ DIAG_TOPK = 8
 # each chunk's width up to a multiple of 8 costs ~17% of all tokens by itself --
 # a median-13-token text padded to 16 is 23% padding before any batching effect.
 #
-# Which side wins depends on whether the step is launch bound or FLOP bound. A
-# measured full-model run reports 470 MB peak and ~0.2 s/step for ~100k padded
-# tokens on a 6-layer 384-wide student, which is a few percent of a modern GPU's
-# arithmetic throughput -- so it is launch bound, and larger chunks with pad 1 are
-# the direction to test first. Run scripts/ggpkd/bench_encode.py to settle it on
+# Which side wins depends on whether the step is launch bound or FLOP bound. The
+# last measured full-model run reported 470 MB peak and ~0.2 s/step for ~100k
+# padded tokens on a 6-layer 384-wide student, a few percent of a modern GPU's
+# arithmetic throughput -- so it was launch bound, and the no-negatives draw makes
+# it more so, not less: a third of the tokens spread over a third of the calls.
+# Larger chunks with pad 1 are the direction to test first. Run scripts/ggpkd/bench_encode.py to settle it on
 # the actual device rather than adopting these numbers.
 ENCODE_CHUNK_SIZE = 256
 PAD_TO_MULTIPLE_OF = 8

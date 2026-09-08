@@ -78,20 +78,37 @@ $$\mathcal{L} = \mathcal{L}_{\text{rel}} + \lambda_{\text{row}} \mathcal{L}_{\te
 where:
 
 - $\mathcal{L}_{\text{rel}} = \sum_{r\in\{0,1,2,4\}}\omega_r\,\mathrm{KL}(q_{i,r}\|p^S_{i,r})$, with the single fixed rule $\omega_r\propto1/\max(1,r)$, normalized over the scales. Here $r=0$ is ambient, $r=1$ is direct-neighbor matching, and $r>1$ is multi-hop diffusion; these are diagnostic names rather than separately weighted auxiliary losses.
-- $\mathcal{L}_{\text{row}}$ promotes every pool column the teacher selected (the diffusion support, excluding hard and uniform negatives) to an auxiliary row and matches its available teacher transition row with a dense KL, weighted uniformly. Batch anchors are excluded, since $\mathcal{L}_{\text{rel}}$ already matches their transition row at $r=1$. The row set is a deterministic function of the candidate pool, so this term carries no selection hyperparameter.
+- $\mathcal{L}_{\text{row}}$ promotes every pool column the teacher selected (the diffusion support, which is now the whole draw) to an auxiliary row and matches its available teacher transition row with a dense KL, weighted uniformly. Batch anchors are excluded, since $\mathcal{L}_{\text{rel}}$ already matches their transition row at $r=1$. The row set is a deterministic function of the candidate pool, so this term carries no selection hyperparameter.
 
 ### 7. Per-Epoch Candidate Sampling
 
-Each epoch, every anchor uses a candidate set composed of:
+Every anchor's candidate set is its **Top-k diffusion neighbors**, selected by
+teacher mass from the graph's diffusion pools, and nothing else. The candidate
+width is therefore exactly `diffusion_quota`, and every scored column is one the
+teacher put diffusion mass on.
 
-- **Top-k diffusion neighbors** selected by teacher mass from the graph's diffusion pools
-- **Hard negatives** (high teacher similarity but outside the mutual kNN graph)
-- **Random negatives** from the remaining complement
+The method draws **no negatives**. It previously added 40 hard negatives (high
+teacher similarity, outside the mutual kNN graph) and 26 random negatives per
+anchor -- two tuned constants in a method whose other quantities are derived, and
+three quarters of its encoder cost. Removing them has two consequences worth
+stating together:
 
-Top-k support is deterministic. Hard and random negatives are redrawn each epoch;
-the proportional support arm also redraws its support.
+- The diffusion softmax now scores no zero-target column at all, so the
+  false-zero gradient that motivated the ambient scale is gone by construction.
+  The `amb_mass_on_zero_diff` diagnostic reads ~0.
+- The shared pool falls from ~4,445 to ~1,400 texts per step, so the ambient
+  scale calibrates over columns that are all someone's teacher-selected
+  neighbour. Its comparison is local where it used to reach across the corpus,
+  and STS Spearman plus the pair-classification thresholds are where that would
+  show up first.
 
-In-batch sharing deduplicates candidates and exposes each anchor to the full union of candidates in the batch.
+Top-k support is deterministic; the proportional support arm redraws it each
+epoch. In-batch sharing deduplicates candidates and exposes each anchor to the
+full union of candidates in the batch.
+
+The negative machinery remains reachable through `hard_neg_k` / `random_neg_k`,
+because the `no_graph_support` baseline in Tables 2 and 3 spends its entire
+budget on uniform corpus draws.
 
 ## Configuration
 
@@ -101,13 +118,12 @@ weights, capacities, and correctness policies are resolved internally:
 | Group | Parameters | Description |
 |:---|:---|:---|
 | Teacher Graph | `graph_k`, `perplexity`, `diffusion_scales`, `truncation_tolerance` | kNN construction, adaptive row bandwidths, and diffusion |
-| Candidate Sampling | `diffusion_quota`, `hard_neg_k`, `random_neg_k` | Per-anchor composition; total size is their sum |
+| Candidate Sampling | `diffusion_quota`, `hard_neg_k`, `random_neg_k` | Per-anchor composition; total size is their sum. The method sets both negative quotas to 0, so the width is the quota; the ablation baselines set them explicitly |
 | Row Supervision | `row_weight` | Weight of the auxiliary transition-row KL (`row_start_epoch` defaults to 1, i.e. always on) |
 | Training | `batch_size`, `epochs`, `learning_rate`, `min_lr` | Standard training setup |
 | Ambient profile | `direct_temp` | Shared teacher/student temperature for scale 0 |
 
-GGPKD always uses Top-k support, in-batch sharing, per-epoch negative resampling,
-and corpus deduplication. Scale weights are `1/r`, the ambient
+GGPKD always uses Top-k support, in-batch sharing and corpus deduplication. Scale weights are `1/r`, the ambient
 weight equals the `r=1` weight, hard-negative storage equals `graph_k`, and the
 fixed-bandwidth baseline uses temperature `0.05`; none is a tunable method knob.
 

@@ -512,6 +512,11 @@ class KnowledgeDistiller:
                         f"only ({cfg.batch_size} texts), no candidate draw, no "
                         "graph support, no auxiliary rows"
                     )
+                if self.ggpkd_sampler.no_negatives:
+                    print(
+                        "GGPKD draws no negatives: every scored column carries "
+                        "teacher diffusion mass"
+                    )
                 print(
                     "GGPKD candidate sampling: "
                     f"candidate_size={self.ggpkd_sampler.candidate_size} "

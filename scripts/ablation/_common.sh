@@ -33,8 +33,10 @@ DIFFUSION_SCALES="${DIFFUSION_SCALES:-1}"
 ROW_WEIGHT="${ROW_WEIGHT:-1.0}"
 ROW_START_EPOCH="${ROW_START_EPOCH:-1}"
 DIRECT_TEMP="${DIRECT_TEMP:-0}"
-HARD_NEG_K="${HARD_NEG_K:-40}"
-RANDOM_NEG_K="${RANDOM_NEG_K:-26}"
+# The method draws no negatives. Arms that need them -- no_graph_support, which
+# spends its whole budget on uniform corpus draws -- override these explicitly.
+HARD_NEG_K="${HARD_NEG_K:-0}"
+RANDOM_NEG_K="${RANDOM_NEG_K:-0}"
 
 EXPERIMENT_KEY="${EXPERIMENT_KEY:-paper_r1_v2}"
 RUNS_BASE="${RUNS_BASE:-runs/ablation}"

@@ -392,6 +392,78 @@ def test_sampler_returns_candidates_and_targets_only():
     assert not hasattr(sampler, "transition_neighbors")
 
 
+def test_zero_negative_quotas_draw_no_negatives():
+    """hard_neg_k=0 and random_neg_k=0 must mean exactly that.
+
+    The budget path used to fill any shortfall between the support draw and the
+    candidate width with uniform corpus draws, through a deficit branch that
+    ignored `random_neg_k`. An anchor whose pool held fewer positive-mass columns
+    than the quota therefore still got negatives -- silently, and only for the
+    anchors whose graph neighbourhood was smallest.
+    """
+    artifact = _row_artifact()
+    # Anchor 3 has one usable column; the quota of 2 cannot be filled from mass.
+    artifact["pool_probs"] = torch.tensor(
+        [[[0.7, 0.3], [0.6, 0.4], [0.55, 0.45], [1.0, 0.0]]], dtype=torch.float32
+    )
+    sampler = GGPKDCandidateSampler(
+        artifact=artifact,
+        diffusion_quota=2,
+        hard_neg_k=0,
+        random_neg_k=0,
+        seed=42,
+    )
+    assert sampler.no_negatives
+    assert sampler.candidate_size == 2
+
+    for idx in range(4):
+        candidates, teacher_probs = sampler.sample(idx)
+        assert candidates.size == sampler.candidate_size
+        # Every column is either a real support column with teacher mass, or the
+        # anchor's own index -- which `self_mask` removes from every softmax.
+        for position, node in enumerate(candidates):
+            carries_mass = float(teacher_probs[:, position].sum()) > 0
+            assert carries_mass or int(node) == idx
+
+    # Anchor 3 is the short one, and it is counted rather than papered over.
+    assert sampler.short_support_rows == 1
+
+
+def test_short_support_without_any_fallback_is_refused():
+    """A row of nothing but self would take the diagnostics to NaN, not to zero."""
+    artifact = _row_artifact()
+    artifact["pool_probs"] = torch.zeros((1, 4, 2), dtype=torch.float32)
+    sampler = GGPKDCandidateSampler(
+        artifact=artifact,
+        diffusion_quota=2,
+        hard_neg_k=0,
+        random_neg_k=0,
+        seed=42,
+    )
+    with pytest.raises(ValueError, match="no diffusion support"):
+        sampler.sample(0)
+
+
+def test_budget_allocator_spends_nothing_on_negatives_when_there_are_none():
+    """Table 5's Top-K sweep varies the width once the negatives are gone.
+
+    With a non-zero negative quota the allocator holds the candidate width fixed
+    and trades support against negatives. With both quotas at zero it used to do
+    neither thing correctly: multipliers above 1 tripped the fixed-width guard
+    and aborted the arm, and multipliers below 1 handed the leftover budget to
+    hard negatives.
+    """
+    from scripts.ablation.budget import allocate_fixed_width
+
+    for multiplier, expected in ((0.5, 12), (1.0, 23), (1.5, 35), (3.0, 69)):
+        quota, hard, random = allocate_fixed_width(23, 0, 0, multiplier)
+        assert (quota, hard, random) == (expected, 0, 0)
+
+    # The arms that do carry negatives keep the fixed-width behaviour.
+    assert allocate_fixed_width(23, 40, 26, 1.0) == (23, 40, 26)
+    assert sum(allocate_fixed_width(23, 40, 26, 2.0)) == 23 + 40 + 26
+
+
 def test_sampler_mixture_row_matches_the_weighted_pool_and_feeds_the_spill():
     """The scale mixture is computed per anchor instead of being precomputed.
 

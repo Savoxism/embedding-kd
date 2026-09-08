@@ -158,15 +158,41 @@ class GGPKDConfig(BaseConfig):
     # anchor (src/ggpkd/policy.py, where the sweep evidence for the target is
     # recorded). An int (CLI --diffusion_quota) still overrides for ablations.
     diffusion_quota = None
-    # 40/26 is the best-known arm (75.29 on Qwen3-0.6B -> MiniLMv2-H384, graph
-    # v9, seed 42). The hard:random split has not been shown flat yet -- that one
-    # ablation is what stands between these two numbers and a single derived
-    # candidate budget.
-    hard_neg_k = 40
-    random_neg_k = 26
-    # candidate_size is derived as the sum of the three quotas. Canonical Top-k
-    # support is deterministic; hard and random negatives are redrawn per epoch.
-    # The proportional control redraws support as well.
+    # The method draws no negatives. Every scored column is a column the teacher
+    # put diffusion mass on, so candidate_size == diffusion_quota and the whole
+    # relational budget is spent on relations the graph actually asserts.
+    #
+    # This removes the two quotas that were never derived from anything -- 40/26
+    # was the best measured pair (75.29 on Qwen3-0.6B -> MiniLMv2-H384, graph v9,
+    # seed 42) but the hard:random split was never shown flat, so they stood as
+    # two tuned constants in a method whose other knobs are all derived.
+    #
+    # Two consequences to hold in view, because they cut in opposite directions:
+    #
+    # * The diffusion group no longer scores a single zero-target column. Its
+    #   softmax now runs over the anchor's own support, where every column
+    #   carries real teacher mass, so the false-zero gradient that motivated the
+    #   ambient scale is gone from the own draw by construction. The audit metric
+    #   `amb_mass_on_zero_diff` should now read ~0; if it does not, the draw is
+    #   not what this comment claims.
+    # * The shared pool loses the ~1,160 uniform-corpus texts per batch that were
+    #   its only columns not drawn from someone's graph neighbourhood, dropping
+    #   from ~4,445 to ~1,400. Scale r=0 still calibrates similarity levels across
+    #   the batch, but over a column set that is now entirely local. That is the
+    #   risk this change carries, and STS Spearman plus the pair-classification
+    #   thresholds are where it would show up first -- they are precisely the
+    #   benchmarks that read absolute cosine levels rather than per-anchor rank.
+    #
+    # A short support draw is padded with the anchor's own index rather than
+    # backfilled with uniform draws; see GGPKDCandidateSampler.sample.
+    hard_neg_k = 0
+    random_neg_k = 0
+    # candidate_size is derived as the sum of the three quotas, so it is now just
+    # diffusion_quota. The ablation arms that need negatives -- `uniform_corpus`
+    # / `no_graph_support` in Tables 2 and 3, which spends the entire budget on
+    # uniform corpus draws -- still set these on the CLI; the machinery stays.
+    # Canonical Top-k support is deterministic; the proportional control redraws
+    # support per epoch.
 
     # ---- Corpus Columns ------------------------------------------------------
     # Which column is the graph node, and which defines "same source" for hard

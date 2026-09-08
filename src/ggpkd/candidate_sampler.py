@@ -58,6 +58,13 @@ class GGPKDCandidateSampler:
             )
         self.support_policy = support_policy
         self.seed = int(seed)
+        # The method draws no negatives at all. Kept as a derived flag rather than
+        # re-tested per draw, because it changes what a short support draw means.
+        self.no_negatives = self.hard_neg_k == 0 and self.random_neg_k == 0
+        # Anchors whose pool held fewer positive-mass columns than the quota, and
+        # were therefore padded. Expected to be 0; reported so it cannot be 0 in
+        # the write-up and non-zero in the run.
+        self.short_support_rows = 0
 
         scales = tuple(artifact.get("metadata", {}).get("diffusion_scales", ()))
         if len(scales) != self.n_scales:
@@ -216,13 +223,48 @@ class GGPKDCandidateSampler:
         uniform_population = self.n_items - len(uniform_excluded)
         remaining = self.candidate_size - support.size
 
-        n_hard = min(self.hard_neg_k, len(hard_pool), remaining)
-        n_uniform = min(self.random_neg_k, uniform_population, remaining - n_hard)
-        deficit = remaining - n_hard - n_uniform
-        add_uniform = min(deficit, uniform_population - n_uniform)
-        n_uniform += add_uniform
-        deficit -= add_uniform
-        n_hard += min(deficit, len(hard_pool) - n_hard)
+        if self.no_negatives:
+            # Both quotas are zero, so a short support draw has nothing to be
+            # filled from -- and the deficit path below would have filled it with
+            # uniform corpus draws anyway, silently reintroducing the negatives
+            # this configuration exists to remove. The row is padded to the fixed
+            # width with the anchor's own index instead, which is inert: it
+            # carries teacher mass 0, and `self_mask` removes it from the anchor's
+            # ambient and diffusion softmaxes alike, so the anchor is simply
+            # supervised on a narrower support.
+            #
+            # `support.size == 0` is not padded this way: a row of nothing but
+            # self is fully masked, its diffusion log-softmax is all -inf, and
+            # while the loss stays 0 there the per-scale diagnostics go NaN. It
+            # cannot happen with diffusion_quota >= 1 -- the graph build gives
+            # every node at least its top-k fallback neighbours -- so it is
+            # asserted rather than handled.
+            if remaining > 0:
+                if support.size == 0:
+                    raise ValueError(
+                        f"GGPKD anchor {idx} has no diffusion support and no "
+                        "negative quota to fall back on; rebuild the graph "
+                        "artifact or give the arm a non-zero negative quota"
+                    )
+                self.short_support_rows += 1
+                padding = np.full(remaining, int(idx), dtype=np.int64)
+                candidate_arr = np.concatenate([support, padding])
+                teacher_probs = np.zeros(
+                    (self.n_scales, candidate_arr.size), dtype=np.float32
+                )
+                teacher_probs[:, : support.size] = self.pool_probs[
+                    :, idx, support_positions
+                ]
+                return candidate_arr, teacher_probs
+            n_hard = n_uniform = 0
+        else:
+            n_hard = min(self.hard_neg_k, len(hard_pool), remaining)
+            n_uniform = min(self.random_neg_k, uniform_population, remaining - n_hard)
+            deficit = remaining - n_hard - n_uniform
+            add_uniform = min(deficit, uniform_population - n_uniform)
+            n_uniform += add_uniform
+            deficit -= add_uniform
+            n_hard += min(deficit, len(hard_pool) - n_hard)
 
         if support.size + n_hard + n_uniform != self.candidate_size:
             raise ValueError(

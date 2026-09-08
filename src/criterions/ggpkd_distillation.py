@@ -112,6 +112,31 @@ class GGPKDDistillation(nn.Module):
     Neither term has an opinion the other contradicts: diffusion ranks within the
     neighbourhood, r=0 calibrates across the batch.
 
+    **What changed when the negatives were removed.** The two paragraphs above
+    are the argument that introduced scale r=0, and they are stated against the
+    draw as it was then: a candidate row of 23 diffusion-support columns plus 66
+    hard and uniform negatives, all softmaxed over the whole shared pool. Two
+    things have since moved, and the second one is recent enough that the history
+    is worth keeping visible rather than rewritten.
+
+    First the domain split confined the diffusion softmax to the anchor's own
+    draw. Then the negative quotas went to zero, so that draw is now nothing but
+    columns the teacher put diffusion mass on. Together those mean the diffusion
+    group scores **no zero-target column at all** -- the false-zero gradient that
+    r=0 was introduced to counteract is gone by construction rather than by
+    counterweight, and `amb_mass_on_zero_diff` should read ~0 on every batch.
+
+    That does not make the ambient scale redundant: it is still the only term
+    that compares similarity levels *across* anchors, which is what STS Spearman
+    and a single global cosine threshold read. But its column set has changed
+    character. It used to span ~4,445 pool columns per batch, of which ~1,160
+    were uniform corpus draws belonging to no anchor's neighbourhood; it now
+    spans ~1,400, every one of which is some anchor's teacher-selected
+    neighbour. The calibration r=0 performs is therefore local where it used to
+    reach across the corpus. That is the standing risk of the no-negatives
+    method, and the out-of-domain pair and STS benchmarks are where it would
+    surface first.
+
     **Why there is no pointwise anchor term.** An earlier version added
     lambda_anchor * (1 - cos(W_a s_i, t_i)) with a free linear map W_a. That term is
     invariant to any invertible transform of the student space -- W_a simply absorbs

@@ -2,9 +2,11 @@
 """Measure the candidate-encoder step cost against chunk size and pad alignment.
 
 The GGPKD step spends essentially all of its time in one place. A measured run
-(Qwen3-0.6B -> MiniLMv2-H384, batch 64, candidate width 89) encodes **4,445
-unique texts per step to serve 64 anchors** -- a 70x multiplier -- for ~73k real
-tokens, and reports 470 MB peak memory at ~0.2 s/step. Everything else in the
+(Qwen3-0.6B -> MiniLMv2-H384, batch 64) encoded **4,445 unique texts per step to
+serve 64 anchors** -- a 70x multiplier -- for ~73k real tokens, at 470 MB peak
+and ~0.2 s/step. That was candidate width 89. With the negatives removed the
+width is the diffusion quota alone and the pool is ~1,400 texts, so ``--pool``
+defaults to that; pass ``--pool 4445`` to reproduce the old draw. Everything else in the
 step, the relational loss included, is rounding error next to that.
 
 Two knobs decide how those texts are cut into forward calls, and neither can
@@ -53,7 +55,7 @@ def parse_args():
     p.add_argument("--max_length", type=int, default=256)
     # Defaults are the measured production numbers, so a bare run reproduces the
     # real step rather than a synthetic one.
-    p.add_argument("--pool", type=int, default=4445, help="unique candidates per step")
+    p.add_argument("--pool", type=int, default=1400, help="unique candidates per step")
     p.add_argument("--batch", type=int, default=64, help="anchors per step")
     p.add_argument("--chunks", default="128,256,512,1024,2048")
     p.add_argument("--pads", default="1,8,16")

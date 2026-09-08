@@ -2,9 +2,12 @@
 # Table 5: Top-K support-quota and row-weight sensitivity.
 #
 # Top-K uses 0.5x / 0.75x / 1x / 1.5x / 2x / 2.5x / 3x the graph-derived
-# quota. Non-default arms keep total candidate width fixed by trading support
-# slots against hard/random negatives in their canonical ratio. Row weight
-# uses 0 / 0.1 / 0.25 / 0.5 / 0.75 / 1. Lambda=0 and lambda=1 reuse shared arms.
+# quota. With the method drawing no negatives the candidate width IS the quota,
+# so these arms vary the relational budget rather than reallocating a fixed
+# width between support and negatives -- state that in the table caption, since
+# encoder cost now moves with the multiplier and the arms are not compute
+# matched. Row weight uses 0 / 0.1 / 0.25 / 0.5 / 0.75 / 1. Lambda=0 and
+# lambda=1 reuse shared arms.
 
 source "$(dirname "${BASH_SOURCE[0]}")/_common.sh"
 
