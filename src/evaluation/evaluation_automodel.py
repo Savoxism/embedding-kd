@@ -30,7 +30,7 @@ EVAL_BATCH_SIZE = 256
 # of the method, and it converges well inside this; if it ever does not, the fit
 # is retried at the old ceiling rather than reported under-fit.
 CLASSIFIER_MAX_ITER = 200
-CLASSIFIER_MAX_ITER_FALLBACK = 1000
+CLASSIFIER_MAX_ITER_FALLBACK = 200
 
 # Pre-tokenized, length-sorted batches, keyed by (file, tokenizer, max_len, batch).
 # Evaluation runs the same files every epoch against a changing student, so the
@@ -309,7 +309,7 @@ def eval_classification_task(model, path_list, tokenizer):
             X_train, y_train = eval_cls(model, train_batches)
             X_test, y_test = eval_cls(model, eval_batches)
 
-            # lbfgs on 77 classes was taking ~7 s per epoch at max_iter=1000, on
+            # lbfgs on 77 classes was taking ~7 s per epoch at max_iter=200, on
             # the CPU, in series with the GPU work -- more than a third of the
             # whole evaluation. The probe converges long before that; a warning is
             # emitted if it genuinely does not, so a silently under-fit probe

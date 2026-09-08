@@ -19,6 +19,37 @@ FIXED_BANDWIDTH_TEMP = 0.05
 EPS_NORM = 1e-8
 DIAG_TOPK = 8
 
+# How the candidate pool is cut into student forward calls. Runtime policy, not
+# method: with correct attention masks neither value can change a student
+# embedding, so they only trade padded FLOPs against kernel launches -- which is
+# why they live here rather than on GGPKDConfig, next to the other choices that
+# do not define the objective.
+#
+# The trade-off is real and it is GPU-specific. Measured on the production corpus
+# (13553 texts, mean 16.4 tokens, p50 13, p90 31) for one step's pool of ~4445
+# unique candidates, against 72,900 real tokens:
+#
+#     chunk    pad=1     pad=8    pad=16   forward calls
+#       128   77,722    94,338   107,982        35
+#       256   80,727    97,091   109,644        18   <- the values below
+#       512   93,254   109,430   127,490         9
+#      1024  100,984   124,646   142,784         5
+#
+# Two things that table says. Wider chunks buy fewer launches at strictly more
+# padding, because a length-sorted chunk pads to its own longest member and a
+# wider chunk spans a wider length band. And at these sequence lengths, rounding
+# each chunk's width up to a multiple of 8 costs ~17% of all tokens by itself --
+# a median-13-token text padded to 16 is 23% padding before any batching effect.
+#
+# Which side wins depends on whether the step is launch bound or FLOP bound. A
+# measured full-model run reports 470 MB peak and ~0.2 s/step for ~100k padded
+# tokens on a 6-layer 384-wide student, which is a few percent of a modern GPU's
+# arithmetic throughput -- so it is launch bound, and larger chunks with pad 1 are
+# the direction to test first. Run scripts/ggpkd/bench_encode.py to settle it on
+# the actual device rather than adopting these numbers.
+ENCODE_CHUNK_SIZE = 256
+PAD_TO_MULTIPLE_OF = 8
+
 # Support-selection arms for the fixed-budget ablation. `topk` is the method;
 # proportional and uniform remove deterministic teacher ranking. `local_topk`
 # is reserved for the clean no-diffusion control: it spends the same quota on

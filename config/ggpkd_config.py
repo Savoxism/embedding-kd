@@ -28,7 +28,7 @@ class GGPKDConfig(BaseConfig):
     #                        time, so scale r is matched at the resolution its own
     #                        target already has. In the fixed-bandwidth baseline
     #                        at 0.05 this is
-    #                        (0.0707, 0.1000) for r = 2, 4 -- the values that were
+    #                        (0.0707, 0.200) for r = 2, 4 -- the values that were
     #                        previously written out by hand as (0.07, 0.10);
     #   tau_row(j) = tau_j   row targets are transition rows, so each supervised
     #                        row reuses its stored graph bandwidth;

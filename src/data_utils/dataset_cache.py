@@ -3,6 +3,8 @@ import pandas as pd
 import torch
 from torch.utils.data import Dataset
 
+from src.ggpkd.policy import ENCODE_CHUNK_SIZE, PAD_TO_MULTIPLE_OF
+
 
 class DualTokenizerCollateWithTeacher:
     def __init__(self, tok_student, task: str, max_len: int):
@@ -198,8 +200,8 @@ class GGPKDCollate:
         task: str,
         max_len: int,
         corpus_texts: list[str],
-        encode_chunk_size: int = 256,
-        pad_to_multiple_of: int = 8,
+        encode_chunk_size: int = ENCODE_CHUNK_SIZE,
+        pad_to_multiple_of: int = PAD_TO_MULTIPLE_OF,
         batch_local: bool = False,
         n_scales: int = 1,
     ):

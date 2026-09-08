@@ -767,7 +767,7 @@ class KnowledgeDistiller:
             loss_value = loss.item()
             if use_events:
                 end_event.synchronize()
-                dt = start_event.elapsed_time(end_event) / 1000.0
+                dt = start_event.elapsed_time(end_event) / 200.0
             else:
                 dt = time.perf_counter() - t0
             epoch_step_times.append(dt)
@@ -835,7 +835,7 @@ class KnowledgeDistiller:
                 ma_step = sum(self.ma_window) / len(self.ma_window)
                 postfix.update(
                     {
-                        "ms/step": f"{avg_step * 1000:.1f}",
+                        "ms/step": f"{avg_step * 200:.1f}",
                         "it/s": f"{1.0 / ma_step:.2f}",
                     }
                 )
@@ -867,7 +867,7 @@ class KnowledgeDistiller:
         if len(self.step_times) > 0:
             epoch_avg = sum(self.step_times) / len(self.step_times)
             print(
-                f"[Epoch {epoch + 1}] Avg step time = {epoch_avg * 1000:.2f} ms "
+                f"[Epoch {epoch + 1}] Avg step time = {epoch_avg * 200:.2f} ms "
                 f"({1.0 / epoch_avg:.2f} it/s)"
             )
 
