@@ -14,11 +14,6 @@ test_checkpoint.py
 evaluate_teacher_wic.py
 test_teacher_wic.py
 
-# Old walk distillation backup
-ICLR_MDD_walk_distillation/
-ICLR_MDD_walk_distillation.zip
-walk_distillation.patch
-
 # Notebooks
 *.ipynb
 !notebooks/
@@ -207,14 +202,3 @@ cython_debug/
 #  refer to https://docs.cursor.com/context/ignore-files
 .cursorignore
 .cursorindexingignore
-
-# LaTeX build artifacts (the .tex sources are tracked; these are regenerated)
-latex/*.aux
-latex/*.fdb_latexmk
-latex/*.fls
-latex/*.log
-latex/*.out
-latex/*.synctex.gz
-latex/*.pdf
-latex/*.bbl
-latex/*.blg

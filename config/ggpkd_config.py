@@ -8,8 +8,8 @@ from .base_config import BaseConfig
 class GGPKDConfig(BaseConfig):
     distill_method = "ggpkd"
 
-    # Keep the no-CLI defaults aligned with notebooks/train_colab.ipynb's
-    # selected paper pair.
+    # Keep the no-CLI defaults aligned with the pair selected in
+    # notebooks/train_colab_topk_no_neg.ipynb.
     student_model_name = "nreimers/MiniLMv2-L6-H384-distilled-from-BERT-Base"
     student_dtype = "float32"
     teacher_model_name = "Qwen/Qwen3-Embedding-0.6B"
@@ -49,9 +49,9 @@ class GGPKDConfig(BaseConfig):
     direct_temp = 0.0
 
     # ---- Ablation switches ---------------------------------------------------
-    # Every one of these sits at the method's value. They exist so the ablation
-    # arms in scripts/ablation/ are one flag away from the full model instead of a
-    # branch, and so a run manifest records which arm produced a number.
+    # Every one of these sits at the method's value. They exist so an ablation
+    # arm is one CLI flag away from the full model instead of a branch, and so a
+    # run manifest records which arm produced a number.
     #
     # support_policy  which columns the diffusion quota is spent on (S1):
     #                 topk (method) / proportional / uniform / local_topk.

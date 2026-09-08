@@ -115,7 +115,6 @@ COMMAND=(
     --w_task 0
     --seed "$SEED_VALUE"
     --save_dir "$RUN_DIR"
-    --no_wandb
 )
 
 if [[ "$PREPARE_CACHE_ONLY" -eq 1 ]]; then

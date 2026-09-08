@@ -7,11 +7,15 @@ teacher-selected candidate rows.
 
 The framework supports arbitrary teacher-student pairs. Tested configurations include:
 
-| Teacher | Student | Notes |
+| Pair key | Teacher | Student |
 |:---|:---|:---|
-| `Qwen/Qwen3-Embedding-4B` | `google-bert/bert-base-uncased` | Default config |
-| `Qwen/Qwen3-Embedding-0.6B` | `nreimers/MiniLMv2-L6-H384-distilled-from-BERT-Base` | Lightweight |
-| `BAAI/bge-m3` | `nreimers/MiniLMv2-L6-H384-distilled-from-BERT-Base` | Alternative teacher |
+| `qwen3_0_6b_to_minilmv2_h384` | `Qwen/Qwen3-Embedding-0.6B` | `nreimers/MiniLMv2-L6-H384-distilled-from-BERT-Base` |
+| `bge_m3_to_minilmv2_h768` | `BAAI/bge-m3` | `nreimers/MiniLMv2-L6-H768-distilled-from-BERT-Base` |
+| `qwen3_4b_to_bert_base` | `Qwen/Qwen3-Embedding-4B` | `google-bert/bert-base-uncased` |
+
+`qwen3_0_6b_to_minilmv2_h384` is the default in `config/ggpkd_config.py`. The
+launchers take the pair key as their first argument and derive the model names,
+pooling, cache and log paths from it, so two pairs never share a cache file.
 
 The training corpus follows the TALAS paper setup: ~15K unlabeled sentences sampled from three in-domain datasets. The default corpus is `data/train_set/merged_3_data_5k_each.csv`.
 
@@ -21,14 +25,6 @@ The training corpus follows the TALAS paper setup: ~15K unlabeled sentences samp
 python3 -m venv venv
 source venv/bin/activate
 pip install -r requirements.txt
-```
-
-For Weights & Biases logging:
-
-```bash
-wandb login
-# Or for offline mode:
-export WANDB_MODE=offline
 ```
 
 ## Method
@@ -67,7 +63,11 @@ The cost is that `graph_k` now sets sharpness as well as width, and the two cann
 
 Multi-scale targets capture structure at different resolutions:
 
-$$q_{i,r} = e_i^\top P^r, \quad r \in \{1, 2, 4\}$$
+$$q_{i,r} = e_i^\top P^r, \quad r \in \mathcal{R}$$
+
+The shipped default is $\mathcal{R} = \{1\}$ (`diffusion_scales = (1,)`), i.e. no
+multi-hop target. Wider ladders such as $\{1,2\}$ or $\{1,2,4\}$ are selected with
+`--diffusion_scales 1,2,4`.
 
 ### 5. Student Distribution
 
@@ -142,7 +142,7 @@ fixed-bandwidth baseline uses temperature `0.05`; none is a tunable method knob.
 
 ### GGPKD on Colab
 
-Open [`notebooks/train_colab.ipynb`](notebooks/train_colab.ipynb),
+Open [`notebooks/train_colab_topk_no_neg.ipynb`](notebooks/train_colab_topk_no_neg.ipynb),
 choose one of the three canonical teacher--student pairs, set `ROW_WEIGHT`, and
 run all cells. The notebook clones `nqd_mass_geom_loss` on its first run and
 fetches/resets/pulls the latest remote commit on every later run.
@@ -186,13 +186,13 @@ STUDENT_MODEL="nreimers/MiniLMv2-L6-H384-distilled-from-BERT-Base" \
 TEACHER_MODEL="Qwen/Qwen3-Embedding-0.6B" \
 BATCH_SIZE=32 \
 EPOCHS=5 \
-bash scripts/ggpkd/train.sh --no_wandb
+bash scripts/ggpkd/train.sh
 ```
 
 To persist student weights to a durable directory:
 
 ```bash
-WEIGHTS_DIR="/path/to/weights" bash scripts/ggpkd/train.sh --no_wandb
+WEIGHTS_DIR="/path/to/weights" bash scripts/ggpkd/train.sh
 ```
 
 ### Using Python directly
@@ -213,13 +213,16 @@ python3 main.py \
 
 Model checkpoints are saved under the configured `save_dir`. Training metrics are written to `metrics.jsonl` in the same directory.
 
-Teacher embedding and graph caches are written to `cache/ggpkd/`. If you change the training corpus, teacher model, or graph parameters, delete the old caches before retraining:
+Teacher embedding and graph caches are written to `cache/ggpkd/<pair_key>/`. If you
+change the training corpus, teacher model, or graph parameters, delete that pair's
+caches before retraining:
 
 ```bash
-rm -f cache/ggpkd/*.pt
+rm -f cache/ggpkd/qwen3_0_6b_to_minilmv2_h384/*.pt
 ```
 
-kNN graph diagnostics are logged to `logs/ggpkd/knn_graph_neighbors.jsonl`.
+kNN graph diagnostics are logged to
+`logs/ggpkd/<pair_key>/knn_graph_neighbors.jsonl`.
 
 ## Benchmarks
 
@@ -252,24 +255,32 @@ This repository also includes implementations of other distillation baselines fo
 ├── distiller.py                     # Training loop and evaluation
 ├── config/
 │   ├── base_config.py               # Shared defaults
-│   ├── ggpkd_config.py            # GGPKD hyperparameters
+│   ├── ggpkd_config.py              # GGPKD hyperparameters
 │   └── ...                          # Other method configs
 ├── src/
 │   ├── criterions/
-│   │   ├── ggpkd_distillation.py  # Relational, row, and geometry objectives
+│   │   ├── ggpkd_distillation.py    # Relational and row objectives
 │   │   └── ...                      # Other method losses
 │   ├── ggpkd/
 │   │   ├── graph_builder.py         # kNN graph and diffusion pool construction
-│   │   └── candidate_sampler.py     # Per-epoch candidate sampling
+│   │   ├── candidate_sampler.py     # Candidate-pool construction
+│   │   └── policy.py                # Derived capacities and tolerances
+│   ├── distill/                     # Trainer internals: per-method train steps,
+│   │                                #   criterion factory, checkpointing,
+│   │                                #   telemetry, geometry probes, benchmarks
 │   ├── data_utils/                  # Dataset and collation
 │   ├── evaluation/                  # Benchmark evaluation
 │   ├── cache_teacher.py             # Teacher embedding caching
 │   ├── pooling.py                   # Pooling strategies
 │   └── loss.py                      # Shared loss utilities
 ├── scripts/                         # Launchers, one folder per method
-│   ├── <method>/train.sh            # Bash launcher (train.ps1 = PowerShell)
+│   ├── <method>/train.sh            # Bash launcher
 │   ├── ggpkd/floor.py               # L_rel floor diagnostic
+│   ├── ggpkd/pick_graph_k.py        # graph_k sharpness report
+│   ├── ggpkd/bench_encode.py        # Candidate-encoder throughput bench
 │   └── talas/                       # + run_paper.sh, summarize.py
 ├── data/                            # Train/val/test CSV datasets
-├── docs/                            # Reference papers
+├── notebooks/                       # Colab training notebook
+├── tests/                           # pytest suite
+├── docs/                            # Reference papers and experiment notes
 ```

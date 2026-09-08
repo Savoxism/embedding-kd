@@ -128,16 +128,6 @@ def test_shell_launcher_rejects_unknown_pair(tmp_path):
     assert "Unknown TALAS pair" in result.stderr
 
 
-def test_powershell_launcher_contains_canonical_portable_mapping():
-    text = (REPO_ROOT / "scripts" / "talas" / "train.ps1").read_text(encoding="utf-8")
-    assert "$PSScriptRoot" in text
-    assert ".venv\\Scripts\\python.exe" in text
-    for pair, preset in TALAS_PAPER_PAIRS.items():
-        assert pair in text
-        assert preset["teacher"] in text
-        assert preset["student"] in text
-
-
 class _TinyStudent(nn.Module):
     def __init__(self, vocab: int = 32, dim: int = 8, layers: int = 3):
         super().__init__()
