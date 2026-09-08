@@ -3,10 +3,12 @@
 Reads from the distiller context: config, device_s, model_student, criterion, optimizer, scaler, scheduler, current_epoch, current_step
 """
 
+import math
+
 import torch
 from torch.amp import autocast
 
-from src.distill.numerics import grads_are_finite, is_finite
+from src.distill.numerics import is_finite, total_grad_norm
 from src.loss import info_nce
 
 
@@ -58,7 +60,11 @@ def step(ctx, batch: dict) -> tuple[torch.Tensor, dict]:
 
     ctx.scaler.scale(loss).backward()
     ctx.scaler.unscale_(ctx.optimizer)
-    if not grads_are_finite(ctx.optimizer):
+
+    # Reported on every method, never enforced on any: the arms are only
+    # comparable if none of them has its effective step size rescaled.
+    metrics["grad_norm"] = float(total_grad_norm(ctx.optimizer))
+    if not math.isfinite(metrics["grad_norm"]):
         ctx.optimizer.zero_grad(set_to_none=True)
         ctx.scaler.update()
         ctx.scheduler.step()

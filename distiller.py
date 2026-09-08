@@ -20,14 +20,10 @@ from transformers import __version__ as transformers_version
 
 from src.cache_teacher import (
     cache_teacher_embeddings,
+    check_cache_provenance,
     load_cached_embeddings,
     validate_cached_embeddings,
 )
-from src.criterions.contextual_dynamic_mapping import ContextualDynamicMapping
-from src.criterions.dual_space_kd import DualSpaceKD
-from src.criterions.emo_embedding_distillation import EMODistillation
-from src.criterions.ggpkd_distillation import GGPKDDistillation
-from src.criterions.relational_kd import RelationalKnowledgeDistillation
 from src.criterions.stella_distillation import (
     StellaModel,
 )
@@ -40,6 +36,7 @@ from src.data_utils.dataset_cache import (
 )
 from src.distill.benchmarks import add_domain_averages, print_evaluation_table
 from src.distill.checkpointing import save_checkpoint, save_student_weights
+from src.distill.criterion_factory import build_criterion
 from src.distill.geometry import build_probe_index, build_probe_set, probe_geometry
 from src.distill.numerics import (
     assert_module_parameters_finite,
@@ -62,11 +59,7 @@ from src.evaluation.evaluation_automodel import (
     test_sts_tasks,
 )
 from src.ggpkd import GGPKDCandidateSampler, build_or_load_ggpkd_artifact
-from src.ggpkd.policy import (
-    FIXED_BANDWIDTH_TEMP,
-    ROW_COVERAGE_TAU,
-    derive_diffusion_quota,
-)
+from src.ggpkd.policy import ROW_COVERAGE_TAU, derive_diffusion_quota
 from src.loss import info_nce
 
 
@@ -100,127 +93,7 @@ class KnowledgeDistiller:
         self.proj_s2t = None
         self.setup_training()
 
-        # Initialize criterion based on method
-        if config.distill_method == "cdm":
-            self.criterion = ContextualDynamicMapping(
-                tok_student=self.tok_student,
-                tok_teacher=self.tok_teacher,
-                blending_model_special_token=config.teacher_special_token,
-                base_model_special_token=config.student_special_token,
-                w_task=config.w_task,
-                alpha_dtw=config.alpha_dtw,
-                debug_align=config.debug_align,
-            )
-            # Built here, not lazily on the first batch. `add_param_group` after the
-            # scheduler exists leaves LambdaLR with one lr_lambda for two param
-            # groups; torch >= 2.6 zips them with strict=True, so the first
-            # `scheduler.step()` raises. Every other method that adds a group does
-            # so here and rebuilds the scheduler -- CDM was the one that did not.
-            d_s = self.model_student.config.hidden_size
-            d_t = self.model_teacher.config.hidden_size
-            self.proj_s2t = nn.Linear(d_s, d_t, bias=False).to(self.device_s)
-            self.optimizer.add_param_group(
-                {
-                    "params": self.proj_s2t.parameters(),
-                    "lr": config.learning_rate * 2,
-                }
-            )
-            self.scheduler = self._build_scheduler()
-            print(f"Initialized CDM projection layer: {d_s} -> {d_t}")
-        elif config.distill_method == "dskd":
-            self.criterion = DualSpaceKD(
-                student_dim=self.model_student.config.hidden_size,
-                teacher_dim=self.model_teacher.config.hidden_size,
-                w_task=config.w_task,
-                alpha_dtw=config.alpha_dtw,
-            )
-            # Move DSKD to device and add to optimizer
-            self.criterion.to(self.device_s)
-            self.optimizer.add_param_group(
-                {"params": self.criterion.parameters(), "lr": config.learning_rate}
-            )
-            self.scheduler = self._build_scheduler()
-            print("DSKD criterion initialized and added to optimizer")
-        elif config.distill_method == "emo":
-            self.criterion = EMODistillation(
-                d_teacher=self.model_teacher.config.hidden_size,
-                d_student=self.model_student.config.hidden_size,
-                k_layers=getattr(config, "k_layers", 1),
-                alpha_ot=getattr(config, "alpha_ot", 0.1),
-                max_iter=getattr(config, "max_iter_ot", 100),
-                teacher_special=getattr(config, "teacher_special_token", "<s>"),
-                student_special=getattr(config, "student_special_token", "[CLS]"),
-            )
-            # Move EMO to device and add to optimizer
-            self.criterion.to(self.device_s)
-            self.optimizer.add_param_group(
-                {"params": self.criterion.parameters(), "lr": config.learning_rate}
-            )
-            self.scheduler = self._build_scheduler()
-            print("EMO criterion initialized and added to optimizer")
-        elif config.distill_method == "rkd":
-            self.criterion = RelationalKnowledgeDistillation(
-                distance_weight=config.rkd_distance_weight,
-                angle_weight=config.rkd_angle_weight,
-                task_weight=config.w_task,
-                eps=config.eps_norm,
-            ).to(self.device_s)
-            print(
-                "RKD-DA criterion initialized: "
-                f"distance={config.rkd_distance_weight}, "
-                f"angle={config.rkd_angle_weight}, task={config.w_task}"
-            )
-        elif config.distill_method == "ggpkd":
-            # `self.ggpkd_artifact` is set unconditionally in the data path before
-            # this runs, so indexing it directly is right: a `.get()` fallback would
-            # hand the criterion `None` and make it blame the graph artifact for what
-            # is really a setup-ordering bug.
-            artifact = self.ggpkd_artifact
-            # --direct_temp 0 derives the last free student temperature from the
-            # graph itself: the median entropic-affinity bandwidth. The ambient
-            # target is the same softmax-of-cosines construction as the transition
-            # rows with the sparsification removed, so the graph's own typical
-            # bandwidth is the natural scale for it. Written back onto the config so
-            # the run manifest and banner record the concrete value, exactly as
-            # derived diffusion_quota is.
-            if config.direct_temp == 0.0:
-                row_temps = artifact.get("row_temps")
-                config.direct_temp = (
-                    float(row_temps.median())
-                    if row_temps is not None
-                    else FIXED_BANDWIDTH_TEMP
-                )
-                print(
-                    f"Derived direct_temp={config.direct_temp:.4f} "
-                    "(median graph bandwidth; requested via --direct_temp 0)"
-                )
-            # `use_ambient=False` is the S4 deletion arm: withholding the bank is
-            # what removes scale r=0, because the criterion derives `use_direct`
-            # from whether it has teacher embeddings at all.
-            self.criterion = GGPKDDistillation(
-                diffusion_scales=config.diffusion_scales,
-                teacher_embeddings=(
-                    self.teacher_cls_all if config.use_ambient else None
-                ),
-                direct_temp=config.direct_temp,
-                row_weight=config.row_weight,
-                relation_target=config.relation_target,
-                row_temps=artifact["row_temps"],
-                transition_neighbors=artifact["transition_neighbors"],
-                transition_probs=artifact["transition_probs"],
-            ).to(self.device_s)
-            self.scheduler = self._build_scheduler()
-            print(
-                "GGPKD criterion initialized: "
-                f"batch_local={config.batch_local}, "
-                f"ambient={config.use_ambient}, "
-                f"relation_target={config.relation_target}, "
-                f"row_weight={config.row_weight}"
-            )
-        else:
-            self.criterion = None
-
-        # Projection layer was initialized above if needed
+        self.criterion = build_criterion(self)
 
         # Metrics tracking
         self.step_times = []
@@ -458,9 +331,7 @@ class KnowledgeDistiller:
         self.ggpkd_anchor_column = None
         if cfg.distill_method == "ggpkd":
             self.ggpkd_anchor_column = self._resolve_ggpkd_anchor_column(df)
-            df, keep_positions = self._prepare_ggpkd_frame(
-                df, self.ggpkd_anchor_column
-            )
+            df, keep_positions = self._prepare_ggpkd_frame(df, self.ggpkd_anchor_column)
             self.ggpkd_keep_positions = keep_positions
 
         self.task_head = None
@@ -482,6 +353,21 @@ class KnowledgeDistiller:
             # Check if cache exists
             if cache_path.exists():
                 print(f"Loading cached teacher embeddings from: {cache_path}")
+                # The guard lives in cache_teacher.py but was unreachable: that
+                # module only checks provenance on its own cache-hit branch, and
+                # this branch means the cache already existed, so that branch
+                # never ran. Nothing else distinguishes two teachers of the same
+                # width over the same corpus -- validate_cached_embeddings checks
+                # shape, dtype and finiteness -- so a mismatched cache_path was a
+                # silent wrong-teacher run.
+                check_cache_provenance(
+                    str(cache_path),
+                    {
+                        "teacher_model_name": cfg.teacher_model_name,
+                        "pooling_method": cfg.pooling_method,
+                        "normalize": bool(cfg.normalize_cache),
+                    },
+                )
                 teacher_cls_list = load_cached_embeddings(str(cache_path))
                 print(f"Loaded {len(teacher_cls_list)} cached embeddings")
             else:
@@ -751,11 +637,6 @@ class KnowledgeDistiller:
                 print(f"Warning: geometry probe unavailable ({error})")
             return None
 
-    def sync_all(self):
-        if torch.cuda.is_available():
-            for i in range(torch.cuda.device_count()):
-                torch.cuda.synchronize(i)
-
     def _compute_task_loss(
         self,
         student_cls1: torch.Tensor,
@@ -837,6 +718,7 @@ class KnowledgeDistiller:
 
         total_loss = 0.0
         n_items = 0
+        avg_loss = 0.0
         metric_totals = {}
         epoch_step_times = []
         peak_memory_mb = 0.0
@@ -848,6 +730,7 @@ class KnowledgeDistiller:
         step_records: list[dict] = []
 
         interactive_progress = sys.stderr.isatty()
+        device_count = torch.cuda.device_count()
         pbar = tqdm(
             self.train_loader,
             desc=f"Epoch {epoch + 1}/{self.config.epochs}",
@@ -856,20 +739,38 @@ class KnowledgeDistiller:
         total_steps = len(self.train_loader)
         log_interval = max(1, total_steps // 10)
 
+        # Timed with CUDA events rather than by draining the queue on both sides
+        # of the step. `sync_all()` before and after every step forced the host to
+        # wait for the whole device queue twice per step, so the CPU could never
+        # run ahead of the GPU -- a measurement that changed the thing it measured.
+        # Events are recorded on the stream and read below, after `loss.item()`
+        # has already drained it, so the timing costs no synchronization of its own.
+        use_events = torch.cuda.is_available()
+        start_event = torch.cuda.Event(enable_timing=True) if use_events else None
+        end_event = torch.cuda.Event(enable_timing=True) if use_events else None
+
         for step, batch in enumerate(pbar):
             self.current_step = step
 
-            self.sync_all()
             t0 = time.perf_counter()
+            if use_events:
+                start_event.record()
 
             loss, metrics = self.train_step(batch)
 
-            self.sync_all()
-            dt = time.perf_counter() - t0
-            epoch_step_times.append(dt)
+            if use_events:
+                end_event.record()
             self.global_step += 1
             bs = batch["input_ids1_stu"].size(0)
+            # Drains the stream, so both events have completed by the time the
+            # elapsed time is read.
             loss_value = loss.item()
+            if use_events:
+                end_event.synchronize()
+                dt = start_event.elapsed_time(end_event) / 1000.0
+            else:
+                dt = time.perf_counter() - t0
+            epoch_step_times.append(dt)
             total_loss += loss_value * bs
             n_items += bs
             avg_loss = total_loss / max(1, n_items)
@@ -897,20 +798,41 @@ class KnowledgeDistiller:
             )
             step_records.append(step_record)
 
-            mem_info = {}
-            for dev_id in range(torch.cuda.device_count()):
-                mem_alloc = torch.cuda.memory_allocated(dev_id) / 1024**2
-                mem_reserved = torch.cuda.memory_reserved(dev_id) / 1024**2
-                peak_memory_mb = max(peak_memory_mb, mem_alloc)
-                mem_info[f"gpu{dev_id}"] = f"{mem_alloc:.0f}/{mem_reserved:.0f}MB"
-
-            postfix = {"avg_loss": f"{avg_loss:.4f}", **mem_info}
+            # Accumulated on every step -- these feed the end-of-epoch step-time
+            # summary, so they must not be gated on whether this step prints.
             if step >= self.warmup_steps:
                 self.step_times.append(dt)
                 self.ma_window.append(dt)
+            peak_memory_mb = max(
+                peak_memory_mb,
+                max(
+                    (
+                        torch.cuda.memory_allocated(dev_id) / 1024**2
+                        for dev_id in range(device_count)
+                    ),
+                    default=0.0,
+                ),
+            )
+
+            # Everything below is display only. A non-interactive run reaches it
+            # about ten times an epoch, so formatting it on every step was work
+            # thrown away.
+            reporting = (
+                interactive_progress
+                or (step + 1) % log_interval == 0
+                or step + 1 == total_steps
+            )
+            if not reporting:
+                continue
+
+            postfix = {"avg_loss": f"{avg_loss:.4f}"}
+            for dev_id in range(device_count):
+                mem_alloc = torch.cuda.memory_allocated(dev_id) / 1024**2
+                mem_reserved = torch.cuda.memory_reserved(dev_id) / 1024**2
+                postfix[f"gpu{dev_id}"] = f"{mem_alloc:.0f}/{mem_reserved:.0f}MB"
+            if self.step_times:
                 avg_step = sum(self.step_times) / len(self.step_times)
                 ma_step = sum(self.ma_window) / len(self.ma_window)
-
                 postfix.update(
                     {
                         "ms/step": f"{avg_step * 1000:.1f}",
@@ -923,8 +845,8 @@ class KnowledgeDistiller:
                 (
                     "row",
                     "loss_row_weighted",
-                        getattr(self.config, "row_weight", 0.0) > 0,
-                    ),
+                    getattr(self.config, "row_weight", 0.0) > 0,
+                ),
                 ("grad", "grad_norm", True),
             )
             for label, key, enabled in concise_metrics:
@@ -1019,15 +941,17 @@ class KnowledgeDistiller:
         classification = eval_classification_task(
             self.model_student, classification_tasks, self.tok_student
         )
-        pair, selected_thresholds = eval_pair_task(
+        # The selected thresholds are returned but not kept: both splits pass
+        # `thresholds=None`, so each split selects on itself and there is no
+        # threshold to carry across. The distiller used to stash the validation
+        # ones on `self`, where nothing ever read them.
+        pair, _ = eval_pair_task(
             self.model_student,
             pair_tasks,
             self.tok_student,
             thresholds=thresholds,
         )
         sts = eval_sts_task(self.model_student, sts_tasks, self.tok_student)
-        if split == "validation":
-            self.pair_validation_thresholds = selected_thresholds
         results = add_domain_averages(
             {
                 "classification": classification,

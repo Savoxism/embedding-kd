@@ -147,17 +147,20 @@ def sinkhorn(
     u = torch.ones(m, 1, device=device, dtype=dtype)
     v = torch.ones(n, 1, device=device, dtype=dtype)
 
-    for _ in range(max_iter):
+    for iteration in range(max_iter):
         u_prev = u.clone()
         KTu = torch.matmul(K.t(), u)  # [n, 1]
         v = b / (KTu + eps)
         Kv = torch.matmul(K, v)  # [m, 1]
         u = a / (Kv + eps)
 
-        # Check convergence
-        err = torch.norm(u - u_prev, p=float("inf"))
-        if err < stop_thr:
-            break
+        # Checked periodically, not every iteration. `if err < stop_thr` reads a
+        # device scalar, so the old form blocked the host once per Sinkhorn
+        # iteration -- up to max_iter times per sequence, per batch item.
+        if iteration % 10 == 9:
+            err = torch.norm(u - u_prev, p=float("inf"))
+            if err < stop_thr:
+                break
 
     # Compute transport matrix
     P = torch.diag(u.squeeze()) @ K @ torch.diag(v.squeeze())  # [m, n]

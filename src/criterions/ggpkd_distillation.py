@@ -507,6 +507,24 @@ class GGPKDDistillation(nn.Module):
         return pool_embeddings, target, self_mask, own_mask, unique_idx
 
     @torch.no_grad()
+    def _teacher_cosine_logits(
+        self,
+        anchor_idx: torch.Tensor,
+        column_idx: torch.Tensor,
+        shared: bool,
+    ) -> torch.Tensor:
+        """cos(t_i, t_j) for every scored column, read off the cached bank."""
+        bank = self.teacher_bank
+        t_anchor = bank.index_select(0, anchor_idx).float()
+        if shared:
+            t_columns = bank.index_select(0, column_idx).float()
+            return t_anchor @ t_columns.t()
+        batch_size, candidate_size = column_idx.shape
+        t_columns = bank.index_select(0, column_idx.reshape(-1)).float()
+        t_columns = t_columns.view(batch_size, candidate_size, -1)
+        return torch.einsum("bd,bcd->bc", t_anchor, t_columns)
+
+    @torch.no_grad()
     def _direct_target(
         self,
         anchor_idx: torch.Tensor,
@@ -514,17 +532,13 @@ class GGPKDDistillation(nn.Module):
         self_mask: torch.Tensor,
         shared: bool,
     ) -> torch.Tensor:
-        """Teacher similarity over every scored column, not just the graph pool."""
-        bank = self.teacher_bank
-        t_anchor = bank.index_select(0, anchor_idx).float()
-        if shared:
-            t_columns = bank.index_select(0, column_idx).float()
-            logits = t_anchor @ t_columns.t()
-        else:
-            batch_size, candidate_size = column_idx.shape
-            t_columns = bank.index_select(0, column_idx.reshape(-1)).float()
-            t_columns = t_columns.view(batch_size, candidate_size, -1)
-            logits = torch.einsum("bd,bcd->bc", t_anchor, t_columns)
+        """Teacher similarity over every scored column, not just the graph pool.
+
+        This is the ambient scale r=0: dense over the whole shared pool, at the
+        single ambient temperature, and what calibrates similarity levels across
+        the batch.
+        """
+        logits = self._teacher_cosine_logits(anchor_idx, column_idx, shared)
         logits = logits / self.direct_temp
         logits = logits.masked_fill(self_mask, float("-inf"))
         return F.softmax(logits, dim=-1)
@@ -540,25 +554,15 @@ class GGPKDDistillation(nn.Module):
     ) -> torch.Tensor:
         """Teacher cosine over *the anchor's own selected columns* (S3 control).
 
-        Differs from `_direct_target` in exactly one way that matters: the column
-        domain. The ambient scale is dense over the whole shared pool and is what
-        calibrates across the batch; this one is restricted to the same columns
-        the diffusion scales are restricted to, at the same temperature the r=1
-        target is matched at, carrying the same total weight the diffusion group
-        carried. So the only difference between this arm and the method is whether
-        the target over those columns is the composed multi-hop transition rows or
-        the teacher's raw similarity.
+        Shares its teacher cosines with `_direct_target` and differs in the two
+        things that define the arm: the column domain is restricted to the
+        anchor's own draw -- the same columns the diffusion scales see -- and the
+        temperature is the r=1 tie (the per-row graph bandwidth) rather than the
+        ambient one. So the only difference between this arm and the method is
+        whether the target over those columns is the composed multi-hop
+        transition rows or the teacher's raw similarity.
         """
-        bank = self.teacher_bank
-        t_anchor = bank.index_select(0, anchor_idx).float()
-        if shared:
-            t_columns = bank.index_select(0, column_idx).float()
-            logits = t_anchor @ t_columns.t()
-        else:
-            batch_size, candidate_size = column_idx.shape
-            t_columns = bank.index_select(0, column_idx.reshape(-1)).float()
-            t_columns = t_columns.view(batch_size, candidate_size, -1)
-            logits = torch.einsum("bd,bcd->bc", t_anchor, t_columns)
+        logits = self._teacher_cosine_logits(anchor_idx, column_idx, shared)
         if self.row_temps is not None:
             tau = self.row_temps.index_select(0, anchor_idx).view(-1, 1)
         else:
@@ -696,7 +700,8 @@ class GGPKDDistillation(nn.Module):
         target: torch.Tensor,
         self_mask: torch.Tensor,
         own_mask: torch.Tensor,
-    ) -> dict[str, torch.Tensor]:
+        direct_active: bool,
+    ) -> list[tuple[str, torch.Tensor]]:
         """How much the ambient and diffusion scales still argue inside the own draw.
 
         The domain split silenced their disagreement on *other anchors'* columns,
@@ -715,12 +720,12 @@ class GGPKDDistillation(nn.Module):
         restrict. Diagnostics only -- nothing here touches the objective.
         """
         zero = target.new_zeros(())
-        empty = {
-            "amb_mass_own": zero,
-            "amb_mass_on_zero_diff": zero,
-            "amb_diff_js_own": zero,
-        }
-        if not getattr(self, "direct_active", False):
+        empty = [
+            ("amb_mass_own", zero),
+            ("amb_mass_on_zero_diff", zero),
+            ("amb_diff_js_own", zero),
+        ]
+        if not direct_active:
             return empty
         # `ambient_only` leaves the ambient profile alone in the stack. There is no
         # diffusion scale to disagree with it, so every quantity here is zero by
@@ -741,27 +746,30 @@ class GGPKDDistillation(nn.Module):
 
         neighbor = target[:, 1, :]
         usable = (amb_mass_own > 1e-12) & (neighbor.sum(dim=-1) > 0)
-        if bool(usable.any()):
-            a_own = amb_own[usable] / amb_own[usable].sum(dim=-1, keepdim=True)
-            g_nbr = neighbor[usable]
-            mixture = 0.5 * (a_own + g_nbr)
 
-            def _entropy(p: torch.Tensor) -> torch.Tensor:
-                logp = torch.where(p > 0, p.clamp_min(1e-12).log(), torch.zeros_like(p))
-                return -(p * logp).sum(dim=-1)
+        def _entropy(p: torch.Tensor) -> torch.Tensor:
+            logp = torch.where(p > 0, p.clamp_min(1e-12).log(), torch.zeros_like(p))
+            return -(p * logp).sum(dim=-1)
 
-            js = (
-                _entropy(mixture) - 0.5 * _entropy(a_own) - 0.5 * _entropy(g_nbr)
-            ).clamp_min(0.0)
-            js_mean = js.mean()
-        else:
-            js_mean = zero
+        # Computed over every row and then masked, rather than indexed by
+        # `usable` behind a `bool(usable.any())`. Boolean indexing needs the
+        # mask's contents on the host, so the old form paid a device sync here
+        # every step. On the usable rows the arithmetic is unchanged -- the
+        # clamped denominator only ever binds on rows this mean discards -- and
+        # with no usable row the masked mean is 0, exactly as the old branch.
+        a_own = amb_own / amb_own.sum(dim=-1, keepdim=True).clamp_min(1e-12)
+        mixture = 0.5 * (a_own + neighbor)
+        js = (
+            _entropy(mixture) - 0.5 * _entropy(a_own) - 0.5 * _entropy(neighbor)
+        ).clamp_min(0.0)
+        keep = usable.to(js.dtype)
+        js_mean = (js * keep).sum() / keep.sum().clamp_min(1.0)
 
-        return {
-            "amb_mass_own": amb_mass_own.mean(),
-            "amb_mass_on_zero_diff": amb_mass_zero.mean(),
-            "amb_diff_js_own": js_mean,
-        }
+        return [
+            ("amb_mass_own", amb_mass_own.mean()),
+            ("amb_mass_on_zero_diff", amb_mass_zero.mean()),
+            ("amb_diff_js_own", js_mean),
+        ]
 
     def forward(
         self,
@@ -771,12 +779,16 @@ class GGPKDDistillation(nn.Module):
         candidate_idx: torch.Tensor | None = None,
         anchor_idx: torch.Tensor | None = None,
     ) -> tuple[torch.Tensor, dict[str, float]]:
-        named_tensors = [
+        # Checked lazily. Verifying the inputs eagerly cost one host sync per
+        # step to answer a question the output check below already answers --
+        # a non-finite input can only produce a non-finite loss. Kept here by
+        # name so the failure path can still blame the encoder rather than the
+        # objective, which is the only reason the input check existed.
+        inputs = (
             ("anchor_embeddings", anchor_embeddings),
             ("candidate_embeddings", candidate_embeddings),
             ("teacher_probs", teacher_probs),
-        ]
-        _assert_finite_tensors(named_tensors)
+        )
 
         batch_size = anchor_embeddings.size(0)
         candidate_size = teacher_probs.size(-1)
@@ -788,13 +800,7 @@ class GGPKDDistillation(nn.Module):
         ).clamp_min(1e-12)
 
         anchor_norm = F.normalize(anchor_embeddings, p=2, dim=-1, eps=self.eps_norm)
-        candidate_embeddings = candidate_embeddings.reshape(
-            batch_size, candidate_size, -1
-        )
-        candidate_norm_own = F.normalize(
-            candidate_embeddings, p=2, dim=-1, eps=self.eps_norm
-        )
-        similarity_own = torch.einsum("bd,bcd->bc", anchor_norm, candidate_norm_own)
+        # A free view for the [B*C, D] the step passes; also accepts [B, C, D].
         candidate_embeddings = candidate_embeddings.reshape(
             batch_size * candidate_size, -1
         )
@@ -823,7 +829,17 @@ class GGPKDDistillation(nn.Module):
             selected_columns = (target.sum(dim=1) > 0).any(dim=0)
             anchor_columns = self_mask.any(dim=0)
         else:
-            similarity = similarity_own
+            # Only reachable without corpus indices, which the production path
+            # always supplies. Building the [B, C, D] normalization and its
+            # einsum unconditionally meant computing it -- and keeping it in the
+            # autograd graph -- on every step of every real run to discard it.
+            candidate_norm_own = F.normalize(
+                candidate_embeddings.reshape(batch_size, candidate_size, -1),
+                p=2,
+                dim=-1,
+                eps=self.eps_norm,
+            )
+            similarity = torch.einsum("bd,bcd->bc", anchor_norm, candidate_norm_own)
             target = teacher_probs
             column_idx = candidate_idx
             # Without sharing every column already belongs to this anchor, so the
@@ -873,10 +889,14 @@ class GGPKDDistillation(nn.Module):
         # Scale r=0: the teacher's own similarity over every scored column. Without
         # it, every column outside the anchor's diffusion pool carries target 0 and
         # is pushed toward maximal dissimilarity regardless of what the teacher says.
-        self.direct_active = (
+        # A local, not an attribute. Setting it on `self` inside forward() made
+        # the module carry per-batch state, forced every reader to defend with
+        # `getattr(self, ..., False)`, and would have crossed batches under any
+        # concurrent use.
+        direct_active = (
             self.use_direct and anchor_idx is not None and column_idx is not None
         )
-        if self.relation_target == "ambient_only" and not self.direct_active:
+        if self.relation_target == "ambient_only" and not direct_active:
             # The graph group has already been dropped, so without the ambient
             # scale there is no scale left at all and the stack below would be
             # empty. Say that, rather than fail on a zero-length torch.stack.
@@ -885,7 +905,7 @@ class GGPKDDistillation(nn.Module):
                 "else; it needs the teacher bank and corpus indices for both the "
                 "anchors and the scored columns"
             )
-        if self.direct_active:
+        if direct_active:
             direct = self._direct_target(anchor_idx, column_idx, self_mask, share)
             target = torch.cat([direct.unsqueeze(1).to(target.dtype), target], dim=1)
             weights = torch.cat([self.direct_weight.to(weights.dtype), weights])
@@ -919,7 +939,7 @@ class GGPKDDistillation(nn.Module):
         # The sharpest diffusion scale is the one whose target IS the anchor's
         # transition row, so it is the scale the temperature tie binds. With
         # entropic affinities that temperature is per anchor, not global.
-        offset = 1 if self.direct_active else 0
+        offset = 1 if direct_active else 0
         row_tau = None
         if self.row_temps is not None and anchor_idx is not None:
             row_tau = self.row_temps.index_select(0, anchor_idx).view(-1, 1)
@@ -930,7 +950,7 @@ class GGPKDDistillation(nn.Module):
         kl_per_scale = []
         log_probs_per_scale = []
         for scale_idx in range(n_scales):
-            is_direct = self.direct_active and scale_idx == 0
+            is_direct = direct_active and scale_idx == 0
             if row_tau is not None and not is_direct:
                 logits = similarity / (row_tau * sqrt_r[scale_idx - offset])
             else:
@@ -992,16 +1012,24 @@ class GGPKDDistillation(nn.Module):
                 )
 
         total_loss = loss_rel + self.row_weight * loss_row
-        _assert_finite_tensors(
-            (
-                ("loss_rel", loss_rel),
-                ("loss_amb", loss_amb),
-                ("loss_nbr", loss_nbr),
-                ("loss_diff", loss_diff),
-                ("loss_row", loss_row),
-                ("total_loss", total_loss),
+        try:
+            _assert_finite_tensors(
+                (
+                    ("loss_rel", loss_rel),
+                    ("loss_amb", loss_amb),
+                    ("loss_nbr", loss_nbr),
+                    ("loss_diff", loss_diff),
+                    ("loss_row", loss_row),
+                    ("total_loss", total_loss),
+                )
             )
-        )
+        except RuntimeError:
+            # A non-finite loss almost always arrives from upstream. Name that
+            # tensor rather than the loss term that merely carried it -- which is
+            # the whole reason the inputs were checked, and now the only time
+            # checking them costs anything.
+            _assert_finite_tensors(inputs)
+            raise
 
         metrics = self._diagnostics(
             total_loss=total_loss,
@@ -1019,20 +1047,10 @@ class GGPKDDistillation(nn.Module):
             self_mask=self_mask,
             diffusion_mask=diffusion_mask,
             temps=temps,
-        )
-        audit_entries = [
-            *self._ambient_diffusion_audit(target, self_mask, own_mask).items(),
-        ]
-        audit_values = (
-            torch.stack([value.detach().float() for _, value in audit_entries])
-            .cpu()
-            .tolist()
-        )
-        metrics.update(
-            {
-                name: float(value)
-                for (name, _), value in zip(audit_entries, audit_values)
-            }
+            direct_active=direct_active,
+            extra_entries=self._ambient_diffusion_audit(
+                target, self_mask, own_mask, direct_active
+            ),
         )
         return total_loss, metrics
 
@@ -1054,6 +1072,8 @@ class GGPKDDistillation(nn.Module):
         self_mask: torch.Tensor,
         diffusion_mask: torch.Tensor,
         temps: torch.Tensor,
+        direct_active: bool,
+        extra_entries: list[tuple[str, torch.Tensor]] = (),
     ) -> dict[str, float]:
         """Loss value alone cannot distinguish "learned the geometry" from "went uniform".
 
@@ -1068,7 +1088,7 @@ class GGPKDDistillation(nn.Module):
         different temperature over a 15x larger column set. The ambient scale now
         reports under its own `*_amb` names.
         """
-        offset = 1 if getattr(self, "direct_active", False) else 0
+        offset = 1 if direct_active else 0
         k = min(self.diag_topk, target.size(-1))
 
         def _distribution_stats(
@@ -1246,6 +1266,9 @@ class GGPKDDistillation(nn.Module):
             )
             per_scale_names.append("kl_nbr" if scale == 1 else f"kl_diff_r{scale}")
         entries.extend(zip(per_scale_names, kl_per_scale.mean(dim=0).detach()))
+        # The ambient-vs-diffusion audit rides the same stack. It used to run its
+        # own `.cpu().tolist()`, which is a second device sync for three scalars.
+        entries.extend(extra_entries)
 
         values = torch.stack(
             [value.detach().float().reshape(()) for _, value in entries]

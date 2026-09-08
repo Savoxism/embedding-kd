@@ -3,22 +3,17 @@
 Reads from the distiller context: config, device_s, device_t, model_student, criterion, optimizer, scaler, scheduler, train_loader, current_epoch, current_step
 """
 
+import math
+
 import torch
+from pytorch_optimizer import SAM
 from torch import optim
 from torch.amp import autocast
 from transformers import get_scheduler
 
 from src.criterions.teacher_anchor_kd import TeacherAnchorKD
-from src.distill.numerics import grads_are_finite, is_finite
+from src.distill.numerics import is_finite, total_grad_norm
 from src.loss import info_nce
-
-try:
-    from pytorch_optimizer import SAM
-
-    SAM_AVAILABLE = True
-except ImportError:  # pragma: no cover - depends on the environment
-    SAM = None
-    SAM_AVAILABLE = False
 
 
 def restore_without_update(ctx) -> int:
@@ -98,12 +93,6 @@ def step(ctx, batch: dict) -> tuple[torch.Tensor, dict]:
                 eps_norm=cfg.eps_norm,
             ).to(ctx.device_s)
 
-            # Initialize SAM optimizer with both student and criterion parameters
-            if not SAM_AVAILABLE:
-                raise RuntimeError(
-                    "SAM optimizer not available. Install pytorch_optimizer."
-                )
-
             base_optimizer = optim.AdamW
             ctx.optimizer = SAM(
                 [
@@ -162,7 +151,8 @@ def step(ctx, batch: dict) -> tuple[torch.Tensor, dict]:
 
     # Check gradients
     ctx.scaler.unscale_(ctx.optimizer)
-    if not grads_are_finite(ctx.optimizer):
+    metrics["grad_norm"] = float(total_grad_norm(ctx.optimizer))
+    if not math.isfinite(metrics["grad_norm"]):
         ctx.optimizer.zero_grad(set_to_none=True)
         ctx.scaler.update()
         ctx.scheduler.step()
@@ -214,8 +204,10 @@ def step(ctx, batch: dict) -> tuple[torch.Tensor, dict]:
     # Backward pass 2 - IMPORTANT: Do NOT scale (plain backward)
     loss_2.backward()
 
-    # Check gradients again
-    if not grads_are_finite(ctx.optimizer):
+    # Check gradients again. The SAM ascent point has its own gradient, so this
+    # is a second measurement rather than a repeat of the pass-1 one.
+    metrics["grad_norm_p2"] = float(total_grad_norm(ctx.optimizer))
+    if not math.isfinite(metrics["grad_norm_p2"]):
         # first_step() already perturbed the weights; put them back before
         # abandoning the step.
         restore_without_update(ctx)

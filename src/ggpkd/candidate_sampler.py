@@ -130,7 +130,7 @@ class GGPKDCandidateSampler:
         support = pool[support_positions].astype(np.int64)
         return support, support_positions
 
-    def _select_support_impl(
+    def _select_support(
         self,
         idx: int,
         rng: np.random.Generator,
@@ -191,14 +191,10 @@ class GGPKDCandidateSampler:
         support = pool[support_positions].astype(np.int64)
         return support, support_positions
 
-    def _select_support(
-        self, idx: int, rng: np.random.Generator
-    ) -> tuple[np.ndarray, np.ndarray]:
-        return self._select_support_impl(idx, rng)
-
-    def _sample_impl(self, idx: int) -> tuple[np.ndarray, np.ndarray]:
+    def sample(self, idx: int) -> tuple[np.ndarray, np.ndarray]:
+        """Return candidates and diffusion targets restricted to that draw."""
         rng = self._rng(idx, self._STREAM_CANDIDATES)
-        support, support_positions = self._select_support_impl(idx, rng)
+        support, support_positions = self._select_support(idx, rng)
         support_set = set(int(node) for node in support)
 
         # Partition the complement into a hard stratum and everything else. Their
@@ -234,7 +230,10 @@ class GGPKDCandidateSampler:
                 f"budget={self.candidate_size}, n_items={self.n_items}"
             )
 
-        hard_nodes = np.asarray(sorted(hard_pool), dtype=np.int64)
+        # Sorted so the draw is a function of the seed and not of set iteration
+        # order.
+        hard_nodes = np.fromiter(hard_pool, dtype=np.int64, count=len(hard_pool))
+        hard_nodes.sort()
         if n_hard:
             hard_nodes = rng.choice(hard_nodes, size=n_hard, replace=False)
         else:
@@ -250,10 +249,6 @@ class GGPKDCandidateSampler:
                 :, idx, support_positions
             ]
         return candidate_arr, teacher_probs
-
-    def sample(self, idx: int) -> tuple[np.ndarray, np.ndarray]:
-        """Return candidates and diffusion targets restricted to that draw."""
-        return self._sample_impl(idx)
 
     def _draw_random(
         self, rng: np.random.Generator, excluded: set[int], count: int

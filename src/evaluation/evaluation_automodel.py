@@ -1,6 +1,7 @@
 import os
 import warnings
 from contextlib import contextmanager
+from functools import cache
 from pathlib import Path
 
 import numpy as np
@@ -39,11 +40,14 @@ _BATCH_CACHE: dict[tuple, list[dict]] = {}
 
 
 def _tokenizer_key(tokenizer) -> tuple:
+    # No `id()`: CPython reuses the id of a collected object, so a second
+    # tokenizer could land on a freed entry's key and read another tokenizer's
+    # token ids. The remaining fields identify the vocabulary, which is the only
+    # thing the cached encoding depends on.
     return (
         type(tokenizer).__name__,
         getattr(tokenizer, "name_or_path", None),
         getattr(tokenizer, "vocab_size", None),
-        id(tokenizer),
     )
 
 
@@ -231,17 +235,30 @@ def eval_cls(model, eval_loader):
                         else out1["last_hidden_state"][:, 0, :]
                     )
 
-                preds.extend(emb1.cpu().numpy())
-                labels.extend(label.numpy())
+                preds.append(emb1.float().cpu().numpy())
+                labels.append(label.numpy())
 
-    return preds, labels
+    # Concatenated blocks, not a list of N single-row arrays. The probe below
+    # converts whatever it is given into one 2-D array anyway, and doing that
+    # from ~10k separate arrays is the slow way to reach the same matrix.
+    if not preds:
+        return np.empty((0, 0), dtype=np.float32), np.empty(0)
+    return np.concatenate(preds, axis=0), np.concatenate(labels, axis=0)
 
 
 def _normalized_text_keys(dataset):
     return {" ".join(str(text).strip().casefold().split()) for text in dataset["text"]}
 
 
+@cache
 def _validate_classification_pair(train_path, eval_path):
+    """Whether a train/eval pair overlaps is a property of two files on disk.
+
+    Cached because it is not: it used to re-read both CSVs, normalize every
+    text and intersect the two sets on every evaluation, i.e. once per dataset
+    per epoch, to recompute the same answer. Caching also means a leakage
+    warning is printed once rather than once an epoch.
+    """
     train_file = BASE_DIR / train_path
     eval_file = BASE_DIR / eval_path
     train_frame = pd.read_csv(train_file)
@@ -381,12 +398,15 @@ def get_metric_pair_classification(scores, labels, threshold=None):
     scores = np.asarray(scores)
     labels = np.asarray(labels)
     if threshold is None:
-        best_acc, best_thr = 0, 0
-        for candidate in np.linspace(0, 1, 200):
-            predictions = (scores >= candidate).astype(int)
-            accuracy = accuracy_score(labels, predictions)
-            if accuracy > best_acc:
-                best_acc, best_thr = accuracy, float(candidate)
+        # One [N, 200] comparison instead of 200 passes through accuracy_score.
+        # `argmax` returns the first maximum, which is the same threshold the
+        # loop's strict `>` kept, so the selected value is unchanged.
+        grid = np.linspace(0, 1, 200)
+        accuracies = ((scores[:, None] >= grid[None, :]) == labels[:, None]).mean(
+            axis=0
+        )
+        best = int(accuracies.argmax())
+        best_acc, best_thr = float(accuracies[best]), float(grid[best])
     else:
         best_thr = float(threshold)
         best_acc = accuracy_score(labels, (scores >= best_thr).astype(int))

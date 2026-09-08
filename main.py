@@ -185,23 +185,21 @@ def parse_args():
     return parser.parse_args()
 
 
+# Keys are exactly the --method choices; BaseConfig is the fallback for a method
+# that has no config class of its own.
+CONFIG_BY_METHOD = {
+    "cdm": CDMConfig,
+    "dskd": DSKDConfig,
+    "emo": EMOConfig,
+    "stella": StellaConfig,
+    "talas": TALASConfig,
+    "ggpkd": GGPKDConfig,
+    "rkd": RKDConfig,
+}
+
+
 def get_config(method: str, args):
-    if method == "cdm":
-        config = CDMConfig()
-    elif method == "dskd":
-        config = DSKDConfig()
-    elif method == "emo":
-        config = EMOConfig()
-    elif method == "stella":
-        config = StellaConfig()
-    elif method == "talas":
-        config = TALASConfig()
-    elif method == "ggpkd":
-        config = GGPKDConfig()
-    elif method == "rkd":
-        config = RKDConfig()
-    else:
-        config = BaseConfig()
+    config = CONFIG_BY_METHOD.get(method, BaseConfig)()
 
     if args.talas_pair is not None:
         if method != "talas":

@@ -3,15 +3,12 @@
 Reads from the distiller context: config, device_s, model_student, criterion, optimizer, scaler, scheduler, current_epoch, current_step
 """
 
+import math
+
 import torch
 from torch.amp import autocast
 
-from src.distill.numerics import (
-    MAX_GRAD_NORM,
-    assert_module_parameters_finite,
-    grads_are_finite,
-    is_finite,
-)
+from src.distill.numerics import is_finite, total_grad_norm
 
 
 def step(ctx, batch: dict) -> tuple[torch.Tensor, dict]:
@@ -69,9 +66,7 @@ def step(ctx, batch: dict) -> tuple[torch.Tensor, dict]:
 
         for chunk in batch["candidate_chunks"]:
             chunk_out = ctx.model_student(
-                input_ids=chunk["input_ids"].to(
-                    ctx.device_s, non_blocking=True
-                ),
+                input_ids=chunk["input_ids"].to(ctx.device_s, non_blocking=True),
                 attention_mask=chunk["attention_mask"].to(
                     ctx.device_s, non_blocking=True
                 ),
@@ -109,7 +104,13 @@ def step(ctx, batch: dict) -> tuple[torch.Tensor, dict]:
 
     ctx.scaler.scale(loss).backward()
     ctx.scaler.unscale_(ctx.optimizer)
-    if not grads_are_finite(ctx.optimizer):
+
+    # Reported, not enforced: the gradients reach the optimizer at their own
+    # magnitude. See src/distill/numerics.py for why the 1.0 ceiling was removed.
+    # This single read is also the finiteness check -- the norm is NaN/Inf exactly
+    # when some gradient is -- so it replaces a second full walk of the gradients.
+    metrics["grad_norm"] = float(total_grad_norm(ctx.optimizer))
+    if not math.isfinite(metrics["grad_norm"]):
         ctx.optimizer.zero_grad(set_to_none=True)
         ctx.scaler.update()
         # Advance the schedule even on a skipped update: it was built for
@@ -118,23 +119,8 @@ def step(ctx, batch: dict) -> tuple[torch.Tensor, dict]:
         ctx.scheduler.step()
         return loss, {**metrics, "skip": "grad_inf"}
 
-    # Every parameter the optimizer will move, not just the student's: a ceiling
-    # that skips a param group is not a ceiling.
-    clipped = [
-        p
-        for group in ctx.optimizer.param_groups
-        for p in group["params"]
-        if p.grad is not None
-    ]
-    grad_norm = torch.nn.utils.clip_grad_norm_(clipped, MAX_GRAD_NORM)
-    metrics["grad_norm"] = float(grad_norm)
     ctx.scaler.step(ctx.optimizer)
     ctx.scaler.update()
-    assert_module_parameters_finite(
-        ctx.model_student,
-        f"GGPKD student after optimizer step "
-        f"(epoch={ctx.current_epoch}, step={ctx.current_step})",
-    )
     ctx.scheduler.step()
 
     return loss, metrics

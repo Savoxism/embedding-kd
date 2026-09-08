@@ -65,7 +65,7 @@ def replay(
         for slot, anchor in enumerate(anchors):
             idx = int(anchor)
             rng = sampler._rng(idx, GGPKDCandidateSampler._STREAM_CANDIDATES)
-            _, positions = sampler._select_support_impl(idx, rng)
+            _, positions = sampler._select_support(idx, rng)
             row = mixture[idx]
             selected_mass = float(row[positions].sum()) if positions.size else 0.0
             epsilon[epoch, slot] = -np.log(np.clip(selected_mass, 1e-12, 1.0))

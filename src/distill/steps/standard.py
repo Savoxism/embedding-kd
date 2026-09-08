@@ -9,6 +9,7 @@ model_teacher, criterion, proj_s2t, task_head, tok_student, tok_teacher,
 optimizer, scaler, scheduler, current_epoch, current_step, current_stage.
 """
 
+import math
 from types import SimpleNamespace
 
 import torch
@@ -16,6 +17,7 @@ import torch.nn.functional as F
 from torch.amp import autocast
 
 from src.criterions.stella_distillation import stella_stage1_loss, stella_stage2_loss
+from src.distill.numerics import is_finite, total_grad_norm
 from src.loss import info_nce
 from src.pooling import last_token_pool
 
@@ -58,8 +60,7 @@ def step(ctx, batch: dict) -> tuple[torch.Tensor, dict]:
 
             if need_atts:
                 T_atts = tuple(
-                    att.to(ctx.device_s, non_blocking=True)
-                    for att in t_out1.attentions
+                    att.to(ctx.device_s, non_blocking=True) for att in t_out1.attentions
                 )
                 T_last2 = None
                 T_atts2 = None
@@ -127,9 +128,7 @@ def step(ctx, batch: dict) -> tuple[torch.Tensor, dict]:
             S_cls2 = s_out2["pooled"]
 
         if method == "emo":
-            loss_task, task_metrics = ctx._compute_task_loss(
-                S_cls1, S_cls2, batch_s
-            )
+            loss_task, task_metrics = ctx._compute_task_loss(S_cls1, S_cls2, batch_s)
         else:
             loss_task, _ = info_nce(S_cls1, S_cls2, temperature=cfg.temperature)
             task_metrics = {}
@@ -199,7 +198,6 @@ def step(ctx, batch: dict) -> tuple[torch.Tensor, dict]:
             )
 
         elif method == "emo":
-
             # EMO's criterion wants objects with `.last_hidden_state` and
             # `.attentions`; the encoder outputs cannot be reused directly because
             # the teacher's tensors have already been moved to the student device.
@@ -237,9 +235,7 @@ def step(ctx, batch: dict) -> tuple[torch.Tensor, dict]:
                     student_outputs=student_outputs2,
                     input_ids_tea=batch_t["input_ids2_tea"].to(ctx.device_s),
                     input_ids_stu=batch_s["input_ids2_stu"],
-                    attention_mask_tea=batch_t["attention_mask2_tea"].to(
-                        ctx.device_s
-                    ),
+                    attention_mask_tea=batch_t["attention_mask2_tea"].to(ctx.device_s),
                     attention_mask_stu=batch_s["attention_mask2_stu"],
                     tok_teacher=ctx.tok_teacher,
                     tok_student=ctx.tok_student,
@@ -294,7 +290,27 @@ def step(ctx, batch: dict) -> tuple[torch.Tensor, dict]:
 
         loss = loss.float()
 
+    if not is_finite(loss):
+        raise RuntimeError(
+            f"{method} loss NaN/Inf at epoch={ctx.current_epoch} "
+            f"step={ctx.current_step}"
+        )
+
     ctx.scaler.scale(loss).backward()
+    ctx.scaler.unscale_(ctx.optimizer)
+
+    # These four methods used to reach the optimizer with no finiteness guard and
+    # no gradient diagnostic at all, while ggpkd/rkd/talas had both -- so the
+    # method and its baselines were not being trained under the same contract.
+    # They now share one: measure the norm, never enforce a ceiling on it, skip
+    # the update if it is not finite.
+    metrics["grad_norm"] = float(total_grad_norm(ctx.optimizer))
+    if not math.isfinite(metrics["grad_norm"]):
+        ctx.optimizer.zero_grad(set_to_none=True)
+        ctx.scaler.update()
+        ctx.scheduler.step()
+        return loss, {**metrics, "skip": "grad_inf"}
+
     ctx.scaler.step(ctx.optimizer)
     ctx.scaler.update()
     ctx.scheduler.step()
