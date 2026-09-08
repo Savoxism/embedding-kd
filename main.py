@@ -89,7 +89,7 @@ def parse_args():
         help="Comma-separated diffusion scales, e.g. '1,2,4'; '1' drops multi-hop",
     )
     parser.add_argument("--diffusion_quota", type=int, default=None)
-    # Ablation switches (scripts/ablation/). Each defaults to the method's value,
+    # Ablation switches. Each defaults to the method's value,
     # so omitting all four reproduces the full model exactly.
     parser.add_argument(
         "--support_policy",

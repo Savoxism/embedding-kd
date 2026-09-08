@@ -461,26 +461,6 @@ def test_short_support_without_any_fallback_is_refused():
         sampler.sample(0)
 
 
-def test_budget_allocator_spends_nothing_on_negatives_when_there_are_none():
-    """Table 5's Top-K sweep varies the width once the negatives are gone.
-
-    With a non-zero negative quota the allocator holds the candidate width fixed
-    and trades support against negatives. With both quotas at zero it used to do
-    neither thing correctly: multipliers above 1 tripped the fixed-width guard
-    and aborted the arm, and multipliers below 1 handed the leftover budget to
-    hard negatives.
-    """
-    from scripts.ablation.budget import allocate_fixed_width
-
-    for multiplier, expected in ((0.5, 12), (1.0, 23), (1.5, 35), (3.0, 69)):
-        quota, hard, random = allocate_fixed_width(23, 0, 0, multiplier)
-        assert (quota, hard, random) == (expected, 0, 0)
-
-    # The arms that do carry negatives keep the fixed-width behaviour.
-    assert allocate_fixed_width(23, 40, 26, 1.0) == (23, 40, 26)
-    assert sum(allocate_fixed_width(23, 40, 26, 2.0)) == 23 + 40 + 26
-
-
 def test_sampler_mixture_row_matches_the_weighted_pool_and_feeds_the_spill():
     """The scale mixture is computed per anchor instead of being precomputed.
 

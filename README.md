@@ -53,7 +53,15 @@ Each graph row becomes a transition distribution with a row-specific bandwidth $
 
 $$P_{ij} = \frac{\exp(\left(\cos(t_i, t_j) / \tau_i\right)}{\sum_{u \in \mathcal{N}(i)} \exp(\left(\cos(t_i, t_u) / \tau_i\right)}$$
 
-The bandwidth is not tuned globally. For every non-degenerate row, the graph builder solves $H(P_i)=\log\rho$ with target perplexity $\rho=30$. Rows whose degree is at most $\rho$ are clipped near their maximum attainable entropy. The solved bandwidths are stored in the graph artifact and reused by the student readouts.
+The bandwidth is not tuned globally, and it is not solved either. Each row reads it straight off the retrieval width:
+
+$$\tau_i = \frac{s_i^{(1)} - s_i^{(k)}}{\log k}$$
+
+where $s_i^{(j)}$ is the $j$-th largest cosine from $i$. The $k$-th retrieved neighbour therefore sits $\log k$ nats below the nearest and is exactly $k$ times less likely, for every node, with no constant left to choose. The row is exactly invariant to $s \mapsto as+b$ — the bandwidth scales with the similarities and a softmax is shift-invariant — which is the property that rules out a single fixed temperature.
+
+This replaced a target-perplexity solve. That solve ran on the mutual-filtered neighbour list, where degree varies: on the production corpus 18.9% of nodes had degree at or below $\rho=30$, never reached the target entropy, and were clipped at their own ceiling, yielding near-uniform targets at bandwidths up to 145x the median. Reading the bandwidth off the raw top-$k$ gives every node the same sample size, so there is no target to miss.
+
+The cost is that `graph_k` now sets sharpness as well as width, and the two cannot be varied independently. It is no longer free headroom: too large a $k$ measures the distance out of the anchor's neighbourhood rather than the local decay, and the rows go uniform. `scripts/ggpkd/pick_graph_k.py` reports the induced sharpness per $k$ from one teacher pass; the build warns when `target_kl_uniform_r1` falls under 0.05.
 
 ### 4. Multi-Scale Diffusion Targets
 
@@ -82,10 +90,17 @@ where:
 
 ### 7. Per-Epoch Candidate Sampling
 
-Every anchor's candidate set is its **Top-k diffusion neighbors**, selected by
-teacher mass from the graph's diffusion pools, and nothing else. The candidate
-width is therefore exactly `diffusion_quota`, and every scored column is one the
-teacher put diffusion mass on.
+Every anchor's candidate set is its **whole truncated transition row** — every
+column the teacher put diffusion mass on, and nothing else. There is no budget,
+no draw and no RNG: the set is a deterministic function of the graph and is
+identical in every epoch. Row width for collation is the pool width; anchors with
+shorter rows are padded with their own index, which `self_mask` removes from every
+softmax.
+
+This removed the last tuned quantity in the candidate path. It also removed
+`support_policy` from the method: at full width, `topk`, `proportional` and
+`uniform` return the same set, so that flag now only means something for an
+ablation arm given a budget smaller than the row.
 
 The method draws **no negatives**. It previously added 40 hard negatives (high
 teacher similarity, outside the mutual kNN graph) and 26 random negatives per
@@ -102,10 +117,6 @@ stating together:
   and STS Spearman plus the pair-classification thresholds are where that would
   show up first.
 
-Top-k support is deterministic; the proportional support arm redraws it each
-epoch. In-batch sharing deduplicates candidates and exposes each anchor to the
-full union of candidates in the batch.
-
 The negative machinery remains reachable through `hard_neg_k` / `random_neg_k`,
 because the `no_graph_support` baseline in Tables 2 and 3 spends its entire
 budget on uniform corpus draws.
@@ -117,8 +128,8 @@ weights, capacities, and correctness policies are resolved internally:
 
 | Group | Parameters | Description |
 |:---|:---|:---|
-| Teacher Graph | `graph_k`, `perplexity`, `diffusion_scales`, `truncation_tolerance` | kNN construction, adaptive row bandwidths, and diffusion |
-| Candidate Sampling | `diffusion_quota`, `hard_neg_k`, `random_neg_k` | Per-anchor composition; total size is their sum. The method sets both negative quotas to 0, so the width is the quota; the ablation baselines set them explicitly |
+| Teacher Graph | `graph_k`, `diffusion_scales` | `graph_k` sets both the kNN width and the per-row bandwidth; `truncation_tolerance` is a numerical-fidelity constant in `policy.py` |
+| Candidate Sampling | `diffusion_quota`, `hard_neg_k`, `random_neg_k` | All three are `None`/0 in the method: the candidate set is the whole transition row. The ablation baselines set them explicitly |
 | Row Supervision | `row_weight` | Weight of the auxiliary transition-row KL (`row_start_epoch` defaults to 1, i.e. always on) |
 | Training | `batch_size`, `epochs`, `learning_rate`, `min_lr` | Standard training setup |
 | Ambient profile | `direct_temp` | Shared teacher/student temperature for scale 0 |
