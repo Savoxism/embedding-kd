@@ -34,12 +34,3 @@ class RKDConfig(BaseConfig):
 
     save_dir = "checkpoints/rkd/qwen3_0_6b_to_minilmv2_h384"
     final_weights_only = False
-
-    def __init__(self, **kwargs):
-        unknown = sorted(key for key in kwargs if not hasattr(self, key))
-        if unknown:
-            raise AttributeError(
-                f"RKDConfig got unknown option(s): {', '.join(unknown)}"
-            )
-        for key, value in kwargs.items():
-            setattr(self, key, value)

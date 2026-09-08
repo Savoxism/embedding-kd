@@ -1,17 +1,18 @@
 """The talas training step.
 
-Reads from the distiller context: config, device_s, device_t, model_student, criterion, optimizer, scaler, scheduler, train_loader, current_epoch, current_step
+The criterion, the SAM optimizer and the schedule are built before training
+starts (see ``src/methods/talas.py``); this used to create all three here, on
+the first batch, because it read the student's layer count off that batch.
+
+Reads from the distiller context: config, device_s, model_student, criterion,
+optimizer, scaler, scheduler, current_epoch, current_step
 """
 
 import math
 
 import torch
-from pytorch_optimizer import SAM
-from torch import optim
 from torch.amp import autocast
-from transformers import get_scheduler
 
-from src.criterions.teacher_anchor_kd import TeacherAnchorKD
 from src.distill.numerics import is_finite, total_grad_norm
 from src.loss import info_nce
 
@@ -73,66 +74,6 @@ def step(ctx, batch: dict) -> tuple[torch.Tensor, dict]:
 
         loss_task, _ = info_nce(S_cls1, S_cls2, temperature=cfg.temperature)
 
-        # Initialize TALAS criterion if needed
-        if ctx.criterion is None:
-            d_s = ctx.model_student.config.hidden_size
-            d_t = teacher_cls.shape[-1]
-
-            # BERT-base has 13 layers: embedding + 12 transformer layers
-            num_layers = len(s_out1.hidden_states)
-
-            ctx.criterion = TeacherAnchorKD(
-                student_dim=d_s,
-                teacher_dim=d_t,
-                num_layers=num_layers,
-                last_layer_idx=cfg.last_layer_idx,
-                start_rkd=cfg.start_rkd,
-                w_task=cfg.w_task,
-                w_kd=cfg.w_kd,
-                w_struct=cfg.w_struct,
-                eps_norm=cfg.eps_norm,
-            ).to(ctx.device_s)
-
-            base_optimizer = optim.AdamW
-            ctx.optimizer = SAM(
-                [
-                    {
-                        "params": ctx.model_student.parameters(),
-                        "lr": cfg.learning_rate,
-                        "weight_decay": 0.01,
-                    },
-                    {
-                        "params": ctx.criterion.parameters(),
-                        "lr": cfg.learning_rate,
-                        "weight_decay": 0.01,
-                    },
-                ],
-                base_optimizer,
-                rho=getattr(cfg, "rho", 0.05),
-                adaptive=True,
-            )
-
-            # Initialize scheduler
-            num_steps = len(ctx.train_loader)
-            total_steps = num_steps * cfg.epochs
-            min_lr_rate = cfg.min_lr / cfg.learning_rate
-            ctx.scheduler = get_scheduler(
-                name="cosine_with_min_lr",
-                optimizer=ctx.optimizer,
-                num_warmup_steps=int(total_steps * cfg.warmup_ratio),
-                num_training_steps=total_steps,
-                scheduler_specific_kwargs={"min_lr_rate": min_lr_rate},
-            )
-
-            print(
-                f"Initialized TeacherAnchorKD: {d_s} -> {d_t}, num_layers={num_layers}, last_layer_idx={cfg.last_layer_idx}, start_rkd={cfg.start_rkd}"
-            )
-            print(f"Initialized SAM optimizer with rho={getattr(cfg, 'rho', 0.05)}")
-            print(
-                f"Initialized scheduler: {total_steps} steps, warmup={int(total_steps * cfg.warmup_ratio)}"
-            )
-
-        # Now safe to call criterion with initialized projection heads
         student_outputs = {
             "hidden_states": s_out1.hidden_states,
             "last_hidden_state": S_last1,

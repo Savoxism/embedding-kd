@@ -1,30 +1,60 @@
-"""The shared training step for cdm, dskd, emo and stella.
+"""The shared training step for methods that run the teacher inside the step.
 
-Unlike ggpkd/rkd/talas -- which use a cached teacher -- these four run the
-teacher model inside the step, so they share a prologue (teacher forward, student
-forward, pooling, task loss) and differ only in the KD term.
+Unlike ggpkd/rkd/talas -- which read a cached teacher -- these methods encode
+with both models every step, so they share a prologue (teacher forward, student
+forward, pooling, task loss) and an epilogue (backward, gradient norm, step),
+and differ only in the KD term. That term used to be a four-way `if` on the
+method name in the middle of this file; it is now `spec.kd_loss`, and each
+method's version lives in its own module under `src/methods/`.
 
-Reads from the distiller context: config, device_s, device_t, model_student,
-model_teacher, criterion, proj_s2t, task_head, tok_student, tok_teacher,
-optimizer, scaler, scheduler, current_epoch, current_step, current_stage.
+Reads from the distiller context: method, config, device_s, device_t,
+model_student, model_teacher, criterion, proj_s2t, task_head, tok_student,
+tok_teacher, optimizer, scaler, scheduler, current_epoch, current_step, and
+whatever the method's own `kd_loss` reads.
 """
 
 import math
-from types import SimpleNamespace
+from dataclasses import dataclass
+from typing import Any
 
 import torch
-import torch.nn.functional as F
 from torch.amp import autocast
 
-from src.criterions.stella_distillation import stella_stage1_loss, stella_stage2_loss
 from src.distill.numerics import is_finite, total_grad_norm
 from src.loss import info_nce
 from src.pooling import last_token_pool
 
 
+@dataclass
+class StepTensors:
+    """Everything the prologue computed, handed to the method's KD term.
+
+    A dataclass rather than the enclosing function's locals: the KD terms read
+    an overlapping but not identical subset of these, and passing them
+    explicitly is what let the four branches move out of this file.
+    """
+
+    batch: dict
+    batch_s: dict
+    batch_t: dict
+    s_out1: Any
+    s_out2: Any
+    S_last1: Any
+    S_last2: Any
+    S_cls1: torch.Tensor
+    S_cls2: Any
+    T_last1: torch.Tensor
+    T_last2: Any
+    T_cls1: torch.Tensor
+    T_atts: Any
+    T_atts2: Any
+    loss_task: torch.Tensor
+    task_metrics: dict
+
+
 def step(ctx, batch: dict) -> tuple[torch.Tensor, dict]:
     cfg = ctx.config
-    method = cfg.distill_method
+    spec = ctx.method
     batch_s, batch_t = {}, {}
     for k, v in batch.items():
         if not torch.is_tensor(v):
@@ -37,7 +67,10 @@ def step(ctx, batch: dict) -> tuple[torch.Tensor, dict]:
     ctx.optimizer.zero_grad(set_to_none=True)
 
     with autocast("cuda", enabled=torch.cuda.is_available()):
-        need_atts = method == "emo"
+        need_atts = spec.needs_attentions
+        # Defined on every path: the KD terms take one bundle, and a method that
+        # does not read attentions still has to be handed something.
+        T_atts = T_atts2 = T_last2 = None
         # `no_grad`, not `inference_mode`: DSKD and EMO feed these teacher
         # tensors through trainable projections, and an inference tensor cannot
         # be saved for backward. It only worked because `.to(device_s)` copies
@@ -62,8 +95,6 @@ def step(ctx, batch: dict) -> tuple[torch.Tensor, dict]:
                 T_atts = tuple(
                     att.to(ctx.device_s, non_blocking=True) for att in t_out1.attentions
                 )
-                T_last2 = None
-                T_atts2 = None
                 if "input_ids2_tea" in batch_t:
                     t_out2 = ctx.model_teacher(
                         input_ids=batch_t["input_ids2_tea"],
@@ -79,9 +110,9 @@ def step(ctx, batch: dict) -> tuple[torch.Tensor, dict]:
                         for attention in t_out2.attentions
                     )
 
-        # Different models have different forward signatures
-        if method == "stella":
-            # StellaModel doesn't accept output_attentions or return_dict
+        # Student forward. The signature differs by what the method needs back.
+        if spec.student_returns_pooled:
+            # Such a student does not accept output_attentions or return_dict.
             s_out1 = ctx.model_student(
                 input_ids=batch_s["input_ids1_stu"],
                 attention_mask=batch_s["attention_mask1_stu"],
@@ -90,8 +121,7 @@ def step(ctx, batch: dict) -> tuple[torch.Tensor, dict]:
                 input_ids=batch_s["input_ids2_stu"],
                 attention_mask=batch_s["attention_mask2_stu"],
             )
-        elif method == "emo":
-            # EMO needs attentions
+        elif need_atts:
             s_out1 = ctx.model_student(
                 input_ids=batch_s["input_ids1_stu"],
                 attention_mask=batch_s["attention_mask1_stu"],
@@ -107,7 +137,7 @@ def step(ctx, batch: dict) -> tuple[torch.Tensor, dict]:
                     return_dict=True,
                 )
         else:
-            # CDM, DSKD - standard transformers models
+            # A plain encoder: one hidden-state stream per view.
             s_out1 = ctx.model_student(
                 input_ids=batch_s["input_ids1_stu"],
                 attention_mask=batch_s["attention_mask1_stu"],
@@ -118,7 +148,8 @@ def step(ctx, batch: dict) -> tuple[torch.Tensor, dict]:
                 attention_mask=batch_s["attention_mask2_stu"],
                 return_dict=True,
             )
-        if method != "stella":
+        S_last1 = S_last2 = None
+        if not spec.student_returns_pooled:
             S_last1 = s_out1.last_hidden_state
             S_last2 = None if s_out2 is None else s_out2.last_hidden_state
             S_cls1 = S_last1[:, 0, :]
@@ -127,172 +158,40 @@ def step(ctx, batch: dict) -> tuple[torch.Tensor, dict]:
             S_cls1 = s_out1["pooled"]
             S_cls2 = s_out2["pooled"]
 
-        if method == "emo":
-            loss_task, task_metrics = ctx._compute_task_loss(S_cls1, S_cls2, batch_s)
+        if spec.supervised_task_loss:
+            loss_task, task_metrics = ctx.compute_task_loss(S_cls1, S_cls2, batch_s)
         else:
             loss_task, _ = info_nce(S_cls1, S_cls2, temperature=cfg.temperature)
             task_metrics = {}
 
-        # ========== Method-specific KD loss ==========
-        if method == "cdm":
-            keep_s1 = batch_s["attention_mask1_stu"].bool() & (
-                ~batch_s["special_tokens_mask1_stu"].bool()
-            )
-            keep_t1 = batch_t["attention_mask1_tea"].to(ctx.device_s).bool() & (
-                ~batch_t["special_tokens_mask1_tea"].to(ctx.device_s).bool()
-            )
-
-            kd_dtw = ctx.criterion.compute_cdm_loss(
-                S_last=S_last1,
-                T_last=T_last1,
-                batch_input_ids_stu=batch["input_ids1_stu"],
-                batch_input_ids_tea=batch["input_ids1_tea"],
-                keep_mask_stu=keep_s1,
-                keep_mask_tea=keep_t1,
-                proj_s2t=ctx.proj_s2t,
-                device_s=ctx.device_s,
-                epoch=ctx.current_epoch,
-                step=ctx.current_step,
-            )
-
-            S_proj_cls1 = ctx.proj_s2t(S_cls1)
-            S_proj_cls1_norm = F.normalize(S_proj_cls1, p=2, dim=-1)
-            T_cls1_norm = F.normalize(T_cls1, p=2, dim=-1)
-            kd_cls = F.mse_loss(S_proj_cls1_norm, T_cls1_norm)
-
-            loss = (
-                cfg.w_task * loss_task
-                + cfg.alpha_dtw * kd_dtw * 100
-                + cfg.w_cls * kd_cls
-            )
-
-            metrics = {
-                "loss_total": loss.item(),
-                "loss_task": loss_task.item(),
-                "loss_kd_dtw": kd_dtw.item()
-                if isinstance(kd_dtw, torch.Tensor)
-                else kd_dtw,
-                "loss_kd_cls": kd_cls.item(),
-            }
-
-        elif method == "dskd":
-            mask_s1 = batch_s["attention_mask1_stu"]
-            mask_t1 = batch_t["attention_mask1_tea"].to(ctx.device_s)
-
-            spec_s1 = batch_s.get("special_tokens_mask1_stu", None)
-            spec_t1 = batch_t.get("special_tokens_mask1_tea", None)
-            if spec_t1 is not None:
-                spec_t1 = spec_t1.to(ctx.device_s)
-
-            loss, metrics = ctx.criterion.compute_dskd_loss(
-                S_last=S_last1,
-                T_last=T_last1,
-                S_cls=S_cls1,
-                T_cls=T_cls1,
-                mask_student=mask_s1,
-                mask_teacher=mask_t1,
-                task_loss=loss_task,
-                special_tokens_mask_student=spec_s1,
-                special_tokens_mask_teacher=spec_t1,
-                device=ctx.device_s,
-            )
-
-        elif method == "emo":
-            # EMO's criterion wants objects with `.last_hidden_state` and
-            # `.attentions`; the encoder outputs cannot be reused directly because
-            # the teacher's tensors have already been moved to the student device.
-            teacher_outputs = SimpleNamespace(
-                last_hidden_state=T_last1, attentions=T_atts
-            )
-            student_outputs = SimpleNamespace(
-                last_hidden_state=S_last1, attentions=s_out1.attentions
-            )
-
-            att_loss_weight = getattr(cfg, "att_loss_weight", 0.1)
-            ot_loss_weight = getattr(cfg, "ot_loss_weight", 1.0)
-
-            kd_loss, kd_metrics = ctx.criterion.compute_emo_loss(
-                teacher_outputs=teacher_outputs,
-                student_outputs=student_outputs,
-                input_ids_tea=batch_t["input_ids1_tea"].to(ctx.device_s),
-                input_ids_stu=batch_s["input_ids1_stu"],
-                attention_mask_tea=batch_t["attention_mask1_tea"].to(ctx.device_s),
-                attention_mask_stu=batch_s["attention_mask1_stu"],
-                tok_teacher=ctx.tok_teacher,
-                tok_student=ctx.tok_student,
-                att_loss_weight=att_loss_weight,
-                ot_loss_weight=ot_loss_weight,
-            )
-            if S_last2 is not None and T_last2 is not None:
-                teacher_outputs2 = SimpleNamespace(
-                    last_hidden_state=T_last2, attentions=T_atts2
-                )
-                student_outputs2 = SimpleNamespace(
-                    last_hidden_state=S_last2, attentions=s_out2.attentions
-                )
-                kd_loss2, kd_metrics2 = ctx.criterion.compute_emo_loss(
-                    teacher_outputs=teacher_outputs2,
-                    student_outputs=student_outputs2,
-                    input_ids_tea=batch_t["input_ids2_tea"].to(ctx.device_s),
-                    input_ids_stu=batch_s["input_ids2_stu"],
-                    attention_mask_tea=batch_t["attention_mask2_tea"].to(ctx.device_s),
-                    attention_mask_stu=batch_s["attention_mask2_stu"],
-                    tok_teacher=ctx.tok_teacher,
-                    tok_student=ctx.tok_student,
-                    att_loss_weight=att_loss_weight,
-                    ot_loss_weight=ot_loss_weight,
-                )
-                kd_loss = 0.5 * (kd_loss + kd_loss2)
-                kd_metrics = {
-                    key: 0.5 * (kd_metrics[key] + kd_metrics2[key])
-                    for key in kd_metrics
-                }
-
-            w_task = getattr(cfg, "w_task", 0.5)
-            alpha_kd = getattr(cfg, "alpha_kd", 0.5)
-            loss = w_task * loss_task + alpha_kd * kd_loss
-
-            metrics = {
-                "loss_total": loss.item(),
-                "loss_task": loss_task.item(),
-                **task_metrics,
-                **kd_metrics,
-            }
-
-        elif method == "stella":
-            if ctx.current_stage == 1:
-                S_emb = s_out1["fc1"]
-                loss, metrics = stella_stage1_loss(
-                    S_emb,
-                    T_cls1,
-                    w_cos=getattr(cfg, "w_cos_stage1", 10.0),
-                    w_sim=getattr(cfg, "w_sim_stage1", 200.0),
-                    w_tri=getattr(cfg, "w_tri_stage1", 20.0),
-                )
-            else:
-                loss, metrics = stella_stage2_loss(
-                    S_cls1,
-                    S_cls2,
-                    s_out1["fc1"],
-                    s_out1["fc2"],
-                    s_out1["fc3"],
-                    s_out1["fc4"],
-                    T_cls1,
-                    temperature=cfg.temperature,
-                    w_task=cfg.w_task,
-                    w_cos=getattr(cfg, "w_cos_stage2", 10.0),
-                    w_sim=getattr(cfg, "w_sim_stage2", 200.0),
-                    w_tri=getattr(cfg, "w_tri_stage2", 20.0),
-                )
-
-        else:
-            raise ValueError(f"Unknown distillation method: {method}")
+        # The only part that differs between these methods.
+        loss, metrics = spec.kd_loss(
+            ctx,
+            StepTensors(
+                batch=batch,
+                batch_s=batch_s,
+                batch_t=batch_t,
+                s_out1=s_out1,
+                s_out2=s_out2,
+                S_last1=S_last1,
+                S_last2=S_last2,
+                S_cls1=S_cls1,
+                S_cls2=S_cls2,
+                T_last1=T_last1,
+                T_last2=T_last2,
+                T_cls1=T_cls1,
+                T_atts=T_atts,
+                T_atts2=T_atts2,
+                loss_task=loss_task,
+                task_metrics=task_metrics,
+            ),
+        )
 
         loss = loss.float()
 
     if not is_finite(loss):
         raise RuntimeError(
-            f"{method} loss NaN/Inf at epoch={ctx.current_epoch} "
+            f"{spec.name} loss NaN/Inf at epoch={ctx.current_epoch} "
             f"step={ctx.current_step}"
         )
 

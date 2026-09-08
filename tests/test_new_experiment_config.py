@@ -11,6 +11,7 @@ from distiller import KnowledgeDistiller, add_domain_averages
 from src.criterions.ggpkd_distillation import GGPKDDistillation
 from src.distill.checkpointing import save_student_weights
 from src.ggpkd.candidate_sampler import GGPKDCandidateSampler
+from src.methods import get_method
 from src.ggpkd.graph_builder import _knn_bandwidths, _mass_prefix
 from src.ggpkd.policy import (
     FIXED_BANDWIDTH_TEMP,
@@ -838,6 +839,7 @@ def test_ggpkd_train_step_updates_the_student(monkeypatch):
 
     distiller = KnowledgeDistiller.__new__(KnowledgeDistiller)
     distiller.config = SimpleNamespace(distill_method="ggpkd", w_task=0.0)
+    distiller.method = get_method("ggpkd")
     distiller.device_s = torch.device("cpu")
     distiller.model_student = _TinyGGPKDStudent(vocab=corpus, dim=dim)
     distiller.criterion = GGPKDDistillation(

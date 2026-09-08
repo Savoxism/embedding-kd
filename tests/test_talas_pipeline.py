@@ -17,6 +17,7 @@ from config.talas_config import (
     get_talas_paper_pair,
 )
 from distiller import KnowledgeDistiller
+from src.methods import get_method
 from scripts.talas.summarize import SEEDS, TASKS, aggregate_run
 from src.cache_teacher import validate_cached_embeddings
 
@@ -138,7 +139,9 @@ class _TinyStudent(nn.Module):
                 for _ in range(layers)
             ]
         )
-        self.config = SimpleNamespace(hidden_size=dim)
+        # `num_hidden_layers + 1` is how many tensors `output_hidden_states`
+        # returns: the embedding output plus one per block.
+        self.config = SimpleNamespace(hidden_size=dim, num_hidden_layers=layers)
 
     def forward(
         self,
@@ -158,8 +161,15 @@ class _TinyStudent(nn.Module):
         )
 
 
-def test_talas_smoke_step_updates_student_with_equal_projection_lr():
+def test_talas_criterion_optimizer_and_schedule_are_built_before_the_first_step():
+    """TALAS builds its criterion, SAM optimizer and schedule up front.
+
+    All three used to be created inside `train_step` on the first batch, because
+    the layer count was read from that batch's `hidden_states`. It comes from the
+    student config now, so the step only trains.
+    """
     distiller = KnowledgeDistiller.__new__(KnowledgeDistiller)
+    distiller.method = get_method("talas")
     distiller.config = SimpleNamespace(
         distill_method="talas",
         temperature=0.1,
@@ -177,13 +187,20 @@ def test_talas_smoke_step_updates_student_with_equal_projection_lr():
     )
     distiller.device_s = torch.device("cpu")
     distiller.model_student = _TinyStudent()
-    distiller.criterion = None
-    distiller.optimizer = None
-    distiller.scheduler = None
+    distiller.teacher_cls_all = torch.randn(4, 12)
     distiller.scaler = GradScaler("cuda", enabled=False)
     distiller.train_loader = [None]
     distiller.current_epoch = 0
     distiller.current_step = 0
+
+    distiller.criterion = distiller.method.build_criterion(
+        distiller, distiller.config
+    )
+
+    # The step no longer has a lazy branch to fall into: all three exist already.
+    assert distiller.criterion is not None
+    assert distiller.optimizer is not None
+    assert distiller.scheduler is not None
 
     ids = torch.tensor([[1, 2, 3], [4, 5, 6], [7, 8, 9], [10, 11, 12]])
     batch = {
@@ -200,6 +217,17 @@ def test_talas_smoke_step_updates_student_with_equal_projection_lr():
     assert not torch.equal(before, distiller.model_student.emb.weight.detach())
     assert {group["lr"] for group in distiller.optimizer.param_groups} == {2e-6}
     assert {group["initial_lr"] for group in distiller.optimizer.param_groups} == {2e-5}
+
+
+def test_talas_layer_count_comes_from_the_student_config():
+    """A student whose config omits `num_hidden_layers` fails loudly, not later."""
+    from src.methods.talas import _student_hidden_state_count
+
+    assert _student_hidden_state_count(_TinyStudent(layers=3)) == 4
+
+    headless = SimpleNamespace(config=SimpleNamespace(hidden_size=8))
+    with pytest.raises(ValueError, match="num_hidden_layers"):
+        _student_hidden_state_count(headless)
 
 
 def _write_synthetic_run(run_root: Path, pair: str, seed: int) -> None:

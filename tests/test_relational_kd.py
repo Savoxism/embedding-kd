@@ -6,6 +6,7 @@ from torch import nn
 from torch.amp import GradScaler
 
 from distiller import KnowledgeDistiller
+from src.methods import get_method
 from src.criterions.relational_kd import (
     RKDAngleLoss,
     RKDDistanceLoss,
@@ -126,6 +127,7 @@ class _TinyStudent(nn.Module):
 def test_rkd_train_step_updates_the_student(monkeypatch):
     monkeypatch.setattr(torch.cuda, "is_available", lambda: False)
     distiller = KnowledgeDistiller.__new__(KnowledgeDistiller)
+    distiller.method = get_method("rkd")
     distiller.config = SimpleNamespace(
         distill_method="rkd",
         w_task=0.0,

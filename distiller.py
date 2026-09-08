@@ -11,7 +11,7 @@ import numpy as np
 import pandas as pd
 import torch
 import torch.nn.functional as F
-from torch import nn, optim
+from torch import optim
 from torch.amp import GradScaler
 from torch.utils.data import DataLoader
 from tqdm import tqdm
@@ -24,28 +24,17 @@ from src.cache_teacher import (
     load_cached_embeddings,
     validate_cached_embeddings,
 )
-from src.criterions.stella_distillation import (
-    StellaModel,
-)
 from src.data_utils import DualTokenizerCollate, TextPairRaw
 from src.data_utils.dataset_cache import (
     DualTokenizerCollateWithTeacher,
-    GGPKDCollate,
     TextPairWithTeacher,
-    TextPairWithTeacherAndGGPKD,
 )
 from src.distill.benchmarks import add_domain_averages, print_evaluation_table
 from src.distill.checkpointing import save_checkpoint, save_student_weights
-from src.distill.criterion_factory import build_criterion
-from src.distill.geometry import build_probe_index, build_probe_set, probe_geometry
+from src.distill.geometry import build_probe_set, probe_geometry
 from src.distill.numerics import (
     assert_module_parameters_finite,
 )
-from src.distill.stella_trainer import train as stella_train
-from src.distill.steps.ggpkd import step as ggpkd_step
-from src.distill.steps.rkd import step as rkd_step
-from src.distill.steps.standard import step as standard_step
-from src.distill.steps.talas import step as talas_step
 from src.distill.telemetry import append_epoch_record, new_run_id, write_run_manifest
 from src.evaluation.evaluation_automodel import (
     eval_classification_task,
@@ -58,13 +47,16 @@ from src.evaluation.evaluation_automodel import (
     test_pair_tasks,
     test_sts_tasks,
 )
-from src.ggpkd import GGPKDCandidateSampler, build_or_load_ggpkd_artifact
 from src.loss import info_nce
+from src.methods import get_method
 
 
 class KnowledgeDistiller:
     def __init__(self, config):
         self.config = config
+        # Everything method-specific is reached through this: the flags the
+        # shared pipeline reads, and the hooks that replace a piece of it.
+        self.method = get_method(config.distill_method)
         self.global_step = 0
         self.current_epoch = 0
         self.current_step = 0
@@ -92,7 +84,11 @@ class KnowledgeDistiller:
         self.proj_s2t = None
         self.setup_training()
 
-        self.criterion = build_criterion(self)
+        self.criterion = (
+            None
+            if self.method.build_criterion is None
+            else self.method.build_criterion(self, config)
+        )
 
         # Metrics tracking
         self.step_times = []
@@ -130,10 +126,8 @@ class KnowledgeDistiller:
 
         print("Loading tokenizers...")
         tokenizer_kwargs = {"use_fast": True}
-        cached_teacher_methods = {"talas", "ggpkd", "rkd"}
         self._teacher_cache_ready = (
-            cfg.distill_method in cached_teacher_methods
-            and Path(cfg.cache_path).is_file()
+            self.method.uses_teacher_cache and Path(cfg.cache_path).is_file()
         )
         self.tok_student = AutoTokenizer.from_pretrained(
             cfg.student_model_name,
@@ -151,17 +145,8 @@ class KnowledgeDistiller:
                 trust_remote_code=True,
                 **tokenizer_kwargs,
             )
-        if cfg.distill_method == "stella":
-            print(f"Loading Stella student model: {cfg.student_model_name}")
-            self.model_student = StellaModel(
-                cfg.student_model_name,
-                output_dim1=getattr(cfg, "output_dim1", 1024),
-                pooling=getattr(cfg, "pooling", "cls"),
-                output_dim2=getattr(cfg, "output_dim2", 512),
-                output_dim3=getattr(cfg, "output_dim3", 256),
-                output_dim4=getattr(cfg, "output_dim4", 128),
-            )
-            self.current_stage = 1
+        if self.method.build_student is not None:
+            self.model_student = self.method.build_student(self)
         else:
             print(f"Loading student model: {cfg.student_model_name}")
             student_kwargs = {}
@@ -185,6 +170,12 @@ class KnowledgeDistiller:
                     transformers_major = 4
                 dtype_argument = "dtype" if transformers_major >= 5 else "torch_dtype"
                 student_kwargs[dtype_argument] = student_dtypes[student_dtype_name]
+            if self.method.needs_attentions:
+                # The student's attention maps are read too, not just the
+                # teacher's. Only the teacher was pinned to eager before, so a
+                # student on a fused kernel returned an empty attention tuple and
+                # the criterion indexed off the end of it.
+                student_kwargs["attn_implementation"] = "eager"
             self.model_student = AutoModel.from_pretrained(
                 cfg.student_model_name,
                 **student_kwargs,
@@ -200,11 +191,11 @@ class KnowledgeDistiller:
             elif cfg.teacher_dtype == "float16":
                 teacher_kwargs["torch_dtype"] = torch.float16
 
-            # EMO method needs attentions, force eager attention implementation
-            if cfg.distill_method == "emo":
+            if self.method.needs_attentions:
+                # The fused attention kernels return no attention maps.
                 teacher_kwargs["attn_implementation"] = "eager"
                 print(
-                    "Using eager attention implementation for EMO "
+                    f"Using eager attention for {self.method.name} "
                     "(required for output_attentions)"
                 )
 
@@ -227,79 +218,6 @@ class KnowledgeDistiller:
 
         print("Models loaded successfully!")
         print("Done setup_models")
-
-    def _resolve_ggpkd_anchor_column(self, df: pd.DataFrame) -> str:
-        cfg = self.config
-        column = cfg.ggpkd_anchor_column
-        if column is not None:
-            if column not in df.columns:
-                raise ValueError(
-                    f"ggpkd_anchor_column={column!r} is not a column of "
-                    f"{cfg.train_data_path} (have {list(df.columns)})"
-                )
-            return column
-
-        if cfg.task_type == "single_cls":
-            column = "text"
-        elif cfg.task_type == "pair_cls":
-            column = "premise"
-        else:
-            column = "sentence1"
-        if column not in df.columns:
-            raise ValueError(
-                f"GGPKD needs column {column!r} for task_type={cfg.task_type!r}"
-            )
-
-        # The teacher graph is built over this column only. If a genuine second view
-        # exists it is dropped, and doing that silently would leave the graph
-        # describing a different object than the loss thinks it does.
-        partner = {"pair_cls": "hypothesis", "pair_reg": "sentence2"}.get(cfg.task_type)
-        if partner in df.columns and not df[column].equals(df[partner]):
-            print(
-                f"WARNING: GGPKD uses only {column!r}; {partner!r} differs from it "
-                f"and is not distilled. Set ggpkd_anchor_column explicitly if that "
-                f"is not what you want."
-            )
-        return column
-
-    def _prepare_ggpkd_frame(
-        self, df: pd.DataFrame, anchor_column: str
-    ) -> tuple[pd.DataFrame, np.ndarray]:
-        """Drop exact duplicate anchors and report the surviving row positions.
-
-        Two identical texts have cos(s_i, s_j) = 1 for every parameter setting, so
-        their logit sits at the ceiling with no gradient while still consuming
-        teacher mass and a candidate slot.
-        """
-        keep_positions = np.arange(len(df), dtype=np.int64)
-        texts = df[anchor_column].astype(str)
-        duplicated = texts.duplicated(keep="first").to_numpy()
-        if not duplicated.any():
-            print(f"GGPKD corpus: {len(df)} rows, no duplicate anchors")
-            return df.reset_index(drop=True), keep_positions
-
-        keep_positions = np.flatnonzero(~duplicated).astype(np.int64)
-        deduped = df.iloc[keep_positions].reset_index(drop=True)
-        print(
-            f"GGPKD corpus dedup on {anchor_column!r}: "
-            f"{len(df)} -> {len(deduped)} rows ({int(duplicated.sum())} exact duplicates removed)"
-        )
-        return deduped, keep_positions
-
-    def _ggpkd_source_ids(self, df: pd.DataFrame) -> np.ndarray:
-        column = self.config.ggpkd_source_column
-        if column not in df.columns:
-            print(
-                f"GGPKD: no {column!r} column, hard negatives will not be "
-                f"restricted to the same source corpus"
-            )
-            return np.zeros(len(df), dtype=np.int64)
-        codes = pd.factorize(df[column].astype(str))[0].astype(np.int64)
-        counts = pd.Series(codes).value_counts().to_dict()
-        print(
-            f"GGPKD sources: {len(counts)} distinct, sizes={sorted(counts.values(), reverse=True)}"
-        )
-        return codes
 
     def setup_data(self):
         cfg = self.config
@@ -327,26 +245,19 @@ class KnowledgeDistiller:
         if probe_column is not None:
             self.probe_texts = build_probe_set(df, probe_column, size=2048, seed=0)
 
-        self.ggpkd_anchor_column = None
-        if cfg.distill_method == "ggpkd":
-            self.ggpkd_anchor_column = self._resolve_ggpkd_anchor_column(df)
-            df, keep_positions = self._prepare_ggpkd_frame(df, self.ggpkd_anchor_column)
-            self.ggpkd_keep_positions = keep_positions
+        # A method may drop rows (GGPKD deduplicates its anchors). The surviving
+        # positions are kept because a teacher cache written before the drop
+        # still lines up with the original frame and can be sliced instead of
+        # recomputed.
+        self.keep_positions = None
+        if self.method.prepare_frame is not None:
+            df, self.keep_positions = self.method.prepare_frame(self, df)
 
         self.task_head = None
-        if cfg.distill_method == "emo":
-            hidden_size = self.model_student.config.hidden_size
-            if cfg.task_type == "single_cls" and "label" in df.columns:
-                num_labels = int(df["label"].nunique())
-                self.task_head = nn.Linear(hidden_size, num_labels).to(self.device_s)
-            elif cfg.task_type == "pair_cls" and "label" in df.columns:
-                num_labels = int(df["label"].nunique())
-                self.task_head = nn.Linear(hidden_size * 4, num_labels).to(
-                    self.device_s
-                )
+        if self.method.build_task_head is not None:
+            self.task_head = self.method.build_task_head(self, df)
 
-        # TALAS, GGPKD and RKD use cached teacher embeddings.
-        if cfg.distill_method in ("talas", "ggpkd", "rkd"):
+        if self.method.uses_teacher_cache:
             cache_path = Path(cfg.cache_path)
 
             # Check if cache exists
@@ -401,16 +312,15 @@ class KnowledgeDistiller:
 
             # A stale cache computed before dedup still lines up row-for-row with the
             # original frame, so slice it instead of forcing a teacher re-run.
-            keep_positions = getattr(self, "ggpkd_keep_positions", None)
+            keep_positions = self.keep_positions
             if (
-                cfg.distill_method == "ggpkd"
-                and keep_positions is not None
+                keep_positions is not None
                 and len(teacher_cls_list) > len(df)
                 and len(keep_positions) == len(df)
                 and int(keep_positions.max(initial=-1)) < len(teacher_cls_list)
             ):
                 print(
-                    f"Slicing pre-dedup teacher cache: {len(teacher_cls_list)} -> {len(df)} rows"
+                    f"Slicing pre-drop teacher cache: {len(teacher_cls_list)} -> {len(df)} rows"
                 )
                 teacher_cls_list = teacher_cls_list[
                     torch.from_numpy(keep_positions).long()
@@ -435,19 +345,6 @@ class KnowledgeDistiller:
 
             self.teacher_cls_all = teacher_cls_list
 
-            if cfg.distill_method == "ggpkd":
-                self.ggpkd_artifact = build_or_load_ggpkd_artifact(
-                    teacher_embeddings=teacher_cls_list,
-                    cache_path=cfg.ggpkd_cache_path,
-                    log_dir=cfg.ggpkd_log_dir,
-                    graph_k=cfg.graph_k,
-                    fixed_bandwidth=cfg.fixed_bandwidth,
-                    truncation_tolerance=cfg.truncation_tolerance,
-                    diffusion_scales=cfg.diffusion_scales,
-                    knn_mode=cfg.knn_mode,
-                    source_ids=self._ggpkd_source_ids(df),
-                )
-
             # Free teacher model to save GPU memory (teacher not needed after caching)
             del self.model_teacher
             self.model_teacher = None
@@ -455,85 +352,10 @@ class KnowledgeDistiller:
                 torch.cuda.empty_cache()
             print("Teacher model freed from GPU memory")
 
-            if cfg.distill_method == "ggpkd":
-                self.ggpkd_sampler = GGPKDCandidateSampler(
-                    artifact=self.ggpkd_artifact,
-                    diffusion_quota=cfg.diffusion_quota,
-                    hard_neg_k=cfg.hard_neg_k,
-                    random_neg_k=cfg.random_neg_k,
-                    seed=cfg.seed,
-                    support_policy=cfg.support_policy,
+            if self.method.build_data is not None:
+                self.train_ds, self.collate_fn = self.method.build_data(
+                    self, df, teacher_cls_list
                 )
-                anchor_texts = df[self.ggpkd_anchor_column].astype(str).tolist()
-                # Rebuild the probe on the deduplicated anchor column. The set built
-                # in setup_data was sampled from the pre-dedup frame, whose row
-                # positions no longer index the teacher cache -- so pairing the two
-                # there would silently report the Spearman of mismatched rows.
-                probe_index = build_probe_index(len(anchor_texts), size=2048, seed=0)
-                self.probe_texts = [anchor_texts[int(i)] for i in probe_index]
-                self.probe_teacher = teacher_cls_list[
-                    torch.from_numpy(np.asarray(probe_index)).long()
-                ]
-                self.train_ds = TextPairWithTeacherAndGGPKD(
-                    anchor_texts=anchor_texts,
-                    teacher_cls=teacher_cls_list,
-                    sampler=self.ggpkd_sampler,
-                    labels=df["label"].astype(int).tolist()
-                    if "label" in df.columns
-                    else None,
-                    batch_local=cfg.batch_local,
-                )
-                # The collate owns the tokenized corpus: anchors and candidates are
-                # drawn from the same rows, so every text is tokenized once here
-                # instead of ~candidate_size times per epoch in the workers.
-                self.collate_fn = GGPKDCollate(
-                    self.tok_student,
-                    cfg.task_type,
-                    cfg.max_length,
-                    corpus_texts=anchor_texts,
-                    batch_local=cfg.batch_local,
-                    n_scales=len(cfg.diffusion_scales),
-                )
-                if cfg.batch_local:
-                    print(
-                        "GGPKD batch-local baseline: relations among the batch "
-                        f"only ({cfg.batch_size} texts), no candidate draw, no "
-                        "graph support, no auxiliary rows"
-                    )
-                if self.ggpkd_sampler.no_negatives:
-                    print(
-                        "GGPKD draws no negatives: every scored column carries "
-                        "teacher diffusion mass"
-                    )
-                # Report the width the anchors actually get, not just the one the
-                # config asked for. A quota above the pool fill is silently truncated
-                # inside the draw, and reading only the requested number is how a
-                # requested width of 500 was mistaken for the real width of 67.
-                fill = (self.ggpkd_artifact["pool_indices"].numpy() >= 0).sum(axis=1)
-                if self.ggpkd_sampler.full_pool:
-                    print(
-                        "GGPKD candidate set: the anchor's whole transition row "
-                        f"(row width {self.ggpkd_sampler.candidate_size}; real columns "
-                        f"mean={fill.mean():.1f} min={int(fill.min())} "
-                        f"max={int(fill.max())}), no sampling, fixed across epochs"
-                    )
-                else:
-                    short = int((fill < self.ggpkd_sampler.diffusion_quota).sum())
-                    print(
-                        "GGPKD candidate sampling: "
-                        f"candidate_size={self.ggpkd_sampler.candidate_size} "
-                        f"(diffusion={self.ggpkd_sampler.diffusion_quota}, "
-                        f"hard={self.ggpkd_sampler.hard_neg_k}, "
-                        f"random={self.ggpkd_sampler.random_neg_k}), "
-                        f"support_policy={self.ggpkd_sampler.support_policy}"
-                    )
-                    if short:
-                        print(
-                            f"  WARNING: {short}/{fill.size} anchors "
-                            f"({short / fill.size:.1%}) hold fewer than "
-                            f"{self.ggpkd_sampler.diffusion_quota} columns; their draw "
-                            f"is padded, real mean width is {fill.clip(max=self.ggpkd_sampler.diffusion_quota).mean():.1f}"
-                        )
             else:
                 self.train_ds = TextPairWithTeacher(df, cfg.task_type, teacher_cls_list)
                 self.collate_fn = DualTokenizerCollateWithTeacher(
@@ -562,28 +384,27 @@ class KnowledgeDistiller:
             pin_memory=True,
             num_workers=cfg.num_workers,
             persistent_workers=cfg.num_workers > 0 and not resamples_per_epoch,
-            # GGPKD and RKD define their relational support from the batch. A short
-            # remainder would therefore optimize a structurally different objective;
+            # A batch-relational method defines its support from the batch, so a
+            # short remainder would optimize a structurally different objective;
             # RKD additionally needs at least two examples to form a relation.
-            drop_last=cfg.distill_method in ("ggpkd", "rkd"),
+            drop_last=self.method.batch_relational,
         )
 
         print(f"Training samples: {len(self.train_ds)}")
         print(f"Training batches: {len(self.train_loader)}")
         print("Done setup_data")
 
-    def _build_scheduler(self):
+    def build_scheduler(self):
+        """The method's schedule over the current optimizer.
+
+        Public because a criterion that adds a param group -- or replaces the
+        optimizer, as TALAS does -- has to rebuild the schedule in the same
+        breath, and those builders live in `src/methods/`.
+        """
+        if self.method.build_scheduler is not None:
+            return self.method.build_scheduler(self)
         cfg = self.config
         total_steps = len(self.train_loader) * cfg.epochs
-        if cfg.distill_method == "rkd":
-            milestones = [
-                int(epoch) * len(self.train_loader) for epoch in cfg.rkd_lr_decay_epochs
-            ]
-            return optim.lr_scheduler.MultiStepLR(
-                self.optimizer,
-                milestones=milestones,
-                gamma=cfg.rkd_lr_decay_gamma,
-            )
         min_lr_rate = cfg.min_lr / cfg.learning_rate
         return get_scheduler(
             name="cosine_with_min_lr",
@@ -596,31 +417,19 @@ class KnowledgeDistiller:
     def setup_training(self):
         cfg = self.config
 
-        # TALAS optimizer/scheduler will be initialized after criterion creation in train_step
-        if cfg.distill_method == "talas":
-            self.optimizer = None
-            self.scheduler = None
-            self.scaler = GradScaler("cuda", enabled=torch.cuda.is_available())
-            print(
-                "TALAS: Deferring optimizer/scheduler initialization until criterion is created"
-            )
-        elif cfg.distill_method == "rkd":
-            self.optimizer = optim.Adam(
-                self.model_student.parameters(),
-                lr=cfg.learning_rate,
-                weight_decay=cfg.weight_decay,
-            )
-            self.scaler = GradScaler("cuda", enabled=torch.cuda.is_available())
-            self.scheduler = self._build_scheduler()
-        else:
-            optimizer_parameters = list(self.model_student.parameters())
-            if self.task_head is not None:
-                optimizer_parameters.extend(self.task_head.parameters())
-            self.optimizer = optim.AdamW(optimizer_parameters, lr=cfg.learning_rate)
-
-            self.scaler = GradScaler("cuda", enabled=torch.cuda.is_available())
-
-            self.scheduler = self._build_scheduler()
+        parameters = list(self.model_student.parameters())
+        if self.task_head is not None:
+            parameters.extend(self.task_head.parameters())
+        # A criterion with parameters of its own is not built yet; it either adds
+        # a param group here or replaces the optimizer outright, and rebuilds the
+        # schedule in the same breath (see src/methods/support.py).
+        self.optimizer = (
+            optim.AdamW(parameters, lr=cfg.learning_rate)
+            if self.method.build_optimizer is None
+            else self.method.build_optimizer(self, parameters)
+        )
+        self.scaler = GradScaler("cuda", enabled=torch.cuda.is_available())
+        self.scheduler = self.build_scheduler()
 
         if cfg.save_dir:
             os.makedirs(cfg.save_dir, exist_ok=True)
@@ -650,7 +459,7 @@ class KnowledgeDistiller:
                 print(f"Warning: geometry probe unavailable ({error})")
             return None
 
-    def _compute_task_loss(
+    def compute_task_loss(
         self,
         student_cls1: torch.Tensor,
         student_cls2: torch.Tensor | None,
@@ -704,20 +513,7 @@ class KnowledgeDistiller:
         return loss, {}
 
     def train_step(self, batch: dict) -> tuple[torch.Tensor, dict]:
-        cfg = self.config
-        method = cfg.distill_method
-
-        if method == "ggpkd":
-            return ggpkd_step(self, batch)
-
-        if method == "rkd":
-            return rkd_step(self, batch)
-
-        if method == "talas":
-            return talas_step(self, batch)
-
-        # Standard distillation methods with teacher inference
-        return standard_step(self, batch)
+        return self.method.step(self, batch)
 
     def train_epoch(self, epoch: int):
         self.model_student.train()
@@ -1018,8 +814,8 @@ class KnowledgeDistiller:
             artifact=getattr(self, "ggpkd_artifact", None),
         )
 
-        if cfg.distill_method == "stella":
-            stella_train(self)
+        if self.method.train_loop is not None:
+            self.method.train_loop(self)
             return
 
         print("\n" + "=" * 60)
@@ -1037,15 +833,8 @@ class KnowledgeDistiller:
         for epoch in range(cfg.epochs):
             self.current_epoch = epoch
 
-            use_row = (
-                cfg.distill_method == "ggpkd"
-                and cfg.row_weight > 0
-                and epoch + 1 >= cfg.row_start_epoch
-            )
-            if self.criterion is not None and hasattr(self.criterion, "use_row_loss"):
-                self.criterion.use_row_loss = use_row
-            if use_row:
-                print(f"L_row is ENABLED for Epoch {epoch + 1}")
+            if self.method.on_epoch_start is not None:
+                self.method.on_epoch_start(self, epoch)
 
             avg_loss = self.train_epoch(epoch)
             # The paper protocol performs no epoch selection. Per-epoch records

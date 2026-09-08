@@ -22,6 +22,7 @@ from torch.amp import GradScaler
 
 from distiller import KnowledgeDistiller
 from src.criterions.dual_space_kd import DualSpaceKD
+from src.methods import METHOD_NAMES, REGISTRY, get_method
 
 VOCAB, DIM, SEQ, BATCH = 40, 8, 5, 4
 
@@ -59,6 +60,7 @@ class _TinyEncoder(nn.Module):
 
 def _base_distiller(method: str, criterion, *, task_type="pair_cls", temperature=0.07):
     distiller = KnowledgeDistiller.__new__(KnowledgeDistiller)
+    distiller.method = get_method(method)
     distiller.config = SimpleNamespace(
         distill_method=method,
         task_type=task_type,
@@ -176,33 +178,67 @@ def test_emo_train_step_contract():
         assert key in seen, f"distiller stopped passing {key} to compute_emo_loss"
 
 
-@pytest.mark.parametrize(
-    "method", ["ggpkd", "rkd", "talas", "cdm", "dskd", "emo", "stella"]
-)
-def test_every_method_still_routes_to_a_step(method):
-    """`train_step` is a dispatcher now; every method must still reach a step.
+@pytest.mark.parametrize("method", METHOD_NAMES)
+def test_every_method_declares_a_step(method):
+    """Every registered method reaches a step, and every step is a real callable.
 
-    This is the structural guard for `cdm` and `stella`, whose criterions need
-    real tokenizers or a wrapped HF model and so have no one-step trace here. It
-    reads the dispatcher and the step modules together, so moving a branch
-    between them is fine but losing one is not.
+    This used to grep the dispatcher's source for each method name, because the
+    dispatcher was an if-chain of string literals. The registry states the same
+    thing directly, so the guard is now an assertion about the data rather than
+    about the text of a function.
+    """
+    spec = REGISTRY[method]
+    assert callable(spec.step), f"{method} has no step"
+    assert spec.step.__module__.startswith("src.distill.steps."), (
+        f"{method}'s step is not one of the step modules: {spec.step.__module__}"
+    )
+
+
+def test_registry_and_config_classes_agree():
+    """A spec's config must declare the same method name that indexes it.
+
+    `config.distill_method` is what the distiller resolves the spec from, so a
+    mismatch here would build one method's config and run another's pipeline.
+    """
+    for name, spec in REGISTRY.items():
+        assert spec.name == name
+        assert spec.config_cls.distill_method == name, (
+            f"{spec.config_cls.__name__}.distill_method is "
+            f"{spec.config_cls.distill_method!r}, expected {name!r}"
+        )
+
+
+def test_standard_step_methods_declare_a_kd_term():
+    """`standard.step` computes everything but the KD term, which the spec supplies.
+
+    A method routed to the shared step without a `kd_loss` would reach
+    `spec.kd_loss(...)` as `None` and fail at the first batch, not at startup.
+    """
+    from src.distill.steps import standard
+
+    for name, spec in REGISTRY.items():
+        if spec.step is standard.step:
+            assert callable(spec.kd_loss), f"{name} uses the shared step but has no kd_loss"
+        else:
+            assert spec.kd_loss is None, (
+                f"{name} declares a kd_loss its step will never call"
+            )
+
+
+def test_attention_reading_methods_get_eager_encoders():
+    """`needs_attentions` has to reach both encoders, not just the teacher.
+
+    SDPA returns an empty attention tuple and only warns, so a student left on
+    the default kernel made the criterion index off the end of an empty list.
     """
     import inspect
 
-    from src.distill.steps import ggpkd, rkd, standard, talas
+    from distiller import KnowledgeDistiller as _KD
 
-    sources = "".join(
-        inspect.getsource(obj)
-        for obj in (
-            KnowledgeDistiller.train_step,
-            ggpkd.step,
-            rkd.step,
-            talas.step,
-            standard.step,
-        )
-    )
-    assert f'"{method}"' in sources or f"'{method}'" in sources, (
-        f"no step handles {method}"
+    source = inspect.getsource(_KD.setup_models)
+    eager_sites = source.count('"eager"')
+    assert eager_sites == 2, (
+        f"expected the student and the teacher to be pinned to eager, found {eager_sites}"
     )
 
 

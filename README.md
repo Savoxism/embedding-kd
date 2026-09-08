@@ -236,6 +236,31 @@ The training loop evaluates on 9 benchmarks after each epoch:
 
 Validation runs after each epoch. Test evaluation runs once after training.
 
+## Adding a Method
+
+`distiller.py` never compares `config.distill_method` against a method name. It
+reads a `MethodSpec` from `src/methods/`, whose flags answer the questions the
+shared pipeline asks and whose hooks replace the parts that differ:
+
+```python
+SPEC = MethodSpec(
+    name="ggpkd",
+    config_cls=GGPKDConfig,
+    step=step,                  # src/distill/steps/ggpkd.py
+    uses_teacher_cache=True,    # precomputed teacher embeddings
+    batch_relational=True,      # -> DataLoader(drop_last=True)
+    prepare_frame=prepare_frame,
+    build_data=build_data,
+    build_criterion=build_criterion,
+    on_epoch_start=on_epoch_start,
+)
+```
+
+Every hook defaults to `None`, meaning "use the shared path", so a spec carries
+only what actually differs. A new method is one module under `src/methods/` plus
+one line in its `REGISTRY`; `--method` choices and the config class follow from
+there. `src/methods/spec.py` documents each field.
+
 ## Other Distillation Methods
 
 This repository also includes implementations of other distillation baselines for comparison:
@@ -252,12 +277,16 @@ This repository also includes implementations of other distillation baselines fo
 ```
 .
 ├── main.py                          # Entry point
-├── distiller.py                     # Training loop and evaluation
+├── distiller.py                     # Method-agnostic training loop and evaluation
 ├── config/
-│   ├── base_config.py               # Shared defaults
+│   ├── base_config.py               # Shared defaults, override checking, validate()
 │   ├── ggpkd_config.py              # GGPKD hyperparameters
 │   └── ...                          # Other method configs
 ├── src/
+│   ├── methods/                     # One module per method: what it *is*
+│   │   ├── spec.py                  # MethodSpec: the flags and hooks
+│   │   ├── __init__.py              # REGISTRY -- the only list of methods
+│   │   └── ggpkd.py, talas.py, ...  # Per-method data, criterion, optimizer, KD term
 │   ├── criterions/
 │   │   ├── ggpkd_distillation.py    # Relational and row objectives
 │   │   └── ...                      # Other method losses
@@ -265,10 +294,11 @@ This repository also includes implementations of other distillation baselines fo
 │   │   ├── graph_builder.py         # kNN graph and diffusion pool construction
 │   │   ├── candidate_sampler.py     # Candidate-pool construction
 │   │   └── policy.py                # Derived capacities and tolerances
-│   ├── distill/                     # Trainer internals: per-method train steps,
-│   │                                #   criterion factory, checkpointing,
-│   │                                #   telemetry, geometry probes, benchmarks
-│   ├── data_utils/                  # Dataset and collation
+│   ├── distill/
+│   │   ├── steps/                   # One training step per shape of step
+│   │   └── ...                      # Checkpointing, telemetry, geometry, benchmarks
+│   ├── data_utils/                  # Datasets and collates
+│   ├── models/                      # Students that are not a plain AutoModel
 │   ├── evaluation/                  # Benchmark evaluation
 │   ├── cache_teacher.py             # Teacher embedding caching
 │   ├── pooling.py                   # Pooling strategies

@@ -65,8 +65,3 @@ class TALASConfig(BaseConfig):
     cache_dtype = "float32"
 
     save_dir = "checkpoints/talas"
-
-    def __init__(self, **kwargs):
-        for k, v in kwargs.items():
-            if hasattr(self, k):
-                setattr(self, k, v)

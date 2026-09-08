@@ -37,7 +37,32 @@ class BaseConfig:
     eval_every = 1
     
     seed = 42
-    
+
+    def __init__(self, **kwargs):
+        """Apply overrides onto the class defaults, then check the invariants.
+
+        An unknown key is a typo, not a no-op. Four subclasses used to carry
+        their own copy of this loop guarded by `if hasattr(self, k)`, which
+        skipped the typo silently -- `GGPKDConfig(walk_lenght=8)` then ran the
+        default and looked like the override had been applied. The check lives
+        here so no subclass can forget it.
+        """
+        unknown = sorted(key for key in kwargs if not hasattr(self, key))
+        if unknown:
+            raise AttributeError(
+                f"{type(self).__name__} got unknown option(s): {', '.join(unknown)}"
+            )
+        for key, value in kwargs.items():
+            setattr(self, key, value)
+        self.validate()
+
+    def validate(self):
+        """Re-checkable invariants; overridden by configs that have any.
+
+        Defined here so callers -- `main.py` after it applies the CLI overrides --
+        can call it unconditionally instead of guarding on `hasattr`.
+        """
+
     def __repr__(self):
         attrs = [f"{k}={v}" for k, v in self.to_dict().items()]
         return f"{self.__class__.__name__}({', '.join(attrs)})"

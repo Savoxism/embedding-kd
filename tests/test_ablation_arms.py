@@ -19,9 +19,11 @@ def _criterion_inputs(batch=4, candidates=12, dim=16, n_items=60, scales=3):
     torch.manual_seed(0)
     teacher = torch.randn(n_items, dim)
     probs = torch.rand(batch, scales, candidates)
-    probs[:, :, candidates // 2 :] = 0.0
+    probs[:, :, candidates // 2 :] = 0.0 
     probs /= probs.sum(-1, keepdim=True)
-    candidate_idx = torch.stack([torch.randperm(n_items)[:candidates] for _ in range(batch)])
+    candidate_idx = torch.stack(
+        [torch.randperm(n_items)[:candidates] for _ in range(batch)]
+    )
     anchor_idx = torch.arange(batch)
     for row in range(batch):
         candidate_idx[row][candidate_idx[row] == row] = (row + 31) % n_items
@@ -115,8 +117,12 @@ def test_direct_relation_target_changes_the_target_not_the_column_set():
     assert metrics["direct"]["candidates_per_anchor"] == pytest.approx(
         metrics["diffusion"]["candidates_per_anchor"]
     )
-    assert metrics["direct"]["loss_amb"] == pytest.approx(metrics["diffusion"]["loss_amb"])
-    assert metrics["direct"]["loss_nbr"] != pytest.approx(metrics["diffusion"]["loss_nbr"])
+    assert metrics["direct"]["loss_amb"] == pytest.approx(
+        metrics["diffusion"]["loss_amb"]
+    )
+    assert metrics["direct"]["loss_nbr"] != pytest.approx(
+        metrics["diffusion"]["loss_nbr"]
+    )
 
 
 # --------------------------------------------------------------------------- #
@@ -141,8 +147,12 @@ def test_knn_modes_nest_by_construction():
     edges = {}
     for mode in ("mutual", "directed", "symmetrized"):
         neighbors, _, _, _, _, _ = _build_transition(
-            top_indices, top_scores, graph_k=8, graph_temp=0.05,
-            fixed_bandwidth=True, knn_mode=mode,
+            top_indices,
+            top_scores,
+            graph_k=8,
+            graph_temp=0.05,
+            fixed_bandwidth=True,
+            knn_mode=mode,
         )
         edges[mode] = {(i, int(j)) for i, row in enumerate(neighbors) for j in row}
     assert edges["mutual"] <= edges["directed"] <= edges["symmetrized"]
@@ -155,13 +165,21 @@ def test_hubness_is_reported_and_orders_the_modes():
     stats = {}
     for mode in ("mutual", "symmetrized"):
         neighbors, _, _, _, _, _ = _build_transition(
-            top_indices, top_scores, graph_k=8, graph_temp=0.05,
-            fixed_bandwidth=True, knn_mode=mode,
+            top_indices,
+            top_scores,
+            graph_k=8,
+            graph_temp=0.05,
+            fixed_bandwidth=True,
+            knn_mode=mode,
         )
         stats[mode] = _hubness_stats(neighbors)
     for mode in stats:
-        assert {"indegree_max", "indegree_p99", "indegree_gini",
-                "hub_edge_share_top1pct"} <= stats[mode].keys()
+        assert {
+            "indegree_max",
+            "indegree_p99",
+            "indegree_gini",
+            "hub_edge_share_top1pct",
+        } <= stats[mode].keys()
     # Mutuality removes the edges into nodes that retrieve nothing back, so it
     # cannot leave a *larger* indegree tail than the union does.
     assert stats["mutual"]["indegree_max"] <= stats["symmetrized"]["indegree_max"]
@@ -171,8 +189,12 @@ def test_unknown_knn_mode_is_rejected():
     top_indices, top_scores = _knn_inputs()
     with pytest.raises(ValueError, match="knn_mode"):
         _build_transition(
-            top_indices, top_scores, graph_k=8, graph_temp=0.05,
-            fixed_bandwidth=True, knn_mode="reciprocal",
+            top_indices,
+            top_scores,
+            graph_k=8,
+            graph_temp=0.05,
+            fixed_bandwidth=True,
+            knn_mode="reciprocal",
         )
 
 
@@ -212,15 +234,19 @@ class _CharTokenizer:
 
 
 def _batch_local_batch(corpus_size=40, batch_size=6, n_scales=3):
-    from src.data_utils.dataset_cache import GGPKDCollate, TextPairWithTeacherAndGGPKD
+    from src.data_utils.ggpkd_dataset import GGPKDCollate, TextPairWithTeacherAndGGPKD
 
     texts = [f"sentence {i} about topic {i % 7}" for i in range(corpus_size)]
     dataset = TextPairWithTeacherAndGGPKD(
         texts, torch.randn(corpus_size, 8), sampler=None, batch_local=True
     )
     collate = GGPKDCollate(
-        _CharTokenizer(), "single_cls", 32, corpus_texts=texts,
-        batch_local=True, n_scales=n_scales,
+        _CharTokenizer(),
+        "single_cls",
+        32,
+        corpus_texts=texts,
+        batch_local=True,
+        n_scales=n_scales,
     )
     return collate([dataset[i] for i in range(batch_size)])
 
@@ -252,15 +278,19 @@ def test_batch_local_carries_no_diffusion_mass():
 
 
 def test_batch_local_rejects_a_batch_too_small_to_have_a_relation():
-    from src.data_utils.dataset_cache import GGPKDCollate, TextPairWithTeacherAndGGPKD
+    from src.data_utils.ggpkd_dataset import GGPKDCollate, TextPairWithTeacherAndGGPKD
 
     texts = ["only one"]
     dataset = TextPairWithTeacherAndGGPKD(
         texts, torch.randn(1, 8), sampler=None, batch_local=True
     )
     collate = GGPKDCollate(
-        _CharTokenizer(), "single_cls", 32, corpus_texts=texts,
-        batch_local=True, n_scales=1,
+        _CharTokenizer(),
+        "single_cls",
+        32,
+        corpus_texts=texts,
+        batch_local=True,
+        n_scales=1,
     )
     with pytest.raises(ValueError, match="at least two"):
         collate([dataset[0]])
@@ -284,8 +314,11 @@ def test_ambient_only_gives_the_ambient_scale_the_whole_weight():
         **data["graph"],
     )
     loss, metrics = criterion(
-        data["anchor"], data["candidates"], zero_targets,
-        candidate_idx=data["candidate_idx"], anchor_idx=data["anchor_idx"],
+        data["anchor"],
+        data["candidates"],
+        zero_targets,
+        candidate_idx=data["candidate_idx"],
+        anchor_idx=data["anchor_idx"],
     )
     assert loss.item() == pytest.approx(metrics["loss_amb"], rel=1e-5)
     assert metrics["loss_nbr"] == 0.0
@@ -300,8 +333,11 @@ def test_ambient_only_gives_the_ambient_scale_the_whole_weight():
         **data["graph"],
     )
     scaled_loss, scaled_metrics = scaled(
-        data["anchor"], data["candidates"], zero_targets,
-        candidate_idx=data["candidate_idx"], anchor_idx=data["anchor_idx"],
+        data["anchor"],
+        data["candidates"],
+        zero_targets,
+        candidate_idx=data["candidate_idx"],
+        anchor_idx=data["anchor_idx"],
     )
     assert scaled_loss.item() == pytest.approx(0.5 * loss.item(), rel=1e-5)
     assert scaled_metrics["loss_amb"] == pytest.approx(metrics["loss_amb"], rel=1e-5)
@@ -318,8 +354,11 @@ def test_ambient_only_is_finite_and_differentiable():
     )
     criterion.use_row_loss = True
     loss, _ = criterion(
-        data["anchor"], data["candidates"], torch.zeros_like(data["probs"]),
-        candidate_idx=data["candidate_idx"], anchor_idx=data["anchor_idx"],
+        data["anchor"],
+        data["candidates"],
+        torch.zeros_like(data["probs"]),
+        candidate_idx=data["candidate_idx"],
+        anchor_idx=data["anchor_idx"],
     )
     loss.backward()
     assert torch.isfinite(loss)

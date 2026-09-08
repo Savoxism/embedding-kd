@@ -1,19 +1,9 @@
 import argparse
 import sys
 
-from config import (
-    TALAS_PAPER_PAIRS,
-    BaseConfig,
-    CDMConfig,
-    DSKDConfig,
-    EMOConfig,
-    GGPKDConfig,
-    RKDConfig,
-    StellaConfig,
-    TALASConfig,
-    get_talas_paper_pair,
-)
+from config import TALAS_PAPER_PAIRS, get_talas_paper_pair
 from distiller import KnowledgeDistiller
+from src.methods import METHOD_NAMES, get_method
 
 
 def parse_args():
@@ -25,7 +15,7 @@ def parse_args():
         "--method",
         type=str,
         default="cdm",
-        choices=["cdm", "dskd", "emo", "stella", "talas", "ggpkd", "rkd"],
+        choices=list(METHOD_NAMES),
         help="Distillation method to use",
     )
 
@@ -185,21 +175,11 @@ def parse_args():
     return parser.parse_args()
 
 
-# Keys are exactly the --method choices; BaseConfig is the fallback for a method
-# that has no config class of its own.
-CONFIG_BY_METHOD = {
-    "cdm": CDMConfig,
-    "dskd": DSKDConfig,
-    "emo": EMOConfig,
-    "stella": StellaConfig,
-    "talas": TALASConfig,
-    "ggpkd": GGPKDConfig,
-    "rkd": RKDConfig,
-}
-
-
 def get_config(method: str, args):
-    config = CONFIG_BY_METHOD.get(method, BaseConfig)()
+    # The registry is the single list of methods: `--method` choices, the config
+    # class, and the capabilities the distiller reads all come from one entry.
+    spec = get_method(method)
+    config = spec.config_cls()
 
     if args.talas_pair is not None:
         if method != "talas":
@@ -320,8 +300,7 @@ def get_config(method: str, args):
 
     # The CLI writes attributes onto an already-constructed config, so the
     # constructor's checks have long since run. Re-run them over the final values.
-    if hasattr(config, "validate"):
-        config.validate()
+    config.validate()
 
     return config
 
@@ -329,9 +308,12 @@ def get_config(method: str, args):
 def main():
     args = parse_args()
 
-    if args.prepare_cache_only and args.method not in {"talas", "rkd"}:
+    if args.prepare_cache_only and not get_method(args.method).uses_teacher_cache:
+        cached = ", ".join(
+            name for name in METHOD_NAMES if get_method(name).uses_teacher_cache
+        )
         raise SystemExit(
-            "--prepare_cache_only is supported only with --method talas or rkd"
+            f"--prepare_cache_only needs a method with a teacher cache: {cached}"
         )
 
     config = get_config(args.method, args)

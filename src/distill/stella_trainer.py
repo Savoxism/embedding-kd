@@ -12,7 +12,6 @@ evaluation methods it drives.
 
 from collections import deque
 
-import torch
 import torch.optim as optim
 from transformers import get_scheduler
 

@@ -274,19 +274,6 @@ class GGPKDConfig(BaseConfig):
     # carried, so deleting them changes no behaviour. Re-adding one is only
     # meaningful together with the kd_*_layers pair.
 
-    def __init__(self, **kwargs):
-        # An unknown key is a typo, not a no-op. The previous version skipped it
-        # silently, so `GGPKDConfig(walk_lenght=8)` ran the default 4 and looked
-        # like the override had been applied.
-        unknown = sorted(k for k in kwargs if not hasattr(self, k))
-        if unknown:
-            raise AttributeError(
-                f"GGPKDConfig got unknown option(s): {', '.join(unknown)}"
-            )
-        for k, v in kwargs.items():
-            setattr(self, k, v)
-        self.validate()
-
     def validate(self):
         """Re-checkable invariants.
 

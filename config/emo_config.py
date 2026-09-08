@@ -30,7 +30,3 @@ class EMOConfig(BaseConfig):
     
     save_dir = "checkpoints/emo"
     
-    def __init__(self, **kwargs):
-        for k, v in kwargs.items():
-            if hasattr(self, k):
-                setattr(self, k, v)
