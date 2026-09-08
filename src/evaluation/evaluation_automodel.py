@@ -27,10 +27,12 @@ BASE_DIR = Path(__file__).resolve().parent.parent.parent
 EVAL_BATCH_SIZE = 256
 
 # Iterations for the linear probe. The probe is a measuring instrument, not part
-# of the method, and it converges well inside this; if it ever does not, the fit
-# is retried at the old ceiling rather than reported under-fit.
+# of the method, so the ceiling is fixed: a fit that has not converged by here is
+# reported and used as it stands. Refitting a hard case at a higher ceiling would
+# make the instrument depend on the student being measured, which is exactly what
+# a probe must not do -- the arm whose features are hardest to separate would be
+# scored with a better-fit probe than the arm it is compared against.
 CLASSIFIER_MAX_ITER = 200
-CLASSIFIER_MAX_ITER_FALLBACK = 200
 
 # Pre-tokenized, length-sorted batches, keyed by (file, tokenizer, max_len, batch).
 # Evaluation runs the same files every epoch against a changing student, so the
@@ -311,29 +313,30 @@ def eval_classification_task(model, path_list, tokenizer):
 
             # lbfgs on 77 classes was taking ~7 s per epoch at max_iter=200, on
             # the CPU, in series with the GPU work -- more than a third of the
-            # whole evaluation. The probe converges long before that; a warning is
-            # emitted if it genuinely does not, so a silently under-fit probe
-            # cannot be mistaken for a weaker student.
+            # whole evaluation. Most probes converge well inside that ceiling, but
+            # not all of them do (emotion, 28 classes, has missed it), so the
+            # non-convergence is printed rather than swallowed: a silently
+            # under-fit probe must not be mistaken for a weaker student.
             clf = LogisticRegression(
                 random_state=42,
                 max_iter=CLASSIFIER_MAX_ITER,
                 verbose=0,
             )
-            with warnings.catch_warnings():
-                warnings.simplefilter("error", ConvergenceWarning)
-                try:
-                    clf.fit(X_train, y_train)
-                except ConvergenceWarning:
-                    print(
-                        f"  probe did not converge in {CLASSIFIER_MAX_ITER} iters "
-                        f"for {Path(dev_path).stem}; refitting at "
-                        f"{CLASSIFIER_MAX_ITER_FALLBACK}"
-                    )
-                    clf = LogisticRegression(
-                        random_state=42,
-                        max_iter=CLASSIFIER_MAX_ITER_FALLBACK,
-                        verbose=0,
-                    ).fit(X_train, y_train)
+            # Record the warning instead of escalating it. `simplefilter("error")`
+            # raises from inside the solver loop, before `coef_` is assigned, so the
+            # estimator caught there is unfitted -- and the retry it triggered ran at
+            # the same ceiling and inside the same escalating context, so a probe
+            # that missed 200 iters raised a second time with nothing to catch it and
+            # took the whole final evaluation down after training had completed.
+            # Letting the fit finish keeps the probe usable and identical across arms.
+            with warnings.catch_warnings(record=True) as caught:
+                warnings.simplefilter("always", ConvergenceWarning)
+                clf.fit(X_train, y_train)
+            if any(issubclass(entry.category, ConvergenceWarning) for entry in caught):
+                print(
+                    f"  probe did not converge in {CLASSIFIER_MAX_ITER} iters for "
+                    f"{Path(dev_path).stem}; scoring with the fit as it stands"
+                )
             y_pred = clf.predict(X_test)
 
             scores = {}
