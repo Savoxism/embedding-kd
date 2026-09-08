@@ -311,7 +311,7 @@ def test_knn_modes_nest_by_construction():
     for mode in ("mutual", "directed", "symmetrized"):
         neighbors, _, _, _, _, _ = _build_transition(
             top_indices, top_scores, graph_k=8, graph_temp=0.05,
-            perplexity=None, knn_mode=mode,
+            fixed_bandwidth=True, knn_mode=mode,
         )
         edges[mode] = {(i, int(j)) for i, row in enumerate(neighbors) for j in row}
     assert edges["mutual"] <= edges["directed"] <= edges["symmetrized"]
@@ -325,7 +325,7 @@ def test_hubness_is_reported_and_orders_the_modes():
     for mode in ("mutual", "symmetrized"):
         neighbors, _, _, _, _, _ = _build_transition(
             top_indices, top_scores, graph_k=8, graph_temp=0.05,
-            perplexity=None, knn_mode=mode,
+            fixed_bandwidth=True, knn_mode=mode,
         )
         stats[mode] = _hubness_stats(neighbors)
     for mode in stats:
@@ -341,7 +341,7 @@ def test_unknown_knn_mode_is_rejected():
     with pytest.raises(ValueError, match="knn_mode"):
         _build_transition(
             top_indices, top_scores, graph_k=8, graph_temp=0.05,
-            perplexity=None, knn_mode="reciprocal",
+            fixed_bandwidth=True, knn_mode="reciprocal",
         )
 
 

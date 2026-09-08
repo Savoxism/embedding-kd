@@ -59,7 +59,6 @@ from src.evaluation.evaluation_automodel import (
     test_sts_tasks,
 )
 from src.ggpkd import GGPKDCandidateSampler, build_or_load_ggpkd_artifact
-from src.ggpkd.policy import ROW_COVERAGE_TAU, derive_diffusion_quota
 from src.loss import info_nce
 
 
@@ -442,7 +441,7 @@ class KnowledgeDistiller:
                     cache_path=cfg.ggpkd_cache_path,
                     log_dir=cfg.ggpkd_log_dir,
                     graph_k=cfg.graph_k,
-                    perplexity=cfg.perplexity,
+                    fixed_bandwidth=cfg.fixed_bandwidth,
                     truncation_tolerance=cfg.truncation_tolerance,
                     diffusion_scales=cfg.diffusion_scales,
                     knn_mode=cfg.knn_mode,
@@ -457,17 +456,6 @@ class KnowledgeDistiller:
             print("Teacher model freed from GPU memory")
 
             if cfg.distill_method == "ggpkd":
-                if cfg.diffusion_quota is None:
-                    # Written back onto the config so the run manifest and the
-                    # banner below record the concrete value this run trained on.
-                    cfg.diffusion_quota = derive_diffusion_quota(
-                        self.ggpkd_artifact["pool_probs"].numpy(),
-                        self.ggpkd_artifact["metadata"]["diffusion_scales"],
-                    )
-                    print(
-                        f"Derived diffusion_quota={cfg.diffusion_quota} "
-                        f"(coverage tau={ROW_COVERAGE_TAU} at the median anchor)"
-                    )
                 self.ggpkd_sampler = GGPKDCandidateSampler(
                     artifact=self.ggpkd_artifact,
                     diffusion_quota=cfg.diffusion_quota,
@@ -517,15 +505,35 @@ class KnowledgeDistiller:
                         "GGPKD draws no negatives: every scored column carries "
                         "teacher diffusion mass"
                     )
-                print(
-                    "GGPKD candidate sampling: "
-                    f"candidate_size={self.ggpkd_sampler.candidate_size} "
-                    f"(diffusion={self.ggpkd_sampler.diffusion_quota}, "
-                    f"hard={self.ggpkd_sampler.hard_neg_k}, "
-                    f"random={self.ggpkd_sampler.random_neg_k}), "
-                    f"support_policy={self.ggpkd_sampler.support_policy}, "
-                    "resample_per_epoch=True"
-                )
+                # Report the width the anchors actually get, not just the one the
+                # config asked for. A quota above the pool fill is silently truncated
+                # inside the draw, and reading only the requested number is how a
+                # requested width of 500 was mistaken for the real width of 67.
+                fill = (self.ggpkd_artifact["pool_indices"].numpy() >= 0).sum(axis=1)
+                if self.ggpkd_sampler.full_pool:
+                    print(
+                        "GGPKD candidate set: the anchor's whole transition row "
+                        f"(row width {self.ggpkd_sampler.candidate_size}; real columns "
+                        f"mean={fill.mean():.1f} min={int(fill.min())} "
+                        f"max={int(fill.max())}), no sampling, fixed across epochs"
+                    )
+                else:
+                    short = int((fill < self.ggpkd_sampler.diffusion_quota).sum())
+                    print(
+                        "GGPKD candidate sampling: "
+                        f"candidate_size={self.ggpkd_sampler.candidate_size} "
+                        f"(diffusion={self.ggpkd_sampler.diffusion_quota}, "
+                        f"hard={self.ggpkd_sampler.hard_neg_k}, "
+                        f"random={self.ggpkd_sampler.random_neg_k}), "
+                        f"support_policy={self.ggpkd_sampler.support_policy}"
+                    )
+                    if short:
+                        print(
+                            f"  WARNING: {short}/{fill.size} anchors "
+                            f"({short / fill.size:.1%}) hold fewer than "
+                            f"{self.ggpkd_sampler.diffusion_quota} columns; their draw "
+                            f"is padded, real mean width is {fill.clip(max=self.ggpkd_sampler.diffusion_quota).mean():.1f}"
+                        )
             else:
                 self.train_ds = TextPairWithTeacher(df, cfg.task_type, teacher_cls_list)
                 self.collate_fn = DualTokenizerCollateWithTeacher(

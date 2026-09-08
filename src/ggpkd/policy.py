@@ -14,6 +14,14 @@ import numpy as np
 # stored in the graph artifact.
 FIXED_BANDWIDTH_TEMP = 0.05
 
+# How much of each transition row the artifact keeps. This is a numerical-fidelity
+# constant, not a method choice: any value small enough that the discarded tail
+# cannot change a ranking gives the same objective, and the build reports
+# `pool_residual_mass` / `pool_capped_rows` when it binds. It sits here for the
+# same reason the encode-chunk sizes do -- changing it does not define a new
+# objective.
+TRUNCATION_TOLERANCE = 0.01
+
 # Diagnostics and numerical/runtime choices are deliberately outside the method
 # config. Changing them does not define a new GGPKD objective.
 EPS_NORM = 1e-8
@@ -57,7 +65,12 @@ DIAG_TOPK = 8
 ENCODE_CHUNK_SIZE = 256
 PAD_TO_MULTIPLE_OF = 8
 
-# Support-selection arms for the fixed-budget ablation. `topk` is the method;
+# Support-selection arms for the fixed-budget ablation. The method itself no
+# longer selects: with `diffusion_quota=None` the candidate set is the anchor's
+# whole truncated transition row, and at that width all three sampling arms return
+# the identical set. These exist so an arm can be given a budget smaller than the
+# row and have the selection rule mean something again.
+# `topk` is the method;
 # proportional and uniform remove deterministic teacher ranking. `local_topk`
 # is reserved for the clean no-diffusion control: it spends the same quota on
 # r=1 relations only, while retaining the full artifact so the loss can keep the
@@ -77,43 +90,6 @@ PAD_TO_MULTIPLE_OF = 8
 #                 relation target, this removes multi-hop diffusion without also
 #                 changing candidate width, ambient calibration, or row loss.
 SUPPORT_POLICIES = ("topk", "proportional", "uniform", "local_topk")
-
-# Coverage target for the derived diffusion quota: the support size is the
-# smallest k whose top-k mixture mass reaches this fraction at the median anchor.
-# 0.7 is where the measured payoff knee sits on Qwen3-0.6B -> MiniLMv2-H384
-# (graph v9, seed 42): quota 14 (~tau 0.5) -> 24 (~tau 0.7) gained ~+0.3 avg,
-# while 24 -> 44 (~tau 0.8) was a tie (75.29 vs 75.25) -- and the derived value
-# on that graph, 23, lands on the tuned knee. The exposure ceiling there is 1.0,
-# so the target is always reachable and graph_k never binds it.
-ROW_COVERAGE_TAU = 0.7
-
-
-def derive_diffusion_quota(pool_probs: np.ndarray, scales: Sequence[int]) -> int:
-    """Support size needed for ROW_COVERAGE_TAU coverage at the median anchor.
-
-    Replaces the hand-tuned diffusion_quota count: the answer is a deterministic
-    function of the graph artifact (sorted mixture-row cumsums), so it costs one
-    pass at startup instead of a training-run sweep, and it moves with the corpus
-    and teacher instead of being retuned per pair.
-
-    Args:
-        pool_probs: (n_scales, n_items, width) diffusion pool rows, zero-padded.
-        scales: the artifact's diffusion scales; weighted by omega_r = 1/r.
-    """
-    weights = normalized_diffusion_weights(scales).astype(np.float32)
-    mixture = np.einsum("s,sij->ij", weights, np.asarray(pool_probs, dtype=np.float32))
-    mixture = -np.sort(-mixture, axis=1)
-    coverage = np.cumsum(mixture, axis=1)
-    # Rows that never reach tau (tiny components whose whole pool mass is below
-    # it) need their full support; argmax on an all-False row would claim k=1.
-    reaches = coverage >= ROW_COVERAGE_TAU
-    need = np.where(
-        reaches.any(axis=1),
-        reaches.argmax(axis=1) + 1,
-        (mixture > 0).sum(axis=1).clip(min=1),
-    )
-    return int(np.median(need))
-
 
 def diffusion_weights(scales: Sequence[int]) -> tuple[float, ...]:
     """Return the canonical unnormalized rule omega_r = 1 / r."""

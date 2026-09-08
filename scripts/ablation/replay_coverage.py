@@ -19,7 +19,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from src.ggpkd.candidate_sampler import GGPKDCandidateSampler
 from src.ggpkd.policy import (
-    derive_diffusion_quota,
     normalized_diffusion_weights,
 )
 
@@ -93,7 +92,7 @@ def main() -> int:
 
     artifact = torch.load(args.artifact, map_location="cpu", weights_only=False)
     scales = tuple(artifact["metadata"]["diffusion_scales"])
-    quota = args.quota or derive_diffusion_quota(artifact["pool_probs"].numpy(), scales)
+    quota = args.quota or int(artifact["pool_indices"].shape[1])
     policies = tuple(part.strip() for part in args.policies.split(",") if part.strip())
     invalid = sorted(set(policies) - set(TABLE_POLICIES))
     if invalid:

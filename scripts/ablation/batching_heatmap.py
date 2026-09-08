@@ -39,7 +39,6 @@ from scripts.ablation.geometry_heatmap import (  # noqa: E402
 )
 from src.ggpkd.candidate_sampler import GGPKDCandidateSampler  # noqa: E402
 from src.ggpkd.policy import (  # noqa: E402
-    derive_diffusion_quota,
     normalized_diffusion_weights,
 )
 
@@ -305,7 +304,8 @@ def main() -> int:
     scales = tuple(artifact["metadata"]["diffusion_scales"])
     quota = args.diffusion_quota
     if quota is None:
-        quota = derive_diffusion_quota(artifact["pool_probs"].numpy(), scales)
+        # No budget set means the method's own draw: the whole transition row.
+        quota = int(artifact["pool_indices"].shape[1])
 
     print("ordering the full corpus by the teacher graph")
     order = teacher_graph_order(

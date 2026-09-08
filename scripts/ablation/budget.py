@@ -25,7 +25,6 @@ import torch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
-from src.ggpkd.policy import derive_diffusion_quota  # noqa: E402
 
 
 def _round_positive(value: float) -> int:
@@ -92,10 +91,7 @@ def main() -> int:
 
     if args.artifact is not None:
         artifact = torch.load(args.artifact, map_location="cpu", weights_only=False)
-        base_quota = derive_diffusion_quota(
-            artifact["pool_probs"].numpy(),
-            artifact["metadata"]["diffusion_scales"],
-        )
+        base_quota = int(artifact["pool_indices"].shape[1])
     else:
         base_quota = args.quota
 

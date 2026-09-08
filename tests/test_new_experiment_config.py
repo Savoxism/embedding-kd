@@ -11,12 +11,10 @@ from distiller import KnowledgeDistiller, add_domain_averages
 from src.criterions.ggpkd_distillation import GGPKDDistillation
 from src.distill.checkpointing import save_student_weights
 from src.ggpkd.candidate_sampler import GGPKDCandidateSampler
-from src.ggpkd.graph_builder import _entropic_affinity, _mass_prefix, _softmax_at
+from src.ggpkd.graph_builder import _knn_bandwidths, _mass_prefix
 from src.ggpkd.policy import (
     FIXED_BANDWIDTH_TEMP,
-    ROW_COVERAGE_TAU,
     candidate_budget,
-    derive_diffusion_quota,
     hard_negative_pool_size,
     normalized_diffusion_weights,
 )
@@ -36,8 +34,7 @@ def test_ggpkd_cli_overrides(monkeypatch):
             "0.8",
             "--row_start_epoch",
             "2",
-            "--perplexity",
-            "45",
+            "--fixed_bandwidth",
             "--diffusion_quota",
             "20",
             "--hard_neg_k",
@@ -66,7 +63,7 @@ def test_ggpkd_cli_overrides(monkeypatch):
     # evaluation runs.
     assert config.eval_every == 0
     assert not hasattr(config, "walk_temp")
-    assert config.perplexity == 45
+    assert config.fixed_bandwidth is True
     assert (
         candidate_budget(config.diffusion_quota, config.hard_neg_k, config.random_neg_k)
         == 96
@@ -266,23 +263,43 @@ def test_canonical_policy_preserves_the_previous_resolved_values():
     )
 
 
-def test_derived_diffusion_quota_reads_the_coverage_knee_off_the_artifact():
-    # Anchor 0 concentrates its mixture in 2 columns, anchor 1 needs 4, anchor 2
-    # never reaches tau at all (tiny component) and must fall back to its full
-    # 2-column support. The median anchor decides.
-    single_scale = np.zeros((1, 3, 5), dtype=np.float32)
-    single_scale[0, 0] = [0.6, 0.2, 0.1, 0.05, 0.05]
-    single_scale[0, 1] = [0.2, 0.2, 0.2, 0.2, 0.2]
-    single_scale[0, 2] = [0.3, 0.3, 0.0, 0.0, 0.0]
-    assert ROW_COVERAGE_TAU == 0.7
-    assert derive_diffusion_quota(single_scale, (1,)) == 2
+def test_none_quota_takes_the_whole_transition_row():
+    # The method's draw: no budget, no selection. Every column the teacher put mass
+    # on is taken, and only those -- a ragged pool must not be padded out with
+    # corpus draws, and a wide pool must not be truncated.
+    pool = np.full((3, 5), -1, dtype=np.int64)
+    pool[0, :5] = [10, 11, 12, 13, 14]
+    pool[1, :2] = [20, 21]
+    pool[2, :3] = [30, 31, 32]
+    probs = np.zeros((1, 3, 5), dtype=np.float32)
+    probs[0, 0] = [0.6, 0.2, 0.1, 0.05, 0.05]
+    probs[0, 1, :2] = [0.5, 0.5]
+    probs[0, 2, :3] = [0.5, 0.3, 0.2]
+    artifact = {
+        "pool_indices": torch.from_numpy(pool),
+        "pool_probs": torch.from_numpy(probs),
+        "hard_neg_indices": torch.full((3, 2), -1, dtype=torch.long),
+        "metadata": {"diffusion_scales": (1,)},
+    }
+    sampler = GGPKDCandidateSampler(artifact, None, 0, 0, seed=0)
+    assert sampler.full_pool
+    # Row width is the widest row, so every draw collates to one shape.
+    assert sampler.candidate_size == 5
 
-    # The mixture is weighted by omega_r = 1/r, so a broad r=2 row cannot drag
-    # the quota up as far as its raw mass suggests.
-    two_scale = np.zeros((2, 1, 5), dtype=np.float32)
-    two_scale[0, 0] = [0.9, 0.1, 0.0, 0.0, 0.0]
-    two_scale[1, 0] = [0.2, 0.2, 0.2, 0.2, 0.2]
-    assert derive_diffusion_quota(two_scale, (1, 2)) == 2
+    for idx, expected in ((0, [10, 11, 12, 13, 14]), (1, [20, 21]), (2, [30, 31, 32])):
+        candidates, teacher = sampler.sample(idx)
+        assert candidates.size == 5
+        scored = int((teacher[0] > 0).sum())
+        assert scored == len(expected)
+        assert sorted(candidates[:scored].tolist()) == sorted(expected)
+        # The rest is the anchor's own index, which self_mask removes downstream.
+        assert set(candidates[scored:].tolist()) <= {idx}
+
+    # No RNG anywhere in the path: the same anchor draws the same set every epoch.
+    first = [sampler.sample(i)[0].copy() for i in range(3)]
+    sampler.set_epoch(11)
+    for before, i in zip(first, range(3)):
+        np.testing.assert_array_equal(before, sampler.sample(i)[0])
 
 
 def test_ggpkd_relational_loss_reports_semantic_decomposition():
@@ -655,65 +672,70 @@ def test_row_selection_knobs_are_gone():
     assert config.row_start_epoch == 1
 
 
-def test_entropic_affinity_hits_the_requested_perplexity():
+def test_knn_bandwidth_makes_the_kth_neighbour_k_times_less_likely():
+    # The rule with no constant in it: tau_i = (s(1) - s(k)) / log(k), so the k-th
+    # retrieved neighbour sits log(k) nats below the nearest and is therefore
+    # exactly k times less likely. This is what replaced the target perplexity.
     rng = np.random.default_rng(0)
-    scores = rng.normal(size=64) * 0.1 + 0.7
-    for perplexity in (2.0, 5.0, 30.0):
-        probs, tau, clamped = _entropic_affinity(scores, float(np.log(perplexity)))
-        entropy = -(probs * np.log(probs)).sum()
-        assert not clamped
-        assert tau > 0.0
-        np.testing.assert_allclose(probs.sum(), 1.0, atol=1e-12)
-        np.testing.assert_allclose(np.exp(entropy), perplexity, rtol=1e-5)
+    for k in (8, 40, 200):
+        scores = np.sort(rng.normal(size=(4, k)) * 0.1 + 0.7, axis=1)[:, ::-1].copy()
+        taus = _knn_bandwidths(scores, k)
+        ratio = np.exp((scores[:, 0] - scores[:, k - 1]) / taus)
+        np.testing.assert_allclose(ratio, k, rtol=1e-9)
 
 
-def test_row_entropy_is_strictly_increasing_in_temperature():
-    # The uniqueness of the solve rests on dH/dbeta = -beta * Var_p(s) < 0, i.e.
-    # entropy strictly increasing in tau. If that fails the bisection is solving
-    # for a root that need not be unique.
-    rng = np.random.default_rng(1)
-    scores = rng.normal(size=32) * 0.1 + 0.7
-    taus = np.geomspace(1e-3, 1e1, 40)
-    entropies = [_softmax_at(scores, 1.0 / tau)[1] for tau in taus]
-    assert all(b > a for a, b in zip(entropies, entropies[1:]))
-    # The range it sweeps is (0, log d), which is what makes any perplexity below
-    # the degree reachable and anything at or above it not.
-    assert entropies[0] < 0.05
-    assert entropies[-1] > np.log(scores.size) - 0.05
-
-
-def test_entropic_affinity_is_invariant_to_affine_rescaling():
-    # The claim that removes per-teacher retuning: a teacher whose cosines are
-    # spread differently produces the *same* graph, with the temperature absorbing
-    # the rescaling. A fixed temperature does not have this property.
+def test_knn_bandwidth_is_invariant_to_affine_rescaling():
+    # The property that ruled out a single fixed temperature, and the reason this
+    # rule is admissible as a replacement: a teacher whose cosines are spread
+    # differently must produce the *same* transition row.
     rng = np.random.default_rng(2)
-    scores = rng.normal(size=48) * 0.1 + 0.7
-    target = float(np.log(30.0))
+    scores = np.sort(rng.normal(size=(1, 48)) * 0.1 + 0.7, axis=1)[:, ::-1].copy()
 
-    base_probs, base_tau, _ = _entropic_affinity(scores, target)
+    def row(raw):
+        tau = float(_knn_bandwidths(raw, raw.shape[1])[0])
+        logits = (raw[0] - raw[0].max()) / tau
+        weights = np.exp(logits)
+        return weights / weights.sum(), tau
+
+    base_probs, base_tau = row(scores)
     for a, b in ((3.0, 0.0), (0.25, 0.0), (2.0, -1.5), (0.5, 4.0)):
-        probs, tau, _ = _entropic_affinity(a * scores + b, target)
-        np.testing.assert_allclose(probs, base_probs, rtol=1e-6, atol=1e-9)
-        np.testing.assert_allclose(tau, a * base_tau, rtol=1e-4)
+        probs, tau = row(a * scores + b)
+        np.testing.assert_allclose(probs, base_probs, rtol=1e-9, atol=1e-12)
+        np.testing.assert_allclose(tau, a * base_tau, rtol=1e-9)
 
     # The fixed-temperature row, by contrast, sharpens when the scale is stretched.
-    fixed = np.exp((scores - scores.max()) / 0.05)
+    fixed = np.exp((scores[0] - scores[0].max()) / 0.05)
     fixed /= fixed.sum()
-    stretched = np.exp((3.0 * scores - (3.0 * scores).max()) / 0.05)
+    stretched = np.exp((3.0 * scores[0] - (3.0 * scores[0]).max()) / 0.05)
     stretched /= stretched.sum()
     assert not np.allclose(fixed, stretched, atol=1e-6)
 
 
-def test_entropic_affinity_clamps_when_perplexity_exceeds_degree():
-    # log d is the supremum, reached only as tau -> infinity, so a row with fewer
-    # neighbours than the requested perplexity is solved under its own ceiling and
-    # says so rather than running the bracket off to infinity.
-    scores = np.array([0.9, 0.8, 0.4])
-    probs, tau, clamped = _entropic_affinity(scores, float(np.log(30.0)))
-    assert clamped
-    assert np.isfinite(tau) and tau > 0.0
-    entropy = -(probs * np.log(probs)).sum()
-    assert entropy <= np.log(scores.size) + 1e-12
+def test_knn_bandwidth_has_a_fixed_sample_size_and_cannot_clamp():
+    # The failure the perplexity solve had: it ran on the mutual-filtered list,
+    # where degree varies, so a row with degree at or below the requested
+    # perplexity could not reach the target entropy and was solved against its own
+    # ceiling instead. Here every row reads exactly k raw scores, so there is no
+    # degree to fall short and no target to miss.
+    rng = np.random.default_rng(3)
+    scores = np.sort(rng.normal(size=(500, 32)) * 0.1 + 0.7, axis=1)[:, ::-1].copy()
+    taus = _knn_bandwidths(scores, 32)
+    assert taus.shape == (500,)
+    assert np.all(np.isfinite(taus)) and np.all(taus > 0.0)
+    # Well conditioned: no heavy tail of near-uniform rows at enormous tau.
+    assert taus.max() / taus.min() < 10.0
+
+
+def test_knn_bandwidth_floors_a_row_with_no_scale_of_its_own():
+    # All k neighbours tied in cosine: the row is uniform at every temperature, so
+    # the floor only keeps the division finite.
+    tied = np.full((1, 16), 0.8, dtype=np.float64)
+    tau = float(_knn_bandwidths(tied, 16)[0])
+    assert tau > 0.0 and np.isfinite(tau)
+
+    with pytest.raises(ValueError, match="at least 2 neighbours"):
+        _knn_bandwidths(np.zeros((1, 1)), 1)
+
 
 
 def test_mass_prefix_meets_the_stated_tv_and_kl_bounds():

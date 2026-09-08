@@ -25,7 +25,9 @@ SEEDS="${SEEDS:-42 43 44}"
 # Pin every method-defining value so all arms stay comparable if config defaults
 # later move. The canonical support quota remains derived from the graph.
 GRAPH_K="${GRAPH_K:-200}"
-PERPLEXITY="${PERPLEXITY:-30}"
+# Baseline arm only: one shared graph temperature instead of the per-row
+# bandwidth derived from graph_k. Empty means the method.
+FIXED_BANDWIDTH="${FIXED_BANDWIDTH:-}"
 TRUNCATION_TOLERANCE="${TRUNCATION_TOLERANCE:-0.01}"
 # The paper method is the one-hop graph transition objective. Multi-hop variants
 # are isolated in radius.sh and never silently become the reference arm.
@@ -106,7 +108,7 @@ run_arm() {
         "${PAIR_KEY}" "${EXPERIMENT_KEY}" "${group}" "${arm}" "${seed}" \
         "${graph_key}" "${TRAIN_DATA}" "${TEACHER_MODEL}" "${STUDENT_MODEL}" \
         "${POOLING_METHOD}" "${BATCH_SIZE}" "${EPOCHS}" "${LR}" \
-        "${MAX_LENGTH}" "${NUM_WORKERS}" "${GRAPH_K}" "${PERPLEXITY}" \
+        "${MAX_LENGTH}" "${NUM_WORKERS}" "${GRAPH_K}" "${FIXED_BANDWIDTH:-0}" \
         "${TRUNCATION_TOLERANCE}" "${DIFFUSION_SCALES}" "${ROW_WEIGHT}" \
         "${ROW_START_EPOCH}" "${DIRECT_TEMP}" "${HARD_NEG_K}" \
         "${RANDOM_NEG_K}" "$@" <<'PYEOF'
@@ -118,7 +120,7 @@ from pathlib import Path
 (
     output, repo_root, pair, experiment, group, arm, seed, graph_key,
     train_data, teacher, student, pooling, batch_size, epochs, learning_rate,
-    max_length, num_workers, graph_k, perplexity, truncation_tolerance,
+    max_length, num_workers, graph_k, fixed_bandwidth, truncation_tolerance,
     diffusion_scales, row_weight, row_start_epoch, direct_temp, hard_neg_k,
     random_neg_k, *extra_args,
 ) = sys.argv[1:]
@@ -155,7 +157,7 @@ payload = {
         "max_length": int(max_length),
         "num_workers": int(num_workers),
         "graph_k": int(graph_k),
-        "perplexity": float(perplexity),
+        "fixed_bandwidth": bool(int(fixed_bandwidth or 0)),
         "truncation_tolerance": float(truncation_tolerance),
         "diffusion_scales": diffusion_scales,
         "row_weight": float(row_weight),
@@ -237,7 +239,7 @@ PYEOF
         --num_workers "${NUM_WORKERS}" \
         --seed "${seed}" \
         --graph_k "${GRAPH_K}" \
-        --perplexity "${PERPLEXITY}" \
+        ${FIXED_BANDWIDTH:+--fixed_bandwidth} \
         --truncation_tolerance "${TRUNCATION_TOLERANCE}" \
         --diffusion_scales "${DIFFUSION_SCALES}" \
         --row_weight "${ROW_WEIGHT}" \

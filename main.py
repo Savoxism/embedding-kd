@@ -68,10 +68,10 @@ def parse_args():
     # default config.
     parser.add_argument("--graph_k", type=int, default=None)
     parser.add_argument(
-        "--perplexity",
-        type=float,
-        default=None,
-        help="Target transition-row perplexity; 0 uses the fixed-bandwidth baseline",
+        "--fixed_bandwidth",
+        action="store_true",
+        help="Baseline arm: one shared graph temperature instead of the per-row "
+        "bandwidth derived from graph_k",
     )
     parser.add_argument("--truncation_tolerance", type=float, default=None)
     parser.add_argument("--row_weight", type=float, default=None)
@@ -262,8 +262,8 @@ def get_config(method: str, args):
             setattr(config, name, value)
     # None already means "leave the config unchanged", so 0 disables the
     # entropic-affinity bandwidth and selects the fixed-bandwidth baseline.
-    if args.perplexity is not None:
-        config.perplexity = None if args.perplexity <= 0 else args.perplexity
+    if args.fixed_bandwidth:
+        config.fixed_bandwidth = True
     # Parsed here rather than in the generic loop above because the flag is a
     # comma-separated string and the config stores a tuple of ints. Sorting,
     # uniqueness and the r=1 anchor are validated downstream by the artifact

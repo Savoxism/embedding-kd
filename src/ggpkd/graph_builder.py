@@ -12,6 +12,7 @@ from tqdm import tqdm
 
 from .policy import (
     FIXED_BANDWIDTH_TEMP,
+    TRUNCATION_TOLERANCE,
     hard_negative_pool_size,
     normalized_diffusion_weights,
 )
@@ -47,93 +48,58 @@ def _as_tuple(values: Sequence[int]) -> tuple[int, ...]:
     return tuple(sorted({int(v) for v in values}))
 
 
-def _softmax_at(scores: np.ndarray, beta: float) -> tuple[np.ndarray, float]:
-    """Softmax of `beta * scores` and its Shannon entropy, in nats."""
-    shifted = beta * scores
-    shifted -= shifted.max()
-    weights = np.exp(shifted)
-    probs = weights / weights.sum()
-    entropy = -float((probs * np.log(np.maximum(probs, 1e-300))).sum())
-    return probs, entropy
+# Floor for a degenerate bandwidth. A row whose k retrieved neighbours all carry
+# the identical cosine has no scale of its own; it is uniform at every positive
+# temperature, so any floor gives the same row and this one only keeps the
+# division finite.
+MIN_BANDWIDTH = 1e-6
 
 
-def _entropic_affinity(
-    scores: np.ndarray,
-    target_entropy: float,
-    max_iter: int = 60,
-    tol: float = 1e-8,
-) -> tuple[np.ndarray, float, bool]:
-    """Softmax over `scores` at the unique temperature that hits `target_entropy`.
+def _knn_bandwidths(top_scores: np.ndarray, graph_k: int) -> np.ndarray:
+    """Per-row temperature read straight off the retrieval width.
 
-    Writing p_j(beta) proportional to exp(beta * s_j) with beta = 1/tau,
+        tau_i = (s_i(1) - s_i(k)) / log(k)
 
-        H(beta) = log Z(beta) - beta * E_p[s],    dH/dbeta = -beta * Var_p(s),
+    where s_i(j) is the j-th largest cosine from i to another node. Reading it back:
+    the k-th neighbour sits log(k) nats below the nearest, so it is exactly k times
+    less likely -- for every node, with no constant left to choose.
 
-    so H is strictly decreasing in beta -- strictly increasing in tau -- whenever
-    the scores are not all equal, and it sweeps (0, log d) as tau sweeps (0, inf).
-    The root is therefore unique for any target in that interval, and bisection
-    cannot fail; the bracket is found by doubling first. This is the entropic
-    affinity of Hinton and Roweis (2002), whose properties and numerics are
-    analysed by Vladymyrov and Carreira-Perpinan (2013).
+    The log(k) is not decoration. A bare span of 1 nat leaves the row far too flat:
+    spread over k neighbours it gives KL(p || uniform) ~ 0.04, right at the
+    degeneracy warning this build already emits, against 0.757 measured on the
+    production graph under the perplexity solve. Sharpness turns out to be set by
+    the span alone and to be almost independent of k (0.774 at k=40 vs 0.755 at
+    k=400 for a fixed span), so the span is what has to carry it. log(k) is the
+    choice that carries it without adding a second constant, and it lands at
+    KL ~ 0.70 for k=200 -- next to the 0.757 the graph already trains at.
 
-    The reason to prefer it over one global temperature is not adaptivity per se.
-    Under an affine rescaling of the teacher's similarity scale, s -> a*s + b with
-    a > 0, the solution moves to tau' = a*tau and the row is *unchanged*:
+    Two properties this is here for.
 
-        exp((a*s_j + b) / (a*tau)) proportional to exp(s_j / tau).
+    *Exactly affine invariant.* Under s -> a*s + b the bandwidth scales as
+    tau -> a*tau, so the logits become s_j/tau_i + b/(a*tau_i); the second term
+    does not depend on j and a softmax is shift invariant, so the row is
+    unchanged. This is the invariance that ruled out a single fixed temperature,
+    and it survives here in closed form -- no bisection, no target entropy.
 
-    A fixed temperature has no such invariance, which is exactly why it has to be
-    retuned for every teacher whose cosines are spread differently.
+    *A fixed sample size for every node.* The scores come from the raw top-k, read
+    before the mutual filter, so all k values exist for every node whenever
+    graph_k < n_items. The entropic-affinity solve this replaces ran on the
+    filtered neighbour list, where degree varies and 18.9% of the production
+    corpus had degree at or below the requested perplexity: those rows never
+    reached the target entropy at all and were solved against their own ceiling
+    instead, yielding a near-uniform target at a very large tau. That failure mode
+    cannot occur here, because there is no target to miss.
 
-    Returns:
-        probs: the transition row.
-        tau: its temperature -- the student must match this row at the same value.
-        clamped: True if the target entropy was unreachable (perplexity >= degree)
-            and the row was solved against the largest attainable entropy instead.
+    Calibrating on the raw top-k rather than on the surviving edges is deliberate.
+    It is the wider set, so the gap is larger and the rows come out flatter than a
+    degree-matched calibration would give; the trade is that the sample size stops
+    depending on how many edges the mutual filter happened to leave.
     """
-    degree = scores.size
-    if degree <= 1:
-        return np.ones(degree, dtype=np.float64), 1.0, True
-
-    max_entropy = float(np.log(degree))
-    # log d is the supremum, attained only as tau -> inf. Asking for it exactly
-    # would send the bracket to infinity, so a row whose degree is at or below the
-    # requested perplexity is solved just under its own ceiling instead.
-    ceiling = max_entropy * (1.0 - 1e-3)
-    clamped = target_entropy >= ceiling
-    goal = min(target_entropy, ceiling)
-
-    if float(np.ptp(scores)) <= 0.0:
-        # Every neighbour scores the same: the row is uniform at every temperature.
-        return np.full(degree, 1.0 / degree, dtype=np.float64), 1.0, True
-
-    # Bracket: low beta is the high-entropy end, so grow beta until entropy drops
-    # below the goal.
-    beta_lo = 1e-12
-    beta_hi = 1.0
-    for _ in range(max_iter):
-        _, entropy_hi = _softmax_at(scores, beta_hi)
-        if entropy_hi <= goal:
-            break
-        beta_lo = beta_hi
-        beta_hi *= 2.0
-
-    probs = None
-    for _ in range(max_iter):
-        beta = 0.5 * (beta_lo + beta_hi)
-        probs, entropy = _softmax_at(scores, beta)
-        if abs(entropy - goal) <= tol:
-            break
-        # H decreases in beta: too much entropy means beta must grow.
-        if entropy > goal:
-            beta_lo = beta
-        else:
-            beta_hi = beta
-
-    beta = 0.5 * (beta_lo + beta_hi)
-    if probs is None:
-        probs, _ = _softmax_at(scores, beta)
-    return probs, 1.0 / beta, clamped
+    k_eff = min(int(graph_k), top_scores.shape[1])
+    if k_eff < 2:
+        raise ValueError(f"graph_k must retrieve at least 2 neighbours, got {k_eff}")
+    span = top_scores[:, 0].astype(np.float64) - top_scores[:, k_eff - 1].astype(np.float64)
+    return np.maximum(span / np.log(k_eff), MIN_BANDWIDTH)
 
 
 def _fingerprint(embeddings: torch.Tensor) -> str:
@@ -233,7 +199,7 @@ def _build_transition(
     top_scores: np.ndarray,
     graph_k: int,
     graph_temp: float,
-    perplexity: float | None,
+    fixed_bandwidth: bool,
     knn_mode: str = "mutual",
 ) -> tuple[
     list[np.ndarray], list[np.ndarray], list[np.ndarray], np.ndarray, np.ndarray, dict
@@ -251,11 +217,10 @@ def _build_transition(
     * ``symmetrized``: keep the union, j in topk(i) *or* i in topk(j). Degrees are
       the largest of the three and hubs are amplified rather than suppressed.
 
-    With `perplexity` set, each row gets its own temperature from the entropic
-    affinity above, so every node's neighbour distribution carries the same
-    effective number of neighbours and the graph is invariant to the teacher's
-    similarity scale. With `perplexity=None` every row uses `graph_temp`, which is
-    the fixed-bandwidth baseline that arm exists to be compared against.
+    Bandwidth is read off the retrieval width by `_knn_bandwidths`, so the graph
+    is invariant to the teacher's similarity scale and `graph_k` is the only
+    quantity that sets it. With `fixed_bandwidth=True` every row uses `graph_temp`
+    instead, which is the baseline that arm exists to be compared against.
     """
     if knn_mode not in KNN_MODES:
         raise ValueError(f"knn_mode must be one of {KNN_MODES}, got {knn_mode!r}")
@@ -269,10 +234,14 @@ def _build_transition(
     row_neighbors: list[np.ndarray] = []
     row_probs: list[np.ndarray] = []
     row_scores: list[np.ndarray] = []
-    row_temps = np.zeros(n_items, dtype=np.float64)
     fallback_flags = np.zeros(n_items, dtype=bool)
-    target_entropy = None if perplexity is None else float(np.log(float(perplexity)))
-    clamped_rows = 0
+    # Bandwidths come from the raw top-k, so they are one vectorised subtraction
+    # over the whole corpus rather than a bisection per row.
+    row_temps = (
+        np.full(n_items, float(graph_temp), dtype=np.float64)
+        if fixed_bandwidth
+        else _knn_bandwidths(top_scores, graph_k)
+    )
 
     for i in tqdm(range(n_items), desc=f"GGPKD {knn_mode} kNN graph"):
         neighbors = []
@@ -299,21 +268,14 @@ def _build_transition(
             neighbors = [int(j) for j in top_indices[i, :fallback_k]]
             scores = [float(s) for s in top_scores[i, :fallback_k]]
 
-        # Softmax over neighbour cosines. The temperature is either solved per row
-        # for a fixed perplexity, or shared across rows in the baseline arm; either
-        # way the value used here is the one the student has to match this row at,
-        # so it is stored alongside the row.
+        # Softmax over neighbour cosines at this row's bandwidth. That value is the
+        # one the student has to match this row at, so it is stored alongside the
+        # row and the criterion reads it back rather than re-deriving it.
         score_array = np.asarray(scores, dtype=np.float64)
-        if target_entropy is None:
-            centered = score_array - score_array.max()
-            weights = np.exp(centered / max(graph_temp, 1e-6))
-            weights = weights / max(float(weights.sum()), 1e-12)
-            tau = float(graph_temp)
-        else:
-            weights, tau, clamped = _entropic_affinity(score_array, target_entropy)
-            clamped_rows += int(clamped)
-
-        row_temps[i] = tau
+        tau = float(row_temps[i])
+        centered = score_array - score_array.max()
+        weights = np.exp(centered / tau)
+        weights = weights / max(float(weights.sum()), 1e-12)
         row_neighbors.append(np.asarray(neighbors, dtype=np.int64))
         row_probs.append(weights.astype(np.float32))
         row_scores.append(np.asarray(scores, dtype=np.float32))
@@ -323,10 +285,10 @@ def _build_transition(
         "row_temp_min": float(row_temps.min()) if n_items else 0.0,
         "row_temp_max": float(row_temps.max()) if n_items else 0.0,
         "row_temp_p50": float(np.median(row_temps)) if n_items else 0.0,
-        # Rows whose degree was at or below the requested perplexity: their target
-        # entropy was unreachable and they were solved just under their own ceiling.
-        "perplexity_clamped_rows": int(clamped_rows),
-        "perplexity_clamped_rate": float(clamped_rows / max(1, n_items)),
+        # Rows whose k retrieved neighbours were tied in cosine and so had no
+        # scale of their own. Expected 0; reported because such a row is uniform
+        # at every temperature and contributes no gradient.
+        "degenerate_bandwidth_rows": int((row_temps <= MIN_BANDWIDTH).sum()),
     }
     return row_neighbors, row_probs, row_scores, fallback_flags, row_temps, temp_stats
 
@@ -954,7 +916,7 @@ def _target_sharpness_stats(
 _METADATA_KEYS = (
     "n_items",
     "graph_k",
-    "perplexity",
+    "bandwidth",
     "graph_temp",
     "diffusion_scales",
     "scale_weights",
@@ -994,8 +956,8 @@ def build_or_load_ggpkd_artifact(
     graph_k: int,
     diffusion_scales: Sequence[int],
     source_ids: Sequence[int] | None = None,
-    perplexity: float | None = None,
-    truncation_tolerance: float = 0.01,
+    fixed_bandwidth: bool = False,
+    truncation_tolerance: float = TRUNCATION_TOLERANCE,
     knn_mode: str = "mutual",
 ) -> dict:
     n_items = int(teacher_embeddings.size(0))
@@ -1029,9 +991,9 @@ def build_or_load_ggpkd_artifact(
     metadata = {
         "n_items": n_items,
         "graph_k": int(graph_k),
-        # The scalar bandwidth is a fixed baseline policy. Canonical entropic
-        # affinities ignore it and store one solved temperature per row.
-        "perplexity": None if perplexity is None else float(perplexity),
+        # The scalar bandwidth is a fixed baseline policy. Canonical rows ignore it
+        # and store one temperature per row, derived from graph_k.
+        "bandwidth": "fixed" if fixed_bandwidth else "knn",
         "graph_temp": FIXED_BANDWIDTH_TEMP,
         "diffusion_scales": scales,
         "scale_weights": tuple(round(float(w), 8) for w in weights),
@@ -1090,7 +1052,7 @@ def build_or_load_ggpkd_artifact(
         top_scores=top_scores,
         graph_k=graph_k,
         graph_temp=FIXED_BANDWIDTH_TEMP,
-        perplexity=perplexity,
+        fixed_bandwidth=fixed_bandwidth,
         knn_mode=knn_mode,
     )
     graph_log_path, graph_stats = _write_knn_graph_log(
@@ -1216,7 +1178,7 @@ def _print_graph_summary(
     if low:
         print(
             f"WARNING: GGPKD targets at scales {low} are close to uniform on their support "
-            f"(KL < 0.05 nats) -- lower the target perplexity (or the internal "
+            f"(KL < 0.05 nats) -- lower graph_k (or the internal "
             f"fixed-baseline temperature), otherwise L_diff degenerates into a binary "
             f"neighbour/non-neighbour objective."
         )

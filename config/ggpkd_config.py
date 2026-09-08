@@ -1,6 +1,6 @@
 from src.criterions.ggpkd_distillation import RELATION_TARGETS
 from src.ggpkd.graph_builder import KNN_MODES
-from src.ggpkd.policy import SUPPORT_POLICIES
+from src.ggpkd.policy import SUPPORT_POLICIES, TRUNCATION_TOLERANCE
 
 from .base_config import BaseConfig
 
@@ -82,15 +82,22 @@ class GGPKDConfig(BaseConfig):
 
     # ---- Teacher Graph -------------------------------------------------------
     graph_k = 200
-    # Bandwidth selection. Each transition row is solved for its own temperature so
-    # that H(P(.|i)) = log(perplexity): one effective number of neighbours for every
-    # node, instead of one temperature for every node. Two reasons, both provable:
-    # the entropy is strictly monotone in the temperature (dH/dbeta = -beta*Var(s)),
-    # so the solution is unique and bisection cannot fail; and the row is exactly
-    # invariant to an affine rescaling s -> a*s + b of the teacher's similarities,
-    # which is what forced graph_temp to be retuned for each teacher. 30 is the
-    # t-SNE default for the same quantity (van der Maaten and Hinton, 2008).
-    perplexity = 30
+    # Bandwidth. Each transition row uses tau_i = s_i(1) - s_i(k): the similarity
+    # span of its own retrieved neighbourhood, so the k-th neighbour sits exactly one
+    # nat below the nearest for every node. This replaced a target-perplexity solve,
+    # for two reasons. It keeps the property that ruled out a single fixed
+    # temperature -- the row is exactly invariant to s -> a*s + b, because the
+    # bandwidth scales with the similarities and a softmax is shift-invariant -- and
+    # it costs one subtraction instead of a per-row bisection. The solve it replaced
+    # also did not deliver what it promised: it ran on the mutual-filtered neighbour
+    # list, where 18.9% of the production corpus had degree at or below perplexity
+    # 30, so those rows never reached the target entropy and were solved against
+    # their own ceiling instead. There is no target to miss here.
+    #
+    # graph_k therefore sets both the neighbourhood and its sharpness. That is one
+    # knob doing two jobs: a sweep over it cannot separate the two effects, which is
+    # the price of not having a second constant.
+    fixed_bandwidth = False
     # Sorted, unique, and starting at 1. All three are enforced: the artifact stores
     # its scales sorted, and the temperature ladder is anchored to the r=1 target
     # being the transition row.
@@ -150,13 +157,21 @@ class GGPKDConfig(BaseConfig):
     # graph_builder, which are memory guards -- the build reports
     # pool_capped_rows / diffusion_capped_rows if either binds before the tolerance
     # is met, and then the guarantee does not hold.
-    truncation_tolerance = 0.01
+    truncation_tolerance = TRUNCATION_TOLERANCE
 
     # ---- Per-Epoch Candidate Sampling ---------------------------------------
-    # None derives the support size from the graph artifact at startup: the
-    # smallest k reaching ROW_COVERAGE_TAU mixture-mass coverage at the median
-    # anchor (src/ggpkd/policy.py, where the sweep evidence for the target is
-    # recorded). An int (CLI --diffusion_quota) still overrides for ablations.
+    # None is the method: no sampling at all. The candidate set is the anchor's
+    # whole truncated transition row -- every column the teacher put mass on and
+    # nothing else -- so there is no budget, no draw, and no RNG. The set is a
+    # deterministic function of the graph, identical in every epoch.
+    #
+    # This removed the last tuned quantity in the candidate path. It also removed
+    # `support_policy` from the method: at full width, topk / proportional / uniform
+    # return the same set, so that flag now only means something for an ablation arm
+    # given a budget smaller than the row. An int still sets such a budget.
+    #
+    # Row width is the pool width; anchors with shorter rows are padded with their
+    # own index, which `self_mask` removes from every softmax.
     diffusion_quota = None
     # The method draws no negatives. Every scored column is a column the teacher
     # put diffusion mass on, so candidate_size == diffusion_quota and the whole
@@ -287,8 +302,10 @@ class GGPKDConfig(BaseConfig):
             raise ValueError("direct_temp must be positive, or 0 to derive it")
         if self.row_start_epoch < 1:
             raise ValueError("row_start_epoch must be at least 1")
-        if self.diffusion_quota is not None and self.diffusion_quota < 0:
-            raise ValueError("diffusion_quota must be None (derived) or non-negative")
+        if self.diffusion_quota is not None and self.diffusion_quota < 1:
+            raise ValueError(
+                "diffusion_quota must be None (the whole transition row) or positive"
+            )
         if self.support_policy not in SUPPORT_POLICIES:
             raise ValueError(
                 f"support_policy must be one of {SUPPORT_POLICIES}, "

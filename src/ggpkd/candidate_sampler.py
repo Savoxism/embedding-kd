@@ -33,7 +33,7 @@ class GGPKDCandidateSampler:
     def __init__(
         self,
         artifact: dict,
-        diffusion_quota: int,
+        diffusion_quota: int | None,
         hard_neg_k: int,
         random_neg_k: int,
         seed: int,
@@ -45,10 +45,17 @@ class GGPKDCandidateSampler:
         self.n_items = int(self.pool_indices.shape[0])
         self.n_scales = int(self.pool_probs.shape[0])
 
+        # `None` is the method: the candidate set is the anchor's whole truncated
+        # transition row, so there is no budget and no selection. Resolving it to the
+        # pool width keeps one fixed row width for collation -- the columns an anchor
+        # does not have are padded inertly below, exactly as a short draw already was.
+        self.pool_width = int(self.pool_indices.shape[1])
+        self.full_pool = diffusion_quota is None
+        resolved_quota = self.pool_width if self.full_pool else int(diffusion_quota)
         self.candidate_size = candidate_budget(
-            diffusion_quota, hard_neg_k, random_neg_k
+            resolved_quota, hard_neg_k, random_neg_k
         )
-        self.diffusion_quota = int(diffusion_quota)
+        self.diffusion_quota = resolved_quota
         self.hard_neg_k = int(hard_neg_k)
         self.random_neg_k = int(random_neg_k)
         if support_policy not in SUPPORT_POLICIES:
@@ -61,9 +68,12 @@ class GGPKDCandidateSampler:
         # The method draws no negatives at all. Kept as a derived flag rather than
         # re-tested per draw, because it changes what a short support draw means.
         self.no_negatives = self.hard_neg_k == 0 and self.random_neg_k == 0
-        # Anchors whose pool held fewer positive-mass columns than the quota, and
-        # were therefore padded. Expected to be 0; reported so it cannot be 0 in
-        # the write-up and non-zero in the run.
+        # Anchors padded to the fixed row width because their own row was shorter.
+        # Under `full_pool` this is the normal case, not a fault: the graph is ragged
+        # (fill runs from 1 to pool_width) and every anchor short of the widest row
+        # is padded. With an explicit quota it means the quota outran the pool, which
+        # is what silently turned a requested width of 500 into a real width of 67 --
+        # so it is counted either way and reported by the distiller.
         self.short_support_rows = 0
 
         scales = tuple(artifact.get("metadata", {}).get("diffusion_scales", ()))
@@ -144,6 +154,14 @@ class GGPKDCandidateSampler:
     ) -> tuple[np.ndarray, np.ndarray]:
         pool = self.pool_indices[idx]
         valid = pool >= 0
+        if self.full_pool:
+            # Every column the teacher put mass on, at any scale. Taken directly
+            # rather than through the per-scale loop below: that loop splits a budget
+            # across scales, and with no budget to split it could still miss a column
+            # whose mass sits entirely in a scale whose share was already spent.
+            mass = np.where(valid, self._mixture_row(idx), 0.0)
+            positions = np.flatnonzero(mass > 0).astype(np.int64)
+            return pool[positions].astype(np.int64), positions
         if self.support_policy == "uniform":
             return self._select_support_uniform(idx, pool, valid, rng)
         if self.support_policy == "local_topk":
