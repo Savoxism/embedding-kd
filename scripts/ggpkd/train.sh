@@ -12,6 +12,13 @@ cd "$REPO_ROOT"
 # cache hit, by which point the file is already wrong.
 PAIR_KEY="${PAIR_KEY:-qwen3_0_6b_to_minilmv2_h384}"
 
+# Set by scripts/ggpkd/run_paper.sh, which pins one run per GPU and needs the
+# project interpreter rather than whatever `python3` resolves to on the server.
+# All three keep the previous behaviour when unset.
+PYTHON_BIN="${PYTHON_BIN:-python3}"
+SEED_VALUE="${SEED:-}"
+GPU_VALUE="${GPU:-}"
+
 if [[ $# -gt 0 && "$1" != -* ]]; then
     PAIR_KEY="$1"
     shift
@@ -46,6 +53,13 @@ echo "======================================"
 
 export TOKENIZERS_PARALLELISM="${TOKENIZERS_PARALLELISM:-false}"
 export PYTORCH_ENABLE_MPS_FALLBACK="${PYTORCH_ENABLE_MPS_FALLBACK:-1}"
+if [[ -n "$GPU_VALUE" ]]; then
+    export CUDA_VISIBLE_DEVICES="$GPU_VALUE"
+fi
+if [[ -n "$SEED_VALUE" && ! "$SEED_VALUE" =~ ^[0-9]+$ ]]; then
+    echo "Seed must be a non-negative integer, got: $SEED_VALUE" >&2
+    exit 2
+fi
 
 TRAIN_DATA="${TRAIN_DATA:-data/train_set/merged_3_data_5k_each.csv}"
 STUDENT_MODEL="${STUDENT_MODEL:-$STUDENT_MODEL_DEFAULT}"
@@ -62,7 +76,7 @@ SAVE_DIR="${SAVE_DIR:-models/ggpkd/$PAIR_KEY}"
 WEIGHTS_DIR="${WEIGHTS_DIR:-}"
 
 COMMAND=(
-    python3 main.py
+    "$PYTHON_BIN" main.py
     --method ggpkd
     --train_data "$TRAIN_DATA"
     --student_model "$STUDENT_MODEL"
@@ -77,6 +91,10 @@ COMMAND=(
     --max_length "$MAX_LENGTH"
     --save_dir "$SAVE_DIR"
 )
+
+if [[ -n "$SEED_VALUE" ]]; then
+    COMMAND+=(--seed "$SEED_VALUE")
+fi
 
 if [[ -n "$WEIGHTS_DIR" ]]; then
     COMMAND+=(--weights_dir "$WEIGHTS_DIR")

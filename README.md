@@ -195,6 +195,34 @@ To persist student weights to a durable directory:
 WEIGHTS_DIR="/path/to/weights" bash scripts/ggpkd/train.sh
 ```
 
+### Multi-seed suites
+
+`run_paper.sh` trains the three paper pairs at three seeds (9 runs), one run per
+GPU, and reports mean ± std per pair. `sensitivity.sh` sweeps the two declared
+hyperparameters -- `graph_k` and `row_weight` -- on one pair at three seeds
+(8 arms, 24 runs) and reports how far the benchmark average moves along each
+axis. Both build every teacher cache and graph artifact up front, so no two
+concurrent runs write the same cache, and both refuse to aggregate if any run
+failed.
+
+```bash
+bash scripts/ggpkd/run_paper.sh                    # 3 pairs x 3 seeds
+GPUS=0,1,2 bash scripts/ggpkd/sensitivity.sh       # graph_k and row_weight
+DRY_RUN=1 GPUS=0 bash scripts/ggpkd/sensitivity.sh # print the arm matrix only
+```
+
+Overrides: `PAIRS` / `PAIR`, `SEEDS`, `GPUS`, `RUN_ID`, `RESULT_BASE`,
+`CACHE_ROOT`, `PYTHON_BIN`. A sweep over another axis needs no edit to the
+script -- `ARMS` (or `ARMS_FILE`) and `GRAPH_SPEC` replace the arm matrix; give
+any axis that changes the graph its own `GRAPH_SPEC` key so each artifact is
+built once instead of being rebuilt per arm. Both summaries can be re-run
+standalone over a finished tree:
+
+```bash
+python scripts/ggpkd/summarize.py results/ggpkd/<run_id>
+python scripts/ggpkd/summarize_sensitivity.py results/ggpkd_sensitivity/<run_id>
+```
+
 ### Using Python directly
 
 ```bash
@@ -308,6 +336,9 @@ This repository also includes implementations of other distillation baselines fo
 │   ├── ggpkd/floor.py               # L_rel floor diagnostic
 │   ├── ggpkd/pick_graph_k.py        # graph_k sharpness report
 │   ├── ggpkd/bench_encode.py        # Candidate-encoder throughput bench
+│   ├── ggpkd/run_paper.sh           # 3 pairs x 3 seeds -> summarize.py
+│   ├── ggpkd/sensitivity.sh         # knob sweep -> summarize_sensitivity.py
+│   ├── ggpkd/run_metrics.py         # Shared run-tree reader for both summaries
 │   └── talas/                       # + run_paper.sh, summarize.py
 ├── data/                            # Train/val/test CSV datasets
 ├── notebooks/                       # Colab training notebook
