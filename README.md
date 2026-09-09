@@ -195,6 +195,31 @@ To persist student weights to a durable directory:
 WEIGHTS_DIR="/path/to/weights" bash scripts/ggpkd/train.sh
 ```
 
+### Run cost: time and memory
+
+Every launcher wraps its `main.py` invocation in `scripts/common/run_stats.sh`, so
+each run writes a `run_stats.json` next to its own outputs (`SAVE_DIR` /
+`RUN_DIR`) and echoes a one-line summary into its log:
+
+```
+[stats] wall 1:47:12 (6432.4s) | peak host RSS 11.20 GiB | peak GPU 18.60 GiB | exit 0 -> .../run_stats.json
+```
+
+The file records `wall_seconds`, `peak_host_rss_mib`, `peak_gpu_mib`,
+`exit_code`, the start/finish timestamps, the pinned device and the exact
+command. Both figures are measured from outside the process over the whole
+tree -- dataloader workers included -- so a run that dies mid-epoch still leaves
+its numbers behind. Host memory comes from the kernel's own high-water mark
+(`VmHWM`), GPU memory from per-process `nvidia-smi` accounting sampled every
+`RUN_STATS_POLL_SECONDS` (default 2), which is what bounds the GPU spike a run
+can hide; `peak_gpu_mib` is `null` where `nvidia-smi` is unavailable. Set
+`RUN_STATS_DISABLE=1` to run the command bare, or `STATS_FILE` to redirect the
+file.
+
+The multi-run suites additionally collect one row per run into
+`<run_root>/stats.tsv` as each finishes -- cache and graph builds included --
+and print it before aggregating, so the table survives a sweep that loses a run.
+
 ### Multi-seed suites
 
 `run_paper.sh` trains the three paper pairs at three seeds (9 runs), one run per
@@ -333,6 +358,7 @@ This repository also includes implementations of other distillation baselines fo
 │   └── loss.py                      # Shared loss utilities
 ├── scripts/                         # Launchers, one folder per method
 │   ├── <method>/train.sh            # Bash launcher
+│   ├── common/run_stats.sh          # Wall clock + peak host/GPU memory
 │   ├── ggpkd/floor.py               # L_rel floor diagnostic
 │   ├── ggpkd/pick_graph_k.py        # graph_k sharpness report
 │   ├── ggpkd/bench_encode.py        # Candidate-encoder throughput bench

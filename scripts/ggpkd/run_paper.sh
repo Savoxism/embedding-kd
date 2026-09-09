@@ -14,6 +14,9 @@ SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd -- "$SCRIPT_DIR/../.." && pwd)"
 cd "$REPO_ROOT"
 
+# shellcheck source=../common/run_stats.sh
+source "$REPO_ROOT/scripts/common/run_stats.sh"
+
 PYTHON_BIN="${PYTHON_BIN:-$REPO_ROOT/.venv/bin/python}"
 RUN_ID="${RUN_ID:-$(date -u +%Y%m%d-%H%M%S)}"
 RESULT_BASE="${RESULT_BASE:-$REPO_ROOT/results/ggpkd}"
@@ -27,6 +30,9 @@ STATUS_DIR="$RUN_ROOT/status"
 LOG_DIR="$RUN_ROOT/logs"
 RUNS_DIR="$RUN_ROOT/runs"
 MANIFEST="$RUN_ROOT/manifest.tsv"
+# Per-run wall clock and peak memory, collected as each run finishes so the
+# table survives a sweep that is interrupted partway through.
+STATS_TSV="$RUN_ROOT/stats.tsv"
 
 IFS=',' read -r -a PAIRS <<< "${PAIRS:-qwen3_0_6b_to_minilmv2_h384,bge_m3_to_minilmv2_h768,qwen3_4b_to_bert_base}"
 IFS=',' read -r -a SEEDS <<< "${SEEDS:-42,43,44}"
@@ -69,6 +75,7 @@ trap finish_controller EXIT
 export TOKENIZERS_PARALLELISM=false
 
 printf 'phase\tpair\tseed\tgpu\tpid\tstate\n' > "$MANIFEST"
+printf 'phase\tunit\tseed\twall_seconds\tpeak_host_rss_mib\tpeak_gpu_mib\texit_code\n' > "$STATS_TSV"
 {
     printf 'run_id\t%s\n' "$RUN_ID"
     printf 'pairs\t%s\n' "${PAIRS[*]}"
@@ -103,6 +110,8 @@ for pair in "${PAIRS[@]}"; do
     set -e
     printf '%s\n' "$code" > "$exit_file"
     printf 'cache\t%s\t-\t%s\t-\t%s\n' "$pair" "${GPU_LIST[0]}" "$code" >> "$MANIFEST"
+    printf 'cache\t%s\t-\t%s\n' "$pair" \
+        "$(run_stats_row "$RUN_ROOT/cache_setup/$pair/run_stats.json")" >> "$STATS_TSV"
     if (( code != 0 )); then
         echo "Cache preparation failed for $pair (exit $code); see $log" >&2
         exit 1
@@ -178,11 +187,15 @@ while (( ${#active_pids[@]} > 0 )); do
     printf 'train\t%s\t%s\t%s\t%s\texit_%s\n' \
         "${completed_task%%.seed_*}" "${completed_task##*.seed_}" \
         "$completed_gpu" "$completed_pid" "$completed_status" >> "$MANIFEST"
+    completed_pair="${completed_task%%.seed_*}"
+    completed_seed="${completed_task##*.seed_}"
+    printf 'train\t%s\t%s\t%s\n' "$completed_pair" "$completed_seed" \
+        "$(run_stats_row "$RUNS_DIR/$completed_pair/seed_$completed_seed/run_stats.json")" >> "$STATS_TSV"
     if (( completed_status != 0 )); then
         failed_runs=1
         echo "FAILED: $completed_task exited $completed_status (log: $LOG_DIR/$completed_task.log)" >&2
     else
-        echo "Completed: $completed_task"
+        echo "Completed: $completed_task ($(run_stats_field "$RUNS_DIR/$completed_pair/seed_$completed_seed/run_stats.json" wall_seconds)s)"
     fi
 
     remaining=()
@@ -199,6 +212,10 @@ while (( ${#active_pids[@]} > 0 )); do
         ((next_task += 1))
     fi
 done
+
+echo
+echo "Per-run cost (wall seconds, peak host RSS MiB, peak GPU MiB):"
+column -t -s $'\t' "$STATS_TSV" 2>/dev/null || cat "$STATS_TSV"
 
 if (( failed_runs != 0 )); then
     echo "At least one GGPKD training run failed; refusing to aggregate" >&2

@@ -25,6 +25,9 @@ SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd -- "$SCRIPT_DIR/../.." && pwd)"
 cd "$REPO_ROOT"
 
+# shellcheck source=../common/run_stats.sh
+source "$REPO_ROOT/scripts/common/run_stats.sh"
+
 PYTHON_BIN="${PYTHON_BIN:-$REPO_ROOT/.venv/bin/python}"
 RUN_ID="${RUN_ID:-$(date -u +%Y%m%d-%H%M%S)}"
 RESULT_BASE="${RESULT_BASE:-$REPO_ROOT/results/ggpkd_sensitivity}"
@@ -38,6 +41,9 @@ LOG_DIR="$RUN_ROOT/logs"
 RUNS_DIR="$RUN_ROOT/runs"
 MANIFEST="$RUN_ROOT/manifest.tsv"
 ARMS_TSV="$RUN_ROOT/arms.tsv"
+# Per-run wall clock and peak memory, collected as each run finishes so the
+# table survives a sweep that is interrupted partway through.
+STATS_TSV="$RUN_ROOT/stats.tsv"
 DRY_RUN="${DRY_RUN:-0}"
 
 IFS=',' read -r -a SEEDS <<< "${SEEDS:-42,43,44}"
@@ -187,6 +193,7 @@ for row in "${arm_rows[@]}"; do
 done
 
 printf 'phase\tarm\tseed\tgpu\tpid\tstate\n' > "$MANIFEST"
+printf 'phase\tunit\tseed\twall_seconds\tpeak_host_rss_mib\tpeak_gpu_mib\texit_code\n' > "$STATS_TSV"
 {
     printf 'run_id\t%s\n' "$RUN_ID"
     printf 'pair\t%s\n' "$PAIR"
@@ -220,6 +227,8 @@ for key in "${graph_keys[@]}"; do
     set -e
     printf '%s\n' "$code" > "$exit_file"
     printf 'graph\t%s\t-\t%s\t-\t%s\n' "$key" "${GPU_LIST[0]}" "$code" >> "$MANIFEST"
+    printf 'graph\t%s\t-\t%s\n' "$key" \
+        "$(run_stats_row "$RUN_ROOT/graph_setup/$key/run_stats.json")" >> "$STATS_TSV"
     if (( code != 0 )); then
         echo "Graph build failed for $key (exit $code); see $log" >&2
         exit 1
@@ -296,11 +305,15 @@ while (( ${#active_pids[@]} > 0 )); do
     printf 'train\t%s\t%s\t%s\t%s\texit_%s\n' \
         "${completed_task%.seed_*}" "${completed_task##*.seed_}" \
         "$completed_gpu" "$completed_pid" "$completed_status" >> "$MANIFEST"
+    completed_label="${completed_task%.seed_*}"
+    completed_seed="${completed_task##*.seed_}"
+    printf 'train\t%s\t%s\t%s\n' "$completed_label" "$completed_seed" \
+        "$(run_stats_row "$RUNS_DIR/$completed_label/seed_$completed_seed/run_stats.json")" >> "$STATS_TSV"
     if (( completed_status != 0 )); then
         failed_runs=1
         echo "FAILED: $completed_task exited $completed_status (log: $LOG_DIR/$completed_task.log)" >&2
     else
-        echo "Completed: $completed_task"
+        echo "Completed: $completed_task ($(run_stats_field "$RUNS_DIR/$completed_label/seed_$completed_seed/run_stats.json" wall_seconds)s)"
     fi
 
     remaining=()
@@ -317,6 +330,10 @@ while (( ${#active_pids[@]} > 0 )); do
         ((next_task += 1))
     fi
 done
+
+echo
+echo "Per-run cost (wall seconds, peak host RSS MiB, peak GPU MiB):"
+column -t -s $'\t' "$STATS_TSV" 2>/dev/null || cat "$STATS_TSV"
 
 if (( failed_runs != 0 )); then
     echo "At least one sensitivity run failed; refusing to aggregate" >&2

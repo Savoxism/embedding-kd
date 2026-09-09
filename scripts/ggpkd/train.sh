@@ -5,6 +5,9 @@ SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd -- "$SCRIPT_DIR/../.." && pwd)"
 cd "$REPO_ROOT"
 
+# shellcheck source=../common/run_stats.sh
+source "$REPO_ROOT/scripts/common/run_stats.sh"
+
 # The pair key drives the model names *and* every per-pair path. Overriding only
 # the models -- which this script used to do -- leaves the caches pointing at the
 # config's default pair, so a cold run writes one teacher's embeddings under
@@ -74,6 +77,9 @@ GGPKD_CACHE_PATH="${GGPKD_CACHE_PATH:-cache/ggpkd/$PAIR_KEY/graph.pt}"
 GGPKD_LOG_DIR="${GGPKD_LOG_DIR:-logs/ggpkd/$PAIR_KEY}"
 SAVE_DIR="${SAVE_DIR:-models/ggpkd/$PAIR_KEY}"
 WEIGHTS_DIR="${WEIGHTS_DIR:-}"
+# Wall clock and peak memory land beside the run's own outputs, so a result
+# and what it cost stay together even when SAVE_DIR is a per-seed directory.
+STATS_FILE="${STATS_FILE:-$SAVE_DIR/run_stats.json}"
 
 COMMAND=(
     "$PYTHON_BIN" main.py
@@ -101,4 +107,4 @@ if [[ -n "$WEIGHTS_DIR" ]]; then
 fi
 
 COMMAND+=("$@")
-"${COMMAND[@]}"
+run_with_stats "$STATS_FILE" "${COMMAND[@]}"

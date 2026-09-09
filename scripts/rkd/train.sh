@@ -4,6 +4,9 @@ set -euo pipefail
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd -- "$SCRIPT_DIR/../.." && pwd)"
 
+# shellcheck source=../common/run_stats.sh
+source "$REPO_ROOT/scripts/common/run_stats.sh"
+
 PAIR_KEY="${PAIR_KEY:-qwen3_0_6b_to_minilmv2_h384}"
 SEED_VALUE="${SEED:-42}"
 GPU_VALUE="${GPU:-0}"
@@ -93,6 +96,9 @@ fi
 CACHE_PATH="$CACHE_ROOT/$PAIR_KEY/teacher_train.pt"
 RUN_DIR="${RUN_DIR:-$REPO_ROOT/checkpoints/rkd/$PAIR_KEY/seed_$SEED_VALUE}"
 WEIGHTS_DIR="${WEIGHTS_DIR:-$RUN_DIR/weights}"
+# Wall clock and peak memory land beside the run's own outputs, so a result
+# and what it cost stay together even when RUN_DIR is a per-seed directory.
+STATS_FILE="${STATS_FILE:-$RUN_DIR/run_stats.json}"
 
 export CUDA_VISIBLE_DEVICES="$GPU_VALUE"
 export TOKENIZERS_PARALLELISM="false"
@@ -140,4 +146,4 @@ if [[ "$DRY_RUN" -eq 1 ]]; then
     exit 0
 fi
 
-exec "${COMMAND[@]}"
+run_with_stats "$STATS_FILE" "${COMMAND[@]}"

@@ -1,5 +1,9 @@
 #!/bin/bash
 
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=../common/run_stats.sh
+source "$SCRIPT_DIR/../common/run_stats.sh"
+
 echo "======================================"
 echo "Training with DSKD method"
 echo "======================================"
@@ -17,19 +21,24 @@ LR=2e-5
 MAX_LENGTH=256
 SAVE_DIR="checkpoints/dskd"
 
-python3 ../../main.py \
-    --method $METHOD \
-    --train_data $TRAIN_DATA \
-    --student_model $STUDENT_MODEL \
-    --teacher_model $TEACHER_MODEL \
-    --batch_size $BATCH_SIZE \
-    --epochs $EPOCHS \
-    --lr $LR \
-    --max_length $MAX_LENGTH \
-    --save_dir $SAVE_DIR \
-    --w_task 1.0 \
-    --alpha_dtw 1.0 \
+COMMAND=(
+    python3 ../../main.py
+    --method "$METHOD"
+    --train_data "$TRAIN_DATA"
+    --student_model "$STUDENT_MODEL"
+    --teacher_model "$TEACHER_MODEL"
+    --batch_size "$BATCH_SIZE"
+    --epochs "$EPOCHS"
+    --lr "$LR"
+    --max_length "$MAX_LENGTH"
+    --save_dir "$SAVE_DIR"
+    --w_task 1.0
+    --alpha_dtw 1.0
     --num_workers 2
+)
+
+STATS_FILE="${STATS_FILE:-$SAVE_DIR/run_stats.json}"
+run_with_stats "$STATS_FILE" "${COMMAND[@]}"
 
 echo "======================================"
 echo "Training completed!"

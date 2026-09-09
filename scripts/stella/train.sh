@@ -1,5 +1,9 @@
 #!/bin/bash
 
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=../common/run_stats.sh
+source "$SCRIPT_DIR/../common/run_stats.sh"
+
 echo "======================================"
 echo "Training with Stella method"
 echo "======================================"
@@ -16,15 +20,20 @@ LR=2e-5
 MAX_LENGTH=256
 SAVE_DIR="checkpoints/stella"
 
-python3 ../../main.py \
-    --method $METHOD \
-    --train_data $TRAIN_DATA \
-    --student_model $STUDENT_MODEL \
-    --teacher_model $TEACHER_MODEL \
-    --batch_size $BATCH_SIZE \
-    --lr $LR \
-    --max_length $MAX_LENGTH \
-    --save_dir $SAVE_DIR
+COMMAND=(
+    python3 ../../main.py
+    --method "$METHOD"
+    --train_data "$TRAIN_DATA"
+    --student_model "$STUDENT_MODEL"
+    --teacher_model "$TEACHER_MODEL"
+    --batch_size "$BATCH_SIZE"
+    --lr "$LR"
+    --max_length "$MAX_LENGTH"
+    --save_dir "$SAVE_DIR"
+)
+
+STATS_FILE="${STATS_FILE:-$SAVE_DIR/run_stats.json}"
+run_with_stats "$STATS_FILE" "${COMMAND[@]}"
 
 echo ""
 echo "Training completed!"
