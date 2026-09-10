@@ -32,6 +32,7 @@ run_arms() {
     local -a arm_graphs=()
     local -a arm_methods=()
     local -a arm_flags=()
+    local -a pointwise_corpora=()
     local value other key corpus flags label graph_key method extra index i j
 
     IFS=',' read -r -a seeds <<< "${SEEDS:-42,43,44}"
@@ -220,6 +221,54 @@ run_arms() {
         printf 'commit\t%s\n' "$(git -C "$repo_root" rev-parse HEAD 2>/dev/null || echo unknown)"
     } > "$run_root/run_config.tsv"
 
+    # GGPKD deduplicates identical anchors before caching; pointwise KD does not.
+    # They therefore cannot safely share a teacher cache even on the same input
+    # CSV. Prepare each pointwise corpus once before parallel runs start.
+    for ((i = 0; i < ${#arm_labels[@]}; i++)); do
+        [[ "${arm_methods[$i]}" == "pointwise" ]] || continue
+        graph_key="${arm_graphs[$i]}"
+        index=-1
+        for ((j = 0; j < ${#graph_keys[@]}; j++)); do
+            [[ "${graph_keys[$j]}" == "$graph_key" ]] && index=$j
+        done
+        corpus="${graph_corpora[$index]}"
+        other=0
+        if (( ${#pointwise_corpora[@]} > 0 )); then
+            for value in "${pointwise_corpora[@]}"; do
+                [[ "$value" == "$corpus" ]] && other=1
+            done
+        fi
+        (( other == 0 )) && pointwise_corpora+=("$corpus")
+    done
+
+    for corpus in "${pointwise_corpora[@]}"; do
+        corpus_key="$(basename "${corpus%.*}")"
+        teacher_cache="$cache_root/$pair/$corpus_key/teacher_pointwise.pt"
+        log="$log_dir/cache.pointwise.$corpus_key.log"
+        exit_file="$status_dir/cache.pointwise.$corpus_key.exit"
+        echo "Building pointwise teacher cache for $corpus on GPU ${gpu_list[0]} (log: $log)"
+        set +e
+        PAIR_KEY="$pair" METHOD="pointwise" GPU="${gpu_list[0]}" \
+            PYTHON_BIN="$python_bin" TRAIN_DATA="$corpus" \
+            CACHE_PATH="$teacher_cache" \
+            SAVE_DIR="$run_root/cache_setup/pointwise_$corpus_key" \
+            bash "$train_script" --prepare_cache_only >"$log" 2>&1
+        code=$?
+        set -e
+        printf '%s\n' "$code" > "$exit_file"
+        printf 'cache\tpointwise_%s\t-\t%s\t-\texit_%s\n' \
+            "$corpus_key" "${gpu_list[0]}" "$code" >> "$manifest"
+        printf 'cache\tpointwise_%s\t-\t%s\n' "$corpus_key" \
+            "$(run_stats_row "$run_root/cache_setup/pointwise_$corpus_key/run_stats.json")" >> "$stats_tsv"
+        if (( code != 0 )); then
+            printf '1\n' > "$run_root/controller.exit"
+            trap - INT TERM
+            unset -f _run_arms_signal
+            echo "Pointwise teacher cache failed for $corpus (exit $code); see $log" >&2
+            return 1
+        fi
+    done
+
     # Prepare each graph serially. Graph variants for the same corpus share the
     # teacher cache, so concurrent preparation would race on that cache file.
     for ((i = 0; i < ${#graph_keys[@]}; i++)); do
@@ -293,7 +342,11 @@ run_arms() {
         task_corpus="${graph_corpora[$task_graph_index]}"
         task_graph_flags="${graph_flags[$task_graph_index]}"
         corpus_key="$(basename "${task_corpus%.*}")"
-        teacher_cache="$cache_root/$pair/$corpus_key/teacher_train.pt"
+        if [[ "$task_method" == "pointwise" ]]; then
+            teacher_cache="$cache_root/$pair/$corpus_key/teacher_pointwise.pt"
+        else
+            teacher_cache="$cache_root/$pair/$corpus_key/teacher_train.pt"
+        fi
         graph_path="$cache_root/$pair/$corpus_key/graph_$task_graph.pt"
         task="$task_label.seed_$task_seed"
         run_dir="$runs_dir/$task_label/seed_$task_seed"

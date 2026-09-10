@@ -80,11 +80,14 @@ training tasks have exited successfully.
 ### Cache construction
 
 Graphs are prepared serially on GPU 0 before training. The teacher embedding
-cache is shared by graph variants for the same pair and corpus. Cache paths are
-scoped by pair and corpus key:
+cache is shared by graph variants for the same pair and corpus. Pointwise arms
+use a separate teacher cache because GGPKD deduplicates identical anchors while
+pointwise KD preserves every input row. Cache paths are scoped by pair and
+corpus key:
 
 ```text
 <CACHE_ROOT>/<pair>/<corpus_key>/teacher_train.pt
+<CACHE_ROOT>/<pair>/<corpus_key>/teacher_pointwise.pt
 <CACHE_ROOT>/<pair>/<corpus_key>/graph_<graph_key>.pt
 ```
 
@@ -144,4 +147,3 @@ The implementation is accepted when:
 - aggregation returns one row per arm and seed with no failed status;
 - remote GPU 0–3 each have at most one experiment process and GPU 4–7 remain
   untouched.
-
