@@ -41,7 +41,7 @@
 #   carry as well as in which relations.
 # * The arms are matched on support *size*, not on compute. A corpus-uniform draw
 #   deduplicates far worse across a batch than a teacher draw does, so it encodes
-#   more texts per step. The CSV carries `train_encoded_texts_total` and
+#   more texts per step. The CSV carries `train_encoded_texts_cum` and
 #   `cost_wall_seconds` for exactly this reason: the cost difference is a
 #   consequence of the design and belongs in the table, not hidden by shrinking
 #   the budget.
@@ -143,6 +143,10 @@ student_knn|$CORPUS|--knn_mode mutual $HOLDOUT_FLAGS"
     PAIR="$PAIR" \
         run_arms "$REPO_ROOT" "$EXPERIMENT" || overall=$?
 done
+
+if [[ "${DRY_RUN:-0}" == "1" ]]; then
+    exit $overall
+fi
 
 # One frame for the analysis, regardless of how many pairs ran.
 "$PYTHON_BIN" - "$REPO_ROOT/runs/$EXPERIMENT" <<'PY'
