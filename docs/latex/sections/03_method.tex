@@ -1,0 +1,148 @@
+\section{GGPKD: Global Geometry through Local Alignment}
+\label{sec:method}
+
+GGPKD distills an embedding teacher into a smaller student by matching the
+teacher's one-hop $k$NN transition rows. The method has only two
+method-specific hyperparameters: the graph width \texttt{graph\_k} and the
+auxiliary-row weight \texttt{row\_weight}. All other temperatures, weights,
+candidate sets, and supervised rows are derived from the teacher graph. The
+graph and teacher embeddings are cached before training and are not needed at
+inference.
+
+\subsection{Teacher graph}
+\label{sec:graph}
+
+Let $\mathcal D=\{x_i\}_{i=1}^{N}$ be the deduplicated training corpus. The
+teacher encodes every text once, and its embeddings are $\ell_2$-normalized so
+that all similarities are cosines. For each node $i$, we retrieve the
+$k=\texttt{graph\_k}$ most similar non-self nodes. If $s_i^{(q)}$ is the
+$q$-th largest retrieved cosine, the row bandwidth is
+\begin{equation}
+\tau_i=\frac{s_i^{(1)}-s_i^{(k)}}{\log k}.
+\label{eq:row-bandwidth}
+\end{equation}
+Thus the $k$-th retrieved neighbor is $k$ times less likely than the nearest
+neighbor before mutual filtering. Because the bandwidth scales with any affine
+rescaling of the similarities, the resulting softmax row is affine-invariant
+and requires no teacher-specific temperature tuning.
+
+We retain an edge $i\rightarrow j$ only when $i$ and $j$ retrieve each other.
+If mutual filtering isolates a node, its raw top-$k$ row is used as a fallback.
+Writing the resulting neighbor set as $\mathcal N_i$, the teacher transition
+row is
+\begin{equation}
+P_i^T(j)
+=\frac{\mathbf 1[j\in\mathcal N_i]\exp(c_{ij}^T/\tau_i)}
+{\sum_{u\in\mathcal N_i}\exp(c_{iu}^T/\tau_i)}.
+\label{eq:teacher-transition}
+\end{equation}
+The bandwidth in Equation~\eqref{eq:row-bandwidth} is computed from the raw
+top-$k$ scores before this filter, so it is defined from the same number of
+neighbors for every node.
+
+For numerical efficiency, each row retains the smallest highest-mass prefix
+$\Omega_i\subseteq\mathcal N_i$ satisfying
+\begin{equation}
+\sum_{j\in\Omega_i}P_i^T(j)\geq 0.99,
+\qquad
+\widetilde P_i^T(j)
+=\frac{P_i^T(j)}{\sum_{u\in\Omega_i}P_i^T(u)}.
+\label{eq:row-truncation}
+\end{equation}
+The one-percent tolerance is a numerical-fidelity constant rather than a
+method hyperparameter. It produces ragged rows while bounding the discarded
+teacher mass.
+
+\subsection{Deterministic candidate pool}
+\label{sec:candidates}
+
+The candidate set for anchor $i$ is exactly its truncated transition support
+$\Omega_i$. GGPKD draws no hard or random negatives and performs no per-epoch
+sampling: the candidates are a deterministic function of the graph and remain
+fixed throughout training. Within a mini-batch $B$, candidates are deduplicated
+into the shared pool
+\begin{equation}
+\mathcal P_B=\bigcup_{i\in B}\Omega_i,
+\label{eq:shared-pool}
+\end{equation}
+so each distinct candidate text is encoded once. Ragged rows are padded with
+their anchor index during collation; a self-mask removes that padding from all
+softmaxes.
+
+\subsection{Training objective}
+\label{sec:objective}
+
+The graph-scale loss matches each truncated teacher row with a student softmax
+over the same columns and at the same stored bandwidth:
+\begin{equation}
+\mathcal L_{r=1}
+=\frac{1}{|B|}\sum_{i\in B}
+D_{\mathrm{KL}}\!\left(
+\widetilde P_i^T
+\,\middle\|\,
+\operatorname{softmax}_{j\in\Omega_i}(c_{ij}^S/\tau_i)
+\right).
+\label{eq:graph-loss}
+\end{equation}
+
+This local row ranks candidates within an anchor's own neighborhood. To also
+calibrate similarities across the batch, the ambient loss uses the complete
+shared pool. Its temperature is derived from the graph as
+$\tau_0=\operatorname{median}_i\tau_i$ and is shared by teacher and student:
+\begin{equation}
+\mathcal L_{r=0}
+=\frac{1}{|B|}\sum_{i\in B}
+D_{\mathrm{KL}}\!\left(
+\operatorname{softmax}_{j\in\mathcal P_B\setminus\{i\}}(c_{ij}^T/\tau_0)
+\,\middle\|\,
+\operatorname{softmax}_{j\in\mathcal P_B\setminus\{i\}}(c_{ij}^S/\tau_0)
+\right).
+\label{eq:ambient-loss}
+\end{equation}
+The ambient and graph groups receive equal total weight; this balance is fixed,
+not tuned.
+
+GGPKD also reuses non-anchor candidates as auxiliary row centers. Let
+$\mathcal J_B=\mathcal P_B\setminus B$ and expose the portion of row $j$ that is
+already present in the shared pool:
+\begin{equation}
+\Omega_j^B=\mathcal N_j\cap\mathcal P_B,
+\qquad
+\mathcal J_B^+=\{j\in\mathcal J_B:|\Omega_j^B|\geq2\}.
+\end{equation}
+Batch anchors are excluded because $\mathcal L_{r=1}$ already supervises their
+transition rows. The remaining rows are matched uniformly at their stored
+bandwidths:
+\begin{equation}
+\mathcal L_{\mathrm{row}}
+=\frac{1}{|\mathcal J_B^+|}\sum_{j\in\mathcal J_B^+}
+D_{\mathrm{KL}}\!\left(
+P_j^T\big|_{\Omega_j^B}
+\,\middle\|\,
+\operatorname{softmax}_{u\in\Omega_j^B}(c_{ju}^S/\tau_j)
+\right),
+\label{eq:row-loss}
+\end{equation}
+where the restricted teacher row is renormalized on $\Omega_j^B$. This term
+requires no additional student encoding because all centers and columns are
+already in $\mathcal P_B$.
+
+The complete objective is
+\begin{equation}
+\mathcal L_{\mathrm{GGPKD}}
+=\underbrace{\mathcal L_{r=0}+\mathcal L_{r=1}}_{\mathcal L_{\mathrm{rel}}}
++\lambda_{\mathrm{row}}\mathcal L_{\mathrm{row}}.
+\label{eq:full-objective}
+\end{equation}
+The defaults are $\texttt{graph\_k}=200$ and
+$\lambda_{\mathrm{row}}=\texttt{row\_weight}=1$. Increasing
+\texttt{graph\_k} changes both neighborhood width and the bandwidth in
+Equation~\eqref{eq:row-bandwidth}; those effects cannot be separated by a
+single-axis sweep.
+
+\paragraph{Cost.}
+Exact graph construction requires $O(N^2d)$ similarity work, although an
+approximate nearest-neighbor backend can replace the all-pairs search. During
+training, the dominant cost is encoding the deduplicated shared pool;
+$\mathcal L_{\mathrm{row}}$ reuses those embeddings. At deployment, inference
+uses only the student encoder.

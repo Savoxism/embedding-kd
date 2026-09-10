@@ -1,0 +1,25 @@
+\section{Experiments}
+\label{sec:experiments}
+
+\input{tables/main_results}
+\clearpage
+
+\subsection{Sensitivity analysis}
+\label{sec:sensitivity}
+
+We evaluate GGPKD sensitivity on the
+Qwen3-Embedding-0.6B$\rightarrow$MiniLMv2-H384 setting using seeds 42, 43,
+and 44. Tables~\ref{tab:sensitivity_graph_k}
+and~\ref{tab:sensitivity_row_weight} report downstream quality together with
+the measured resource cost. Increasing $\texttt{graph\_k}$ from 50 to 400
+changes Avg. by only 0.34 points, but the largest setting costs substantially
+more time and GPU memory. Relative to the default $\texttt{graph\_k}=200$, the
+400-neighbor setting gains 0.05 points while increasing mean training time by
+36.8\% and peak GPU memory by 54.2\%. The row-loss sweep is also flat: Avg.
+spans 0.18 points, and the small timing differences are not sufficient to
+establish a causal cost effect. We therefore retain
+$\texttt{graph\_k}=200$ and $\lambda_{\mathrm{row}}=1$ as defaults rather than
+selecting a new setting on the test results.
+
+\input{tables/sensitivity_graph_k}
+\input{tables/sensitivity_row_weight}

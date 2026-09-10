@@ -1,0 +1,27 @@
+\begin{table*}[t]
+\centering
+\caption{Sensitivity to the auxiliary row-relation weight for
+Qwen3-Embedding-0.6B$\rightarrow$MiniLMv2-H384 at the default
+$\texttt{graph\_k}=200$. Downstream scores and wall time are mean $\pm$ sample
+standard deviation over seeds 42, 43, and 44. Host and GPU columns report the
+maximum observed per-run peak in GiB.}
+\label{tab:sensitivity_row_weight}
+\setlength{\tabcolsep}{3.5pt}
+\resizebox{\textwidth}{!}{%
+\begin{tabular}{rccccccc}
+\toprule
+& \multicolumn{4}{c}{\textbf{Downstream quality}} &
+\multicolumn{3}{c}{\textbf{Training cost}} \\
+\cmidrule(lr){2-5}\cmidrule(lr){6-8}
+$\lambda_{\mathrm{row}}$ & Avg-In & Avg-Out & Avg.$\uparrow$ & $\Delta$ Avg. &
+Wall (s) & Host & GPU \\
+\midrule
+0    & $68.63 \pm 0.15$ & $78.86 \pm 0.03$ & $75.45 \pm 0.04$ & $-0.15$ & $326.00 \pm 10.06$ & 10.08 & 11.97 \\
+0.25 & $68.73 \pm 0.19$ & $78.91 \pm 0.06$ & $75.52 \pm 0.07$ & $-0.08$ & $331.53 \pm 10.78$ & 10.15 & 11.50 \\
+0.5  & $68.64 \pm 0.11$ & $78.99 \pm 0.10$ & $75.54 \pm 0.03$ & $-0.06$ & $350.43 \pm 19.74$ & 10.14 & 11.50 \\
+1.0 (default) & $68.79 \pm 0.07$ & $79.00 \pm 0.03$ & $75.60 \pm 0.04$ & ref. & $329.90 \pm 8.68$ & 10.15 & 11.50 \\
+2.0  & $68.91 \pm 0.14$ & $78.99 \pm 0.01$ & $\mathbf{75.63 \pm 0.05}$ & $+0.03$ & $301.23 \pm 33.81$ & 10.17 & 11.50 \\
+\bottomrule
+\end{tabular}%
+}
+\end{table*}
