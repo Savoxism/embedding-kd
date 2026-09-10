@@ -144,6 +144,10 @@ student_knn|$CORPUS|--knn_mode mutual $HOLDOUT_FLAGS"
         run_arms "$REPO_ROOT" "$EXPERIMENT" || overall=$?
 done
 
+if [[ "${DRY_RUN:-0}" == "1" ]]; then
+    exit $overall
+fi
+
 # One frame for the analysis, regardless of how many pairs ran.
 "$PYTHON_BIN" - "$REPO_ROOT/runs/$EXPERIMENT" <<'PY'
 import csv, sys

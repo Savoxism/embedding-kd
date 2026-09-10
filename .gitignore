@@ -37,6 +37,8 @@ downloads/
 eggs/
 .eggs/
 lib/
+!scripts/exp/lib/
+!scripts/exp/lib/run_arms.sh
 lib64/
 parts/
 sdist/

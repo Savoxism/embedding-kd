@@ -71,10 +71,11 @@ mkdir -p "$OUT_DIR"
 IFS=',' read -r -a SIZE_LIST <<< "$SIZES"
 IFS=',' read -r -a BATCH_LIST <<< "$BATCHES"
 
-# The subsets are written once and reused. Regenerating them per run would be
-# harmless -- they are deterministic -- but building them here keeps the sweep
-# runnable from a clean checkout.
-"$PYTHON_BIN" "$SCRIPT_DIR/make_subsets.py" --sizes "$SIZES" --out-dir "$SUBSET_DIR"
+# The subsets are written once and reused. A dry run only validates and prints
+# the matrix, so it must remain side-effect free even from a clean checkout.
+if [[ "${DRY_RUN:-0}" != "1" ]]; then
+    "$PYTHON_BIN" "$SCRIPT_DIR/make_subsets.py" --sizes "$SIZES" --out-dir "$SUBSET_DIR"
+fi
 
 GRAPH_SPEC=""
 ARMS_SPEC=""
