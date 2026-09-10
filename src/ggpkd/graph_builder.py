@@ -102,6 +102,53 @@ def _knn_bandwidths(top_scores: np.ndarray, graph_k: int) -> np.ndarray:
     return np.maximum(span / np.log(k_eff), MIN_BANDWIDTH)
 
 
+def heldout_edge_mask(
+    rows: np.ndarray, cols: np.ndarray, seed: int, frac: float
+) -> np.ndarray:
+    """Which teacher edges are withheld from every training support.
+
+    True means "withheld". The split has to satisfy three things at once, and a
+    stored list of edges satisfies none of them cheaply:
+
+    *Identical across arms and seeds.* The held-out set is the measuring
+    instrument for the whole support study. If it moved with the training seed,
+    the arms would be scored on different relations and their held-out numbers
+    would not be comparable. It is therefore a pure function of the unordered
+    pair and `seed`, with no state and no file to keep in sync.
+
+    *Symmetric.* An edge withheld as (i, j) must also be withheld as (j, i).
+    Otherwise L_row supervises from the other endpoint and the "never supervised"
+    claim is false for exactly the rows the evaluation reads.
+
+    *Reproducible outside the build.* The evaluation recomputes the mask from the
+    teacher cache rather than reading it out of the artifact, so the two cannot
+    drift apart across a rebuild.
+
+    The hash is splitmix64's finalizer over the ordered pair, which is uniform
+    enough for a 20% split and costs one vectorised pass.
+    """
+    if not 0.0 <= frac < 1.0:
+        raise ValueError(f"holdout fraction must be in [0, 1), got {frac}")
+    if frac == 0.0:
+        return np.zeros(np.shape(rows), dtype=bool)
+    low = np.minimum(rows, cols).astype(np.uint64)
+    high = np.maximum(rows, cols).astype(np.uint64)
+    # Unordered pair -> one integer, then mixed with the seed.
+    key = low * np.uint64(0x9E3779B97F4A7C15) + high
+    # The seed term is folded in Python, where the wraparound is explicit. Doing
+    # it in numpy scalars is the same arithmetic but raises an overflow warning on
+    # every call, and a warning that is expected on the correct path is a warning
+    # nobody reads.
+    seed_term = np.uint64((int(seed) * 0xBF58476D1CE4E5B9) % (1 << 64))
+    key = key ^ seed_term
+    key = (key ^ (key >> np.uint64(30))) * np.uint64(0xBF58476D1CE4E5B9)
+    key = (key ^ (key >> np.uint64(27))) * np.uint64(0x94D049BB133111EB)
+    key = key ^ (key >> np.uint64(31))
+    # Top 53 bits to a double in [0, 1): the same construction numpy uses.
+    uniform = (key >> np.uint64(11)).astype(np.float64) * (1.0 / 9007199254740992.0)
+    return uniform < float(frac)
+
+
 def _fingerprint(embeddings: torch.Tensor) -> str:
     """Content hash of the teacher embeddings.
 
@@ -201,6 +248,8 @@ def _build_transition(
     graph_temp: float,
     fixed_bandwidth: bool,
     knn_mode: str = "mutual",
+    holdout_edge_frac: float = 0.0,
+    holdout_seed: int = 0,
 ) -> tuple[
     list[np.ndarray], list[np.ndarray], list[np.ndarray], np.ndarray, np.ndarray, dict
 ]:
@@ -221,6 +270,14 @@ def _build_transition(
     is invariant to the teacher's similarity scale and `graph_k` is the only
     quantity that sets it. With `fixed_bandwidth=True` every row uses `graph_temp`
     instead, which is the baseline that arm exists to be compared against.
+
+    `holdout_edge_frac` withholds a symmetric random subset of the surviving edges
+    from the graph entirely, before the rows are normalized. Those relations then
+    reach no training support of any arm -- not the candidate draw, not L_row --
+    which is what lets the evaluation ask whether a student recovered teacher
+    structure it was never shown. The rows renormalize over what is left, so the
+    targets stay probability distributions and the only change is which columns
+    exist.
     """
     if knn_mode not in KNN_MODES:
         raise ValueError(f"knn_mode must be one of {KNN_MODES}, got {knn_mode!r}")
@@ -235,6 +292,8 @@ def _build_transition(
     row_probs: list[np.ndarray] = []
     row_scores: list[np.ndarray] = []
     fallback_flags = np.zeros(n_items, dtype=bool)
+    held_out_edges = 0
+    holdout_starved = 0
     # Bandwidths come from the raw top-k, so they are one vectorised subtraction
     # over the whole corpus rather than a bisection per row.
     row_temps = (
@@ -268,6 +327,32 @@ def _build_transition(
             neighbors = [int(j) for j in top_indices[i, :fallback_k]]
             scores = [float(s) for s in top_scores[i, :fallback_k]]
 
+        if holdout_edge_frac > 0.0 and neighbors:
+            # Applied after the fallback, so a row rescued by its raw top-k does
+            # not smuggle held-out edges back in through that path.
+            neighbor_array = np.asarray(neighbors, dtype=np.int64)
+            withheld = heldout_edge_mask(
+                np.full(neighbor_array.shape, i, dtype=np.int64),
+                neighbor_array,
+                holdout_seed,
+                holdout_edge_frac,
+            )
+            kept = ~withheld
+            held_out_edges += int(withheld.sum())
+            if kept.any():
+                neighbors = [int(j) for j in neighbor_array[kept]]
+                scores = [float(s) for s, keep in zip(scores, kept) if keep]
+            else:
+                # Every edge of this row drew into the held-out set. At any
+                # sensible fraction this is vanishingly rare, but a row with no
+                # columns has no target at all, so it keeps its single nearest
+                # neighbour and is counted: the held-out claim is then false for
+                # that one edge, and the number has to be visible rather than
+                # rounded away.
+                holdout_starved += 1
+                neighbors = [int(neighbor_array[0])]
+                scores = [float(scores[0])]
+
         # Softmax over neighbour cosines at this row's bandwidth. That value is the
         # one the student has to match this row at, so it is stored alongside the
         # row and the criterion reads it back rather than re-deriving it.
@@ -289,6 +374,9 @@ def _build_transition(
         # scale of their own. Expected 0; reported because such a row is uniform
         # at every temperature and contributes no gradient.
         "degenerate_bandwidth_rows": int((row_temps <= MIN_BANDWIDTH).sum()),
+        # Directed edge slots withheld, and rows that had to keep one anyway.
+        "held_out_edges": int(held_out_edges),
+        "holdout_starved_rows": int(holdout_starved),
     }
     return row_neighbors, row_probs, row_scores, fallback_flags, row_temps, temp_stats
 
@@ -924,6 +1012,8 @@ _METADATA_KEYS = (
     "truncation_tolerance",
     "lazy_walk",
     "knn_mode",
+    "holdout_edge_frac",
+    "holdout_seed",
     "artifact_version",
     "teacher_fingerprint",
     "source_fingerprint",
@@ -933,7 +1023,11 @@ _METADATA_KEYS = (
 # Keys introduced after an artifact version was already in use. A cache written
 # before the key existed was built at this value, so reading it as the default
 # keeps those caches valid instead of forcing a rebuild that would change nothing.
-_METADATA_DEFAULTS = {"knn_mode": "mutual"}
+_METADATA_DEFAULTS = {
+    "knn_mode": "mutual",
+    "holdout_edge_frac": 0.0,
+    "holdout_seed": 0,
+}
 
 
 def _metadata_matches(artifact: dict, metadata: dict) -> tuple[bool, str]:
@@ -959,6 +1053,8 @@ def build_or_load_ggpkd_artifact(
     fixed_bandwidth: bool = False,
     truncation_tolerance: float = TRUNCATION_TOLERANCE,
     knn_mode: str = "mutual",
+    holdout_edge_frac: float = 0.0,
+    holdout_seed: int = 0,
 ) -> dict:
     n_items = int(teacher_embeddings.size(0))
     scales = _as_tuple(diffusion_scales)
@@ -1003,6 +1099,12 @@ def build_or_load_ggpkd_artifact(
         # In _METADATA_KEYS below: two arms of the kNN ablation share every other
         # key, so without it the second arm would silently load the first's graph.
         "knn_mode": str(knn_mode),
+        # Same reason, and the stakes are higher: a held-out family that loaded a
+        # full graph would train on the very edges its evaluation calls unseen.
+        # `holdout_seed` is only recorded when a holdout is actually taken, so
+        # turning it off does not invalidate a cache built without one.
+        "holdout_edge_frac": float(holdout_edge_frac),
+        "holdout_seed": int(holdout_seed) if holdout_edge_frac > 0.0 else 0,
         "artifact_version": ARTIFACT_VERSION,
         "teacher_fingerprint": _fingerprint(teacher_embeddings),
         "source_fingerprint": hashlib.sha1(source_array.tobytes()).hexdigest(),
@@ -1054,6 +1156,8 @@ def build_or_load_ggpkd_artifact(
         graph_temp=FIXED_BANDWIDTH_TEMP,
         fixed_bandwidth=fixed_bandwidth,
         knn_mode=knn_mode,
+        holdout_edge_frac=holdout_edge_frac,
+        holdout_seed=holdout_seed,
     )
     graph_log_path, graph_stats = _write_knn_graph_log(
         log_dir=log_dir,

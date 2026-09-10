@@ -376,23 +376,84 @@ class KnowledgeDistiller:
         # workers would keep serving the epoch-0 sampler state forever, so a dataset
         # whose candidates depend on the epoch must re-fork each epoch.
         resamples_per_epoch = hasattr(self.train_ds, "set_epoch")
+        # A teacher-informed batch sampler is the batch-intervention arm. It owns
+        # the grouping, so it replaces `shuffle` and `batch_size` outright --
+        # DataLoader rejects passing either alongside a batch_sampler -- and it is
+        # reseeded per epoch, which makes it a second reason the workers cannot
+        # persist across epochs.
+        self.batch_sampler = self.build_batch_sampler()
+        loader_kwargs = {}
+        if self.batch_sampler is not None:
+            loader_kwargs["batch_sampler"] = self.batch_sampler
+            resamples_per_epoch = True
+        else:
+            loader_kwargs["batch_size"] = cfg.batch_size
+            loader_kwargs["shuffle"] = True
+            # A batch-relational method defines its support from the batch, so a
+            # short remainder would optimize a structurally different objective;
+            # RKD additionally needs at least two examples to form a relation.
+            loader_kwargs["drop_last"] = self.method.batch_relational
         self.train_loader = DataLoader(
             self.train_ds,
-            batch_size=cfg.batch_size,
-            shuffle=True,
             collate_fn=self.collate_fn,
             pin_memory=True,
             num_workers=cfg.num_workers,
             persistent_workers=cfg.num_workers > 0 and not resamples_per_epoch,
-            # A batch-relational method defines its support from the batch, so a
-            # short remainder would optimize a structurally different objective;
-            # RKD additionally needs at least two examples to form a relation.
-            drop_last=self.method.batch_relational,
+            **loader_kwargs,
         )
 
         print(f"Training samples: {len(self.train_ds)}")
         print(f"Training batches: {len(self.train_loader)}")
         print("Done setup_data")
+
+    def build_batch_sampler(self):
+        """The teacher-informed batch sampler, or None for the i.i.d. default.
+
+        Reads the teacher's own retrieval order out of the GGPKD graph artifact,
+        so the grouping is defined by the same neighbourhoods the method distils
+        from and no second notion of "close" enters the study. Without an
+        artifact -- any method that is not GGPKD -- a teacher-informed request is
+        refused rather than silently downgraded to random: the arm label would
+        then name an intervention that did not happen.
+        """
+        mode = getattr(self.config, "batch_sampler", "random")
+        if mode == "random":
+            return None
+
+        from src.data_utils.batch_samplers import TeacherBatchSampler
+
+        artifact = getattr(self, "ggpkd_artifact", None)
+        if artifact is None:
+            # The batch-intervention study needs this on methods that build no
+            # graph of their own -- the pointwise arm is the whole measurement
+            # floor, and it has to be grouped the same three ways as the others.
+            # Reading a prebuilt artifact off disk is what makes that possible;
+            # the runner builds one per corpus before any arm starts, so all arms
+            # of one experiment are grouped by the same neighbourhoods.
+            path = getattr(self.config, "ggpkd_cache_path", None)
+            if not path or not os.path.exists(path):
+                raise ValueError(
+                    f"batch_sampler={mode!r} composes batches from teacher "
+                    "neighbourhoods and needs a graph artifact: "
+                    f"{self.config.distill_method!r} builds none and "
+                    f"ggpkd_cache_path={path!r} does not exist"
+                )
+            print(f"Batch composition reads the prebuilt graph: {path}")
+            artifact = torch.load(path, map_location="cpu", weights_only=False)
+        neighbors = artifact["transition_neighbors"].numpy()
+        sampler = TeacherBatchSampler(
+            mode=mode,
+            neighbors=neighbors,
+            batch_size=self.config.batch_size,
+            seed=self.config.seed,
+            drop_last=self.method.batch_relational,
+        )
+        print(
+            f"Batch composition: {mode} "
+            f"({len(sampler)} batches of {self.config.batch_size}, "
+            "regrouped every epoch)"
+        )
+        return sampler
 
     def build_scheduler(self):
         """The method's schedule over the current optimizer.
@@ -524,6 +585,10 @@ class KnowledgeDistiller:
         # spends the rest of the run overfitting a frozen 32-way problem.
         if hasattr(self.train_ds, "set_epoch"):
             self.train_ds.set_epoch(epoch)
+        # The teacher-informed grouping is redrawn for the same reason: a fixed
+        # partition would let the student see one frozen set of batch-mates.
+        if getattr(self, "batch_sampler", None) is not None:
+            self.batch_sampler.set_epoch(epoch)
 
         total_loss = 0.0
         n_items = 0

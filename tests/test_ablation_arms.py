@@ -213,8 +213,73 @@ def test_config_defaults_are_the_unablated_method():
 
 
 def test_config_rejects_the_one_impossible_combination():
-    with pytest.raises(ValueError, match="teacher bank"):
-        GGPKDConfig(relation_target="direct", use_ambient=False)
+    """`ambient_only` *is* scale r=0, so deleting the scale deletes the objective.
+
+    Its neighbour combination, `direct` + `use_ambient=False`, used to be refused
+    for the same reason and no longer is: the teacher bank now reaches the
+    criterion independently of whether scale r=0 is in the loss. That pairing is
+    the minimal relational objective the controlled support study trains on --
+    one KL per anchor over that anchor's own columns -- and the next test pins it
+    as buildable rather than leaving it to the study to discover.
+    """
+    with pytest.raises(ValueError, match="ambient scale"):
+        GGPKDConfig(relation_target="ambient_only", use_ambient=False)
+
+
+def test_minimal_relational_objective_is_buildable():
+    config = GGPKDConfig(relation_target="direct", use_ambient=False, row_weight=0.0)
+    assert config.relation_target == "direct"
+    assert config.use_ambient is False
+
+
+def test_criterion_without_the_ambient_scale_still_reads_the_bank():
+    """The bank is present for the target; the ambient scale is out of the loss.
+
+    Checked on the loss itself rather than on a flag: with r=0 removed the stack
+    holds one scale, so `loss_amb` has nothing to report and the whole objective
+    is the graph group.
+    """
+    data = _criterion_inputs()
+    criterion = GGPKDDistillation(
+        diffusion_scales=(1,),
+        teacher_embeddings=data["teacher"],
+        use_ambient_scale=False,
+        relation_target="direct",
+        row_weight=0.0,
+        row_temps=data["graph"]["row_temps"],
+        transition_neighbors=data["graph"]["transition_neighbors"],
+        transition_probs=data["graph"]["transition_probs"],
+    )
+    probs = data["probs"][:, :1, :]
+    loss, metrics = criterion(
+        anchor_embeddings=data["anchor"],
+        candidate_embeddings=data["candidates"],
+        teacher_probs=probs,
+        candidate_idx=data["candidate_idx"],
+        anchor_idx=data["anchor_idx"],
+    )
+    assert torch.isfinite(loss)
+    assert loss.item() > 0
+    assert metrics["loss_amb"] == 0.0
+
+    with_ambient = GGPKDDistillation(
+        diffusion_scales=(1,),
+        teacher_embeddings=data["teacher"],
+        use_ambient_scale=True,
+        relation_target="direct",
+        row_weight=0.0,
+        row_temps=data["graph"]["row_temps"],
+        transition_neighbors=data["graph"]["transition_neighbors"],
+        transition_probs=data["graph"]["transition_probs"],
+    )
+    _, ambient_metrics = with_ambient(
+        anchor_embeddings=data["anchor"],
+        candidate_embeddings=data["candidates"],
+        teacher_probs=probs,
+        candidate_idx=data["candidate_idx"],
+        anchor_idx=data["anchor_idx"],
+    )
+    assert ambient_metrics["loss_amb"] > 0.0
 
 
 # --------------------------------------------------------------------------- #

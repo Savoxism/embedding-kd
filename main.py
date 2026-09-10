@@ -83,10 +83,20 @@ def parse_args():
     # so omitting all four reproduces the full model exactly.
     parser.add_argument(
         "--support_policy",
-        choices=["topk", "proportional", "uniform", "local_topk"],
+        choices=[
+            "topk",
+            "proportional",
+            "uniform",
+            "local_topk",
+            "corpus_uniform",
+            "rewired",
+        ],
         default=None,
-        help="Support-selection arm: topk (method), proportional, uniform, or "
-        "local_topk (r=1-only support for the clean no-diffusion control)",
+        help="Support-selection arm: topk (method), proportional, uniform, "
+        "local_topk (r=1-only support), corpus_uniform (columns drawn from the "
+        "whole corpus) or rewired (degree-matched rewiring). The last two leave "
+        "the graph, so they require --relation_target direct, an explicit "
+        "--diffusion_quota and --row_weight 0",
     )
     parser.add_argument(
         "--relation_target",
@@ -105,12 +115,37 @@ def parse_args():
         "--batch_local",
         action="store_true",
         help="Batch-local relational KD baseline: relations among the batch only, "
-        "no graph and no candidate draw (implies --relation_target ambient_only)",
+        "no graph and no candidate draw. Defaults to --relation_target "
+        "ambient_only; pass --relation_target direct for the arm that is "
+        "temperature-matched to the teacher-support arms (per-anchor tau_i)",
     )
     parser.add_argument(
         "--no_ambient",
         action="store_true",
         help="Drop the ambient r=0 scale (S4 deletion arm)",
+    )
+    parser.add_argument(
+        "--batch_sampler",
+        choices=["random", "teacher_neighbor", "teacher_diverse"],
+        default=None,
+        help="Batch composition (E1, batch intervention): random (method), "
+        "teacher_neighbor (batch drawn from one teacher neighbourhood) or "
+        "teacher_diverse (batch spread across distant neighbourhoods)",
+    )
+    parser.add_argument(
+        "--holdout_edge_frac",
+        type=float,
+        default=None,
+        help="Fraction of teacher graph edges withheld from every training "
+        "support (E3). The withheld edges are stored in the artifact for the "
+        "post-hoc held-out geometry evaluation; 0 is the method",
+    )
+    parser.add_argument(
+        "--holdout_seed",
+        type=int,
+        default=None,
+        help="Which edges the holdout takes. Deliberately independent of --seed: "
+        "the split must be identical across seeds and arms",
     )
     parser.add_argument("--hard_neg_k", type=int, default=None)
     parser.add_argument("--random_neg_k", type=int, default=None)
@@ -235,6 +270,9 @@ def get_config(method: str, args):
         "support_policy",
         "relation_target",
         "knn_mode",
+        "batch_sampler",
+        "holdout_edge_frac",
+        "holdout_seed",
     )
     for name in ggpkd_overrides:
         value = getattr(args, name)
@@ -271,7 +309,12 @@ def get_config(method: str, args):
     # here keeps it in the run manifest as a concrete value.
     if args.batch_local:
         config.batch_local = True
-        config.relation_target = "ambient_only"
+        # Only a default. `--relation_target direct` scores the same batch columns
+        # at the anchor's own tau_i instead of the single ambient temperature,
+        # which is what makes the in-batch arm one factor away from a
+        # teacher-support arm rather than two.
+        if args.relation_target is None:
+            config.relation_target = "ambient_only"
 
     if args.w_task is not None:
         config.w_task = args.w_task

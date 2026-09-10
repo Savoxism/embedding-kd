@@ -307,6 +307,7 @@ class GGPKDDistillation(nn.Module):
         row_weight: float = 0.5,
         row_temps: torch.Tensor | None = None,
         relation_target: str = "diffusion",
+        use_ambient_scale: bool = True,
         **kwargs,
     ):
         super().__init__()
@@ -385,6 +386,31 @@ class GGPKDDistillation(nn.Module):
             raise ValueError(
                 f"relation_target={self.relation_target!r} reads the teacher bank; "
                 "pass teacher_embeddings"
+            )
+        # Two separate questions that used to have one answer.
+        #
+        #   *Is the bank here?*  -> `use_direct`. It decides what a target can be
+        #     computed from: `relation_target="direct"` reads teacher cosines over
+        #     whatever columns it is given, including columns carrying no graph
+        #     mass at all.
+        #   *Is scale r=0 in the loss?* -> `use_ambient_scale`. It decides what is
+        #     optimized.
+        #
+        # Conflating them made the minimal relational objective unreachable. The
+        # controlled support study needs exactly one KL per anchor over that
+        # anchor's own columns -- no ambient term, so nothing couples the anchors
+        # and batch composition cannot enter the loss -- while its random-support
+        # arms need `direct` targets, because a column drawn off-graph carries
+        # diffusion mass zero and would leave those arms with no objective. With
+        # one flag, asking for the first switched off the bank the second requires.
+        #
+        # `ambient_only` is the exception that stays coupled: it *is* scale r=0
+        # and nothing else, so removing the scale would leave no term at all.
+        self.use_ambient_scale = bool(use_ambient_scale)
+        if self.relation_target == "ambient_only" and not self.use_ambient_scale:
+            raise ValueError(
+                "relation_target='ambient_only' is the ambient scale and nothing "
+                "else; use_ambient_scale=False would leave the objective empty"
             )
         self.use_direct = teacher_embeddings is not None
         if self.use_direct:
@@ -919,7 +945,10 @@ class GGPKDDistillation(nn.Module):
         # `getattr(self, ..., False)`, and would have crossed batches under any
         # concurrent use.
         direct_active = (
-            self.use_direct and anchor_idx is not None and column_idx is not None
+            self.use_ambient_scale
+            and self.use_direct
+            and anchor_idx is not None
+            and column_idx is not None
         )
         if self.relation_target == "ambient_only" and not direct_active:
             # The graph group has already been dropped, so without the ambient

@@ -3,6 +3,7 @@ from .cdm_config import CDMConfig
 from .dskd_config import DSKDConfig
 from .emo_config import EMOConfig
 from .ggpkd_config import GGPKDConfig
+from .pointwise_config import PointwiseConfig
 from .rkd_config import RKDConfig
 from .stella_config import StellaConfig
 from .talas_config import (
@@ -20,6 +21,7 @@ __all__ = [
     "DSKDConfig",
     "EMOConfig",
     "GGPKDConfig",
+    "PointwiseConfig",
     "RKDConfig",
     "StellaConfig",
     "TALASConfig",

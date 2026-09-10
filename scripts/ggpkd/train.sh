@@ -51,7 +51,7 @@ case "$PAIR_KEY" in
 esac
 
 echo "======================================"
-echo "Training with GGPKD method (pair=$PAIR_KEY)"
+echo "Training with ${METHOD:-ggpkd} (pair=$PAIR_KEY)"
 echo "======================================"
 
 export TOKENIZERS_PARALLELISM="${TOKENIZERS_PARALLELISM:-false}"
@@ -81,9 +81,16 @@ WEIGHTS_DIR="${WEIGHTS_DIR:-}"
 # and what it cost stay together even when SAVE_DIR is a per-seed directory.
 STATS_FILE="${STATS_FILE:-$SAVE_DIR/run_stats.json}"
 
+# The method is an env var so the motivation-study runners can reuse this
+# script -- and with it the pair table, the cache paths and the run-stats wrapper
+# -- for the pointwise measurement floor. Everything else about a run is
+# unchanged, which is the point: two arms that differ only in `--method` must not
+# differ in how they were launched.
+METHOD="${METHOD:-ggpkd}"
+
 COMMAND=(
     "$PYTHON_BIN" main.py
-    --method ggpkd
+    --method "$METHOD"
     --train_data "$TRAIN_DATA"
     --student_model "$STUDENT_MODEL"
     --teacher_model "$TEACHER_MODEL"

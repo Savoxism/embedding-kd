@@ -1,4 +1,5 @@
 from src.criterions.ggpkd_distillation import RELATION_TARGETS
+from src.data_utils.batch_samplers import BATCH_SAMPLERS
 from src.ggpkd.graph_builder import KNN_MODES
 from src.ggpkd.policy import SUPPORT_POLICIES, TRUNCATION_TOLERANCE
 
@@ -79,6 +80,30 @@ class GGPKDConfig(BaseConfig):
     use_ambient = True
     knn_mode = "mutual"
     batch_local = False
+
+    # ---- Motivation study: batch composition, edge holdout -------------------
+    # These three exist for the controlled studies in scripts/exp/ and sit at the
+    # method's value, so a normal run is unaffected by their presence.
+    #
+    # batch_sampler       how a mini-batch is composed (E1, batch intervention).
+    #                     `random` is the method and the only setting under which
+    #                     the batches are i.i.d.; `teacher_neighbor` fills each
+    #                     batch from one teacher neighbourhood, `teacher_diverse`
+    #                     spreads it across distant ones. Both are label-free.
+    #                     They exist to test whether batch composition changes the
+    #                     supervision objective, which it can only do for a loss
+    #                     whose support is the batch.
+    # holdout_edge_frac   fraction of teacher graph edges withheld from every
+    #                     training support (E3). The withheld edges are stored in
+    #                     the artifact so a post-hoc evaluation can ask whether the
+    #                     student recovered relations it was never supervised on.
+    #                     0 is the method: nothing withheld.
+    # holdout_seed        which edges. Separate from `seed` on purpose: the split
+    #                     must be identical across seeds and across arms, or the
+    #                     held-out evaluation is not measuring the same relations.
+    batch_sampler = "random"
+    holdout_edge_frac = 0.0
+    holdout_seed = 12345
 
     # ---- Teacher Graph -------------------------------------------------------
     graph_k = 200
@@ -308,22 +333,64 @@ class GGPKDConfig(BaseConfig):
                 f"knn_mode must be one of {KNN_MODES}, got {self.knn_mode!r}"
             )
         if self.batch_local:
-            if self.relation_target != "ambient_only":
+            if self.relation_target not in ("ambient_only", "direct"):
                 raise ValueError(
-                    "batch_local forms no graph relations, so it requires "
-                    "relation_target='ambient_only'; got "
-                    f"{self.relation_target!r} (pass --batch_local, which sets it)"
+                    "batch_local forms no graph relations, so its target must be "
+                    "read off the teacher bank: relation_target='ambient_only' "
+                    "(one ambient temperature over the batch) or 'direct' (the "
+                    f"anchor's own tau_i); got {self.relation_target!r}"
                 )
             if self.batch_size < 2:
                 raise ValueError(
                     "batch_local needs at least two texts per batch to have any "
                     f"relation at all; got batch_size={self.batch_size}"
                 )
-        if self.relation_target in ("direct", "ambient_only") and not self.use_ambient:
-            # The direct relation target reads the teacher bank, and the bank only
-            # reaches the criterion through the ambient scale. Caught here so the
-            # run fails in the banner rather than at the first backward pass.
+        if self.relation_target == "ambient_only" and not self.use_ambient:
+            # `ambient_only` *is* scale r=0. Removing the scale leaves no term.
+            # `direct` is deliberately not caught here any more: it reads the
+            # teacher bank, which the criterion now receives independently of
+            # whether scale r=0 is in the loss. That combination is the minimal
+            # relational objective the controlled support study is built on.
             raise ValueError(
-                f"relation_target={self.relation_target!r} needs the teacher bank, "
-                "which is only passed when use_ambient is True"
+                "relation_target='ambient_only' is the ambient scale itself; it "
+                "cannot be combined with use_ambient=False"
             )
+        if self.holdout_edge_frac < 0.0 or self.holdout_edge_frac >= 1.0:
+            raise ValueError(
+                "holdout_edge_frac is the fraction of teacher edges withheld from "
+                f"every training support; must be in [0, 1), got {self.holdout_edge_frac}"
+            )
+        if self.batch_sampler not in BATCH_SAMPLERS:
+            raise ValueError(
+                f"batch_sampler must be one of {BATCH_SAMPLERS}, "
+                f"got {self.batch_sampler!r}"
+            )
+        if self.support_policy in ("corpus_uniform", "rewired"):
+            # Off-graph columns carry diffusion mass exactly zero, so under the
+            # method's own target these arms would optimize nothing at all. The
+            # teacher's raw cosine is defined for every pair, which is what makes
+            # a random-support arm a control rather than a deleted objective.
+            if self.relation_target != "direct":
+                raise ValueError(
+                    f"support_policy={self.support_policy!r} draws columns the "
+                    "graph puts no diffusion mass on, so it requires "
+                    "relation_target='direct'; got "
+                    f"{self.relation_target!r}"
+                )
+            if self.diffusion_quota is None:
+                raise ValueError(
+                    f"support_policy={self.support_policy!r} needs an explicit "
+                    "--diffusion_quota: there is no transition row to take the "
+                    "width from, and the arm is only a control when its support "
+                    "size matches the teacher arm it is compared against"
+                )
+            if self.row_weight > 0:
+                # L_row promotes the drawn columns to auxiliary rows. Under a
+                # random draw those rows have almost no pool-exposed teacher
+                # neighbours, so the term would quietly carry a different amount
+                # of supervision in this arm than in the arm it is compared with.
+                raise ValueError(
+                    f"support_policy={self.support_policy!r} requires "
+                    "row_weight=0: L_row's row set is derived from the support "
+                    "draw, so leaving it on makes the arms differ in two things"
+                )

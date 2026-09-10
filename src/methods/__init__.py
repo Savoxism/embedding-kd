@@ -6,7 +6,7 @@ the config to build; `distiller.py` reads the flags and hooks. Neither compares
 module plus one line here.
 """
 
-from src.methods import cdm, dskd, emo, ggpkd, rkd, stella, talas
+from src.methods import cdm, dskd, emo, ggpkd, pointwise, rkd, stella, talas
 from src.methods.spec import MethodSpec
 
 REGISTRY: dict[str, MethodSpec] = {
@@ -16,6 +16,7 @@ REGISTRY: dict[str, MethodSpec] = {
         dskd.SPEC,
         emo.SPEC,
         ggpkd.SPEC,
+        pointwise.SPEC,
         rkd.SPEC,
         stella.SPEC,
         talas.SPEC,

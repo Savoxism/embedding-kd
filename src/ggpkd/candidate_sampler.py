@@ -147,11 +147,57 @@ class GGPKDCandidateSampler:
         support = pool[support_positions].astype(np.int64)
         return support, support_positions
 
+    def _select_support_off_graph(
+        self,
+        idx: int,
+        rng: np.random.Generator,
+    ) -> tuple[np.ndarray, np.ndarray]:
+        """Columns drawn from the corpus rather than from the anchor's row.
+
+        The control arms of the support study. Both draw uniformly without
+        replacement from every node but the anchor; they differ only in how many:
+
+            corpus_uniform  the configured quota, the same number for every
+                            anchor and the same number the teacher arm is given.
+            rewired         this anchor's own degree, so the ragged degree
+                            profile of the teacher graph survives the rewiring
+                            and only the endpoints move.
+
+        The returned positions are empty by construction: a position indexes the
+        anchor's diffusion pool, and none of these columns are in it. Every
+        caller downstream reads teacher mass through those positions, so the mass
+        these arms carry is exactly zero -- which is why the config requires
+        relation_target="direct", where the target is read off the teacher bank
+        instead.
+        """
+        if self.support_policy == "rewired":
+            degree = int((self.pool_indices[idx] >= 0).sum())
+            # Clamped to the budget, not to the raw degree. The teacher arm this
+            # is a control for is itself given `diffusion_quota` columns, so an
+            # anchor whose row is wider than the budget contributes exactly
+            # `diffusion_quota` columns there too -- matching the raw degree would
+            # hand the rewired arm more supervision than the arm it is meant to
+            # isolate, and would overrun the fixed candidate width besides.
+            # Anchors below the budget keep their own smaller degree, which is
+            # what preserves the ragged profile where it actually differs.
+            take = min(max(degree, 1), self.diffusion_quota, self.n_items - 1)
+        else:
+            take = min(self.diffusion_quota, self.n_items - 1)
+        support = np.asarray(
+            self._draw_random(rng, {int(idx)}, take), dtype=np.int64
+        )
+        return support, np.empty(0, dtype=np.int64)
+
     def _select_support(
         self,
         idx: int,
         rng: np.random.Generator,
     ) -> tuple[np.ndarray, np.ndarray]:
+        if self.support_policy in ("corpus_uniform", "rewired"):
+            # Before the full_pool branch: these arms define their own width and
+            # never read the pool, so "the whole transition row" is not a width
+            # they could take.
+            return self._select_support_off_graph(idx, rng)
         pool = self.pool_indices[idx]
         valid = pool >= 0
         if self.full_pool:
@@ -270,9 +316,15 @@ class GGPKDCandidateSampler:
                 teacher_probs = np.zeros(
                     (self.n_scales, candidate_arr.size), dtype=np.float32
                 )
-                teacher_probs[:, : support.size] = self.pool_probs[
-                    :, idx, support_positions
-                ]
+                # Guarded on the *positions*, not on the support. An off-graph arm
+                # returns columns with no pool position at all, and its mass is
+                # zero for every one of them; indexing the pool with the empty
+                # position array would try to write a width-0 block into a
+                # width-|S| slot.
+                if support_positions.size:
+                    teacher_probs[:, : support_positions.size] = self.pool_probs[
+                        :, idx, support_positions
+                    ]
                 return candidate_arr, teacher_probs
             n_hard = n_uniform = 0
         else:
@@ -304,8 +356,8 @@ class GGPKDCandidateSampler:
         candidate_arr = np.concatenate([support, hard_nodes, uniform_nodes])
 
         teacher_probs = np.zeros((self.n_scales, candidate_arr.size), dtype=np.float32)
-        if support.size:
-            teacher_probs[:, : support.size] = self.pool_probs[
+        if support_positions.size:
+            teacher_probs[:, : support_positions.size] = self.pool_probs[
                 :, idx, support_positions
             ]
         return candidate_arr, teacher_probs

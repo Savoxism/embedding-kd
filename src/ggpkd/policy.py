@@ -89,7 +89,31 @@ PAD_TO_MULTIPLE_OF = 8
 #   local_topk    deterministic top-k under P^1 only. Together with the direct
 #                 relation target, this removes multi-hop diffusion without also
 #                 changing candidate width, ambient calibration, or row loss.
-SUPPORT_POLICIES = ("topk", "proportional", "uniform", "local_topk")
+#
+# The two arms below leave the graph entirely. They exist for the controlled
+# support study, where the question is not "which of the teacher's columns" but
+# "does teacher relevance matter at all", so their columns carry no diffusion
+# mass and they are only defined against relation_target="direct" -- the
+# teacher's raw cosine, which exists for every pair. The config enforces that
+# pairing, along with a matched --diffusion_quota and row_weight=0.
+#
+#   corpus_uniform  columns drawn uniformly from the whole corpus. The
+#                   beyond-batch-but-not-teacher-informed control: it answers
+#                   whether simply escaping the mini-batch is what helps.
+#   rewired         degree-matched rewiring. Each anchor keeps the *number* of
+#                   columns its own transition row has, but the endpoints are
+#                   redrawn, so the degree profile of the graph survives and its
+#                   semantics do not. Distinct from corpus_uniform only when the
+#                   objective is degree-sensitive; reported to show that it is
+#                   not, rather than assumed away.
+SUPPORT_POLICIES = (
+    "topk",
+    "proportional",
+    "uniform",
+    "local_topk",
+    "corpus_uniform",
+    "rewired",
+)
 
 def diffusion_weights(scales: Sequence[int]) -> tuple[float, ...]:
     """Return the canonical unnormalized rule omega_r = 1 / r."""

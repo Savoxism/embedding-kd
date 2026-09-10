@@ -209,6 +209,98 @@ def _distortion(teacher: torch.Tensor, student: torch.Tensor) -> dict[str, float
     }
 
 
+@torch.no_grad()
+def knn_recall(
+    teacher_cos: torch.Tensor,
+    student_cos: torch.Tensor,
+    k: int = 10,
+    restrict: torch.Tensor | None = None,
+) -> float:
+    """Overlap of the top-k neighbour sets, |NN_T^k(i) ∩ NN_S^k(i)| / k.
+
+    Both matrices must be dense [n, n] cosines over the same rows in the same
+    order, with the diagonal already excluded by `restrict` or by construction.
+
+    `restrict` is a boolean [n, n] mask of the pairs that are allowed to count. It
+    is what makes this a *held-out* measurement: with the training support masked
+    out, both sides rank only relations the student was never supervised on, so a
+    method cannot score here by having memorized its own targets. Masked entries
+    are pushed to -inf on both sides rather than dropped, which keeps every row at
+    the same width and the ratio comparable across rows.
+    """
+    if teacher_cos.shape != student_cos.shape:
+        raise ValueError(
+            f"teacher and student cosines must have the same shape, got "
+            f"{tuple(teacher_cos.shape)} and {tuple(student_cos.shape)}"
+        )
+    n = teacher_cos.size(0)
+    if restrict is not None:
+        teacher_cos = teacher_cos.masked_fill(~restrict, float("-inf"))
+        student_cos = student_cos.masked_fill(~restrict, float("-inf"))
+    # Rows with fewer than k admissible columns would report a recall against a
+    # denominator they cannot reach, so they are excluded from the mean.
+    admissible = torch.isfinite(teacher_cos).sum(dim=-1)
+    usable = admissible >= k
+    if not bool(usable.any()):
+        return 0.0
+    k_eff = min(int(k), n - 1)
+    teacher_top = teacher_cos.topk(k_eff, dim=-1).indices
+    student_top = student_cos.topk(k_eff, dim=-1).indices
+    hits = torch.zeros(n, dtype=torch.float64)
+    for row in range(n):
+        if not bool(usable[row]):
+            continue
+        overlap = torch.isin(teacher_top[row], student_top[row]).sum()
+        hits[row] = float(overlap) / k_eff
+    return float(hits[usable].mean())
+
+
+@torch.no_grad()
+def pair_order_accuracy(
+    teacher_cos: torch.Tensor,
+    student_cos: torch.Tensor,
+    restrict: torch.Tensor | None = None,
+    n_triplets: int = 200000,
+    seed: int = 0,
+    margin: float = 0.0,
+) -> float:
+    """P[ c_T(i,j) > c_T(i,k)  <=>  c_S(i,j) > c_S(i,k) ], sampled.
+
+    The metric most downstream embedding tasks actually read: retrieval and STS
+    care which of two candidates is closer, not what the cosine's absolute value
+    is. It is also the one metric here that a student cannot win by flattening its
+    space -- a uniform collapse destroys ordering, while it can leave an
+    unweighted cosine RMSE looking healthy.
+
+    Triplets are drawn uniformly from the admissible pairs of each anchor, so with
+    `restrict` set to the held-out mask this reads ordering among relations that
+    were never supervised. `margin` drops teacher ties, whose ordering is noise
+    and would otherwise be counted as a coin flip against the student.
+    """
+    n = teacher_cos.size(0)
+    if n < 3:
+        return 0.0
+    generator = torch.Generator().manual_seed(seed)
+    anchors = torch.randint(0, n, (n_triplets,), generator=generator)
+    left = torch.randint(0, n, (n_triplets,), generator=generator)
+    right = torch.randint(0, n, (n_triplets,), generator=generator)
+
+    keep = (anchors != left) & (anchors != right) & (left != right)
+    if restrict is not None:
+        keep = keep & restrict[anchors, left] & restrict[anchors, right]
+    if not bool(keep.any()):
+        return 0.0
+    anchors, left, right = anchors[keep], left[keep], right[keep]
+
+    teacher_gap = teacher_cos[anchors, left] - teacher_cos[anchors, right]
+    student_gap = student_cos[anchors, left] - student_cos[anchors, right]
+    decided = teacher_gap.abs() > margin
+    if not bool(decided.any()):
+        return 0.0
+    agree = (teacher_gap[decided] > 0) == (student_gap[decided] > 0)
+    return float(agree.double().mean())
+
+
 def _spearman(a: torch.Tensor, b: torch.Tensor) -> float:
     """Rank correlation without a scipy round-trip (no ties expected on cosines)."""
     rank_a = a.argsort().argsort().double()

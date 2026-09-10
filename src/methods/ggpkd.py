@@ -118,6 +118,8 @@ def build_data(ctx, df: pd.DataFrame, teacher_cls: torch.Tensor):
         truncation_tolerance=ctx.config.truncation_tolerance,
         diffusion_scales=ctx.config.diffusion_scales,
         knn_mode=ctx.config.knn_mode,
+        holdout_edge_frac=ctx.config.holdout_edge_frac,
+        holdout_seed=ctx.config.holdout_seed,
         source_ids=source_ids(ctx, df),
     )
     ctx.ggpkd_sampler = GGPKDCandidateSampler(
@@ -218,12 +220,22 @@ def build_criterion(ctx, config):
             f"Derived direct_temp={config.direct_temp:.4f} "
             "(median graph bandwidth; requested via --direct_temp 0)"
         )
-    # `use_ambient=False` is the S4 deletion arm: withholding the bank is what
-    # removes scale r=0, because the criterion derives `use_direct` from whether
-    # it has teacher embeddings at all.
+    # `use_ambient=False` is the S4 deletion arm. It used to be expressed by
+    # withholding the teacher bank, which also removed the only way to compute a
+    # `direct` target -- and the controlled support study needs exactly that
+    # combination: no ambient scale (so nothing couples the anchors and batch
+    # composition cannot reach the loss) with direct targets (so a column drawn
+    # off-graph still carries a real teacher opinion). The bank is therefore
+    # passed whenever some term reads it, and `use_ambient_scale` alone decides
+    # whether scale r=0 is in the objective.
+    needs_bank = config.use_ambient or config.relation_target in (
+        "direct",
+        "ambient_only",
+    )
     criterion = GGPKDDistillation(
         diffusion_scales=config.diffusion_scales,
-        teacher_embeddings=ctx.teacher_cls_all if config.use_ambient else None,
+        teacher_embeddings=ctx.teacher_cls_all if needs_bank else None,
+        use_ambient_scale=config.use_ambient,
         direct_temp=config.direct_temp,
         row_weight=config.row_weight,
         relation_target=config.relation_target,
