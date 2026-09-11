@@ -12,6 +12,7 @@ from src.ggpkd.policy import (
 )
 
 RELATION_TARGETS = ("diffusion", "direct", "ambient_only")
+CALIBRATION_MODES = ("none", "pool", "fixed_reference")
 
 
 def _assert_finite_tensors(named_tensors: Sequence[tuple[str, torch.Tensor]]) -> None:
@@ -308,6 +309,7 @@ class GGPKDDistillation(nn.Module):
         row_temps: torch.Tensor | None = None,
         relation_target: str = "diffusion",
         use_ambient_scale: bool = True,
+        calibration_mode: str | None = None,
         **kwargs,
     ):
         super().__init__()
@@ -406,7 +408,21 @@ class GGPKDDistillation(nn.Module):
         #
         # `ambient_only` is the exception that stays coupled: it *is* scale r=0
         # and nothing else, so removing the scale would leave no term at all.
-        self.use_ambient_scale = bool(use_ambient_scale)
+        # `pool` is the historical ambient loss over the union supplied by the
+        # current mini-batch. `fixed_reference` evaluates the same teacher/student
+        # similarity KL on C_i = Omega_i union R, where R is fixed before
+        # training. The latter changes only which columns calibration scores; the
+        # graph target and its domain remain Omega_i. `use_ambient_scale` is kept
+        # as a compatibility surface for older scripts and tests.
+        if calibration_mode is None:
+            calibration_mode = "pool" if use_ambient_scale else "none"
+        if calibration_mode not in CALIBRATION_MODES:
+            raise ValueError(
+                f"calibration_mode must be one of {CALIBRATION_MODES}, "
+                f"got {calibration_mode!r}"
+            )
+        self.calibration_mode = calibration_mode
+        self.use_ambient_scale = calibration_mode != "none"
         if self.relation_target == "ambient_only" and not self.use_ambient_scale:
             raise ValueError(
                 "relation_target='ambient_only' is the ambient scale and nothing "
@@ -513,7 +529,15 @@ class GGPKDDistillation(nn.Module):
         teacher_probs: torch.Tensor,
         candidate_idx: torch.Tensor,
         anchor_idx: torch.Tensor,
-    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+        candidate_is_reference: torch.Tensor | None = None,
+    ) -> tuple[
+        torch.Tensor,
+        torch.Tensor,
+        torch.Tensor,
+        torch.Tensor,
+        torch.Tensor,
+        torch.Tensor,
+    ]:
         batch_size, n_scales, candidate_size = teacher_probs.shape
         flat_idx = candidate_idx.reshape(-1)
         unique_idx, inverse = torch.unique(flat_idx, return_inverse=True)
@@ -545,17 +569,62 @@ class GGPKDDistillation(nn.Module):
         )
         target.scatter_add_(2, scatter_index, teacher_probs)
 
-        # Which pool columns belong to this anchor's own candidate draw. The diffusion
-        # scales only have an opinion inside this set; everything else in the shared
-        # pool was drawn for a different anchor and carries target 0 for reasons that
-        # have nothing to do with the teacher.
-        own_mask = torch.zeros(
-            batch_size, pool_size, dtype=torch.bool, device=teacher_probs.device
+        # Keep graph-domain occurrences separate from fixed-reference occurrences.
+        # They can point at the same corpus node, so a last-write-wins bool scatter
+        # would be wrong; counts preserve both roles before reducing to masks.
+        if candidate_is_reference is None:
+            reference_occurrence = torch.zeros_like(candidate_idx, dtype=torch.bool)
+        else:
+            if candidate_is_reference.shape != candidate_idx.shape:
+                raise ValueError(
+                    "candidate_is_reference must have the same shape as "
+                    f"candidate_idx; got {tuple(candidate_is_reference.shape)} and "
+                    f"{tuple(candidate_idx.shape)}"
+                )
+            reference_occurrence = candidate_is_reference.to(
+                device=teacher_probs.device, dtype=torch.bool
+            )
+
+        occurrence_positions = inverse.view(batch_size, candidate_size)
+        own_counts = torch.zeros(
+            batch_size, pool_size, dtype=torch.int32, device=teacher_probs.device
         )
-        own_mask.scatter_(1, inverse.view(batch_size, candidate_size), True)
+        own_counts.scatter_add_(
+            1, occurrence_positions, (~reference_occurrence).to(torch.int32)
+        )
+        own_mask = own_counts > 0
+
+        reference_counts = torch.zeros(
+            pool_size, dtype=torch.int32, device=teacher_probs.device
+        )
+        reference_counts.scatter_add_(
+            0, inverse, reference_occurrence.reshape(-1).to(torch.int32)
+        )
+        reference_columns = reference_counts > 0
 
         self_mask = unique_idx.view(1, -1) == anchor_idx.view(-1, 1)
-        return pool_embeddings, target, self_mask, own_mask, unique_idx
+        return (
+            pool_embeddings,
+            target,
+            self_mask,
+            own_mask,
+            reference_columns,
+            unique_idx,
+        )
+
+    def _calibration_exclusion_mask(
+        self,
+        self_mask: torch.Tensor,
+        own_mask: torch.Tensor,
+        reference_columns: torch.Tensor,
+    ) -> torch.Tensor:
+        """Columns excluded from the calibration softmax for each anchor."""
+        if self.calibration_mode == "pool":
+            return self_mask
+        if self.calibration_mode == "fixed_reference":
+            domain = own_mask | reference_columns.view(1, -1)
+            return self_mask | ~domain
+        return self_mask
 
     @torch.no_grad()
     def _teacher_cosine_logits(
@@ -580,7 +649,7 @@ class GGPKDDistillation(nn.Module):
         self,
         anchor_idx: torch.Tensor,
         column_idx: torch.Tensor,
-        self_mask: torch.Tensor,
+        exclusion_mask: torch.Tensor,
         shared: bool,
     ) -> torch.Tensor:
         """Teacher similarity over every scored column, not just the graph pool.
@@ -591,7 +660,7 @@ class GGPKDDistillation(nn.Module):
         """
         logits = self._teacher_cosine_logits(anchor_idx, column_idx, shared)
         logits = logits / self.direct_temp
-        logits = logits.masked_fill(self_mask, float("-inf"))
+        logits = logits.masked_fill(exclusion_mask, float("-inf"))
         return F.softmax(logits, dim=-1)
 
     @torch.no_grad()
@@ -829,6 +898,7 @@ class GGPKDDistillation(nn.Module):
         teacher_probs: torch.Tensor,
         candidate_idx: torch.Tensor | None = None,
         anchor_idx: torch.Tensor | None = None,
+        candidate_is_reference: torch.Tensor | None = None,
     ) -> tuple[torch.Tensor, dict[str, float]]:
         # Checked lazily. Verifying the inputs eagerly cost one host sync per
         # step to answer a question the output check below already answers --
@@ -863,9 +933,14 @@ class GGPKDDistillation(nn.Module):
                 target,
                 self_mask,
                 own_mask,
+                reference_columns,
                 column_idx,
             ) = self._build_shared_pool(
-                candidate_embeddings, teacher_probs, candidate_idx, anchor_idx
+                candidate_embeddings,
+                teacher_probs,
+                candidate_idx,
+                anchor_idx,
+                candidate_is_reference,
             )
             pool_norm = F.normalize(pool_embeddings, p=2, dim=-1, eps=self.eps_norm)
             similarity = anchor_norm @ pool_norm.t()
@@ -903,6 +978,9 @@ class GGPKDDistillation(nn.Module):
                 self_mask = column_idx == anchor_idx.view(-1, 1)
             else:
                 self_mask = torch.zeros_like(similarity, dtype=torch.bool)
+            reference_columns = torch.zeros(
+                similarity.size(-1), dtype=torch.bool, device=similarity.device
+            )
 
         weights = self._resolved(self.scale_weights, n_scales)
         temps = self._resolved(self.scale_temps, n_scales)
@@ -945,7 +1023,7 @@ class GGPKDDistillation(nn.Module):
         # `getattr(self, ..., False)`, and would have crossed batches under any
         # concurrent use.
         direct_active = (
-            self.use_ambient_scale
+            self.calibration_mode != "none"
             and self.use_direct
             and anchor_idx is not None
             and column_idx is not None
@@ -960,13 +1038,25 @@ class GGPKDDistillation(nn.Module):
                 "anchors and the scored columns"
             )
         if direct_active:
-            direct = self._direct_target(anchor_idx, column_idx, self_mask, share)
+            if self.calibration_mode == "fixed_reference" and (
+                candidate_is_reference is None
+            ):
+                raise ValueError(
+                    "calibration_mode='fixed_reference' needs "
+                    "candidate_is_reference from GGPKDCollate"
+                )
+            direct_mask = self._calibration_exclusion_mask(
+                self_mask, own_mask, reference_columns
+            )
+            direct = self._direct_target(anchor_idx, column_idx, direct_mask, share)
             target = torch.cat([direct.unsqueeze(1).to(target.dtype), target], dim=1)
             weights = torch.cat([self.direct_weight.to(weights.dtype), weights])
             # Same temperature as the teacher side of the direct target: the tie
             # that makes the target attainable rather than a rescaling exercise.
             temps = torch.cat([temps.new_full((1,), self.direct_temp), temps])
             n_scales += 1
+        else:
+            direct_mask = self_mask
         weights = weights / weights.sum().clamp_min(1e-12)
 
         log_target = torch.where(
@@ -1010,7 +1100,7 @@ class GGPKDDistillation(nn.Module):
             else:
                 logits = similarity / temps[scale_idx]
             logits = logits.masked_fill(
-                self_mask if is_direct else diffusion_mask, float("-inf")
+                direct_mask if is_direct else diffusion_mask, float("-inf")
             )
             log_probs = F.log_softmax(logits, dim=-1)
             log_probs_per_scale.append(log_probs)
@@ -1099,6 +1189,7 @@ class GGPKDDistillation(nn.Module):
             target_entropy=target_entropy,
             weights=weights,
             self_mask=self_mask,
+            direct_mask=direct_mask,
             diffusion_mask=diffusion_mask,
             temps=temps,
             direct_active=direct_active,
@@ -1124,6 +1215,7 @@ class GGPKDDistillation(nn.Module):
         target_entropy: torch.Tensor,
         weights: torch.Tensor,
         self_mask: torch.Tensor,
+        direct_mask: torch.Tensor,
         diffusion_mask: torch.Tensor,
         temps: torch.Tensor,
         direct_active: bool,
@@ -1253,6 +1345,9 @@ class GGPKDDistillation(nn.Module):
         entries: list[tuple[str, torch.Tensor]] = [
             ("loss_total", total_loss.detach()),
             ("loss_rel", loss_rel.detach()),
+            # `loss_cal` is the paper-facing name. Keep `loss_amb` as an exact
+            # alias so old result exporters and ablation tables remain readable.
+            ("loss_cal", loss_amb.detach()),
             ("loss_amb", loss_amb.detach()),
             ("loss_nbr", loss_nbr.detach()),
             ("loss_diff", loss_diff.detach()),
@@ -1301,9 +1396,18 @@ class GGPKDDistillation(nn.Module):
             )
         if offset:
             entries.append(("teacher_entropy_amb", target_entropy[:, 0].mean()))
+            entries.append(
+                (
+                    "calibration_columns",
+                    (~direct_mask).sum(dim=-1).float().mean(),
+                )
+            )
             entries.extend(
                 _distribution_stats(
-                    log_probs_per_scale[0], target[:, 0, :], self_mask, suffix="_amb"
+                    log_probs_per_scale[0],
+                    target[:, 0, :],
+                    direct_mask,
+                    suffix="_amb",
                 )
             )
 

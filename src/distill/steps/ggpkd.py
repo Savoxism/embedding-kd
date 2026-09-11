@@ -21,6 +21,7 @@ def step(ctx, batch: dict) -> tuple[torch.Tensor, dict]:
             "labels",
             "idx",
             "candidate_idx",
+            "candidate_is_reference",
             "candidate_inverse",
             "teacher_probs",
         }:
@@ -94,6 +95,7 @@ def step(ctx, batch: dict) -> tuple[torch.Tensor, dict]:
             teacher_probs=batch_s["teacher_probs"],
             candidate_idx=batch_s.get("candidate_idx"),
             anchor_idx=batch_s.get("idx"),
+            candidate_is_reference=batch_s.get("candidate_is_reference"),
         )
         loss = loss.float()
 
