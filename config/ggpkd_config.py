@@ -1,4 +1,4 @@
-from src.criterions.ggpkd_distillation import RELATION_TARGETS
+from src.criterions.ggpkd_distillation import CALIBRATION_MODES, RELATION_TARGETS
 from src.data_utils.batch_samplers import BATCH_SAMPLERS
 from src.ggpkd.graph_builder import KNN_MODES
 from src.ggpkd.policy import SUPPORT_POLICIES, TRUNCATION_TOLERANCE
@@ -78,6 +78,12 @@ class GGPKDConfig(BaseConfig):
     support_policy = "topk"
     relation_target = "diffusion"
     use_ambient = True
+    # Calibration is orthogonal to the graph target. `pool` reproduces the
+    # historical ambient KL over the current batch's shared candidate union;
+    # `fixed_reference` evaluates it on Omega_i union one corpus-defined set R;
+    # `none` deletes it. `use_ambient` remains as a backwards-compatible alias.
+    calibration_mode = "pool"
+    reference_size = 200
     knn_mode = "mutual"
     batch_local = False
 
@@ -308,6 +314,21 @@ class GGPKDConfig(BaseConfig):
         An arm like `--relation_target direct --no_ambient` would then get as far
         as caching the teacher before the criterion refused it.
         """
+        # Allow old programmatic callers to keep using `use_ambient=False`, while
+        # making calibration_mode the authoritative surface for new runs.
+        mode_was_set = "calibration_mode" in self.__dict__
+        ambient_was_set = "use_ambient" in self.__dict__
+        if ambient_was_set and not mode_was_set:
+            self.calibration_mode = "pool" if self.use_ambient else "none"
+        else:
+            self.use_ambient = self.calibration_mode != "none"
+        if self.calibration_mode not in CALIBRATION_MODES:
+            raise ValueError(
+                f"calibration_mode must be one of {CALIBRATION_MODES}, "
+                f"got {self.calibration_mode!r}"
+            )
+        if self.reference_size < 1:
+            raise ValueError("reference_size must be at least 1")
         if self.row_weight < 0:
             raise ValueError("row_weight must be non-negative")
         if self.direct_temp < 0:
@@ -333,6 +354,11 @@ class GGPKDConfig(BaseConfig):
                 f"knn_mode must be one of {KNN_MODES}, got {self.knn_mode!r}"
             )
         if self.batch_local:
+            if self.calibration_mode == "fixed_reference":
+                raise ValueError(
+                    "fixed_reference calibration is defined for corpus graph rows; "
+                    "it cannot be combined with batch_local"
+                )
             if self.relation_target not in ("ambient_only", "direct"):
                 raise ValueError(
                     "batch_local forms no graph relations, so its target must be "

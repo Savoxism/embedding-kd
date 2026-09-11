@@ -41,7 +41,7 @@
 #   carry as well as in which relations.
 # * The arms are matched on support *size*, not on compute. A corpus-uniform draw
 #   deduplicates far worse across a batch than a teacher draw does, so it encodes
-#   more texts per step. The CSV carries `train_encoded_texts_total` and
+#   more texts per step. The CSV carries `train_encoded_texts_cum` and
 #   `cost_wall_seconds` for exactly this reason: the cost difference is a
 #   consequence of the design and belongs in the table, not hidden by shrinking
 #   the budget.

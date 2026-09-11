@@ -70,7 +70,7 @@ def parse_args():
         "--direct_temp",
         type=float,
         default=None,
-        help="Ambient-scale temperature; 0 derives it as the median graph bandwidth",
+        help="Calibration temperature; 0 derives it as the median graph bandwidth",
     )
     parser.add_argument(
         "--diffusion_scales",
@@ -122,7 +122,21 @@ def parse_args():
     parser.add_argument(
         "--no_ambient",
         action="store_true",
-        help="Drop the ambient r=0 scale (S4 deletion arm)",
+        help="Compatibility alias for --calibration_mode none",
+    )
+    parser.add_argument(
+        "--calibration_mode",
+        choices=["none", "pool", "fixed_reference"],
+        default=None,
+        help="Calibration loss domain: none, the historical batch-shared pool, "
+        "or Omega_i union a fixed corpus reference set",
+    )
+    parser.add_argument(
+        "--reference_size",
+        type=int,
+        default=None,
+        help="Number of deterministic corpus references used by "
+        "--calibration_mode fixed_reference",
     )
     parser.add_argument(
         "--batch_sampler",
@@ -269,6 +283,7 @@ def get_config(method: str, args):
         "pooling_method",
         "support_policy",
         "relation_target",
+        "reference_size",
         "knn_mode",
         "batch_sampler",
         "holdout_edge_frac",
@@ -299,10 +314,20 @@ def get_config(method: str, args):
         if not config.diffusion_scales:
             raise ValueError("--diffusion_scales must name at least one scale")
 
-    # A store_true flag cannot express "leave the config alone", so it only ever
-    # turns the ambient scale off; the config default keeps it on.
+    if args.calibration_mode is not None:
+        config.calibration_mode = args.calibration_mode
+        config.use_ambient = args.calibration_mode != "none"
+
+    # A store_true flag cannot express "leave the config alone". Keep it as a
+    # compatibility alias, but reject two contradictory objective requests.
     if args.no_ambient:
+        if args.calibration_mode not in (None, "none"):
+            raise ValueError(
+                "--no_ambient conflicts with "
+                f"--calibration_mode {args.calibration_mode}"
+            )
         config.use_ambient = False
+        config.calibration_mode = "none"
 
     # The baseline has no graph relations to target, so the objective it implies
     # is forced rather than left to be passed consistently by hand. Setting it
