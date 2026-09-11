@@ -19,7 +19,7 @@ def _criterion_inputs(batch=4, candidates=12, dim=16, n_items=60, scales=3):
     torch.manual_seed(0)
     teacher = torch.randn(n_items, dim)
     probs = torch.rand(batch, scales, candidates)
-    probs[:, :, candidates // 2 :] = 0.0 
+    probs[:, :, candidates // 2 :] = 0.0
     probs /= probs.sum(-1, keepdim=True)
     candidate_idx = torch.stack(
         [torch.randperm(n_items)[:candidates] for _ in range(batch)]
@@ -362,12 +362,10 @@ def test_batch_local_rejects_a_batch_too_small_to_have_a_relation():
 
 
 def test_ambient_only_gives_the_ambient_scale_the_whole_weight():
-    """The reason the graph group is dropped rather than zeroed.
+    """Deleting a group never renormalizes any surviving group.
 
-    A scale with a zero target still holds its weight in the normalization. Left
-    in, the baseline's loss would be scaled by the ambient share alone -- 0.5 for
-    every radius ladder -- which is a different effective learning rate, not a
-    different objective. Under `ambient_only` the loss must equal the ambient KL.
+    Every top-level coefficient is 1.0, so both `ambient_only` and a normal
+    objective whose graph target is zero equal the calibration KL exactly.
     """
     data = _criterion_inputs()
     zero_targets = torch.zeros_like(data["probs"])
@@ -389,8 +387,8 @@ def test_ambient_only_gives_the_ambient_scale_the_whole_weight():
     assert metrics["loss_nbr"] == 0.0
     assert metrics["loss_row"] == 0.0
 
-    # The same targets under the normal objective are scaled down by the dead
-    # group's weight -- which is exactly the failure mode being avoided.
+    # The same targets under the normal objective have the same value: the dead
+    # graph group neither contributes nor changes calibration's coefficient.
     scaled = GGPKDDistillation(
         diffusion_scales=(1, 2, 4),
         teacher_embeddings=data["teacher"],
@@ -404,7 +402,7 @@ def test_ambient_only_gives_the_ambient_scale_the_whole_weight():
         candidate_idx=data["candidate_idx"],
         anchor_idx=data["anchor_idx"],
     )
-    assert scaled_loss.item() == pytest.approx(0.5 * loss.item(), rel=1e-5)
+    assert scaled_loss.item() == pytest.approx(loss.item(), rel=1e-5)
     assert scaled_metrics["loss_amb"] == pytest.approx(metrics["loss_amb"], rel=1e-5)
 
 

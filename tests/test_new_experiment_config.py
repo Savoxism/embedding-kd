@@ -335,14 +335,20 @@ def test_ggpkd_relational_loss_reports_semantic_decomposition():
     ]
     assert metrics["loss_diff"] == pytest.approx(expected_diff, rel=1e-6)
 
-    # Ambient and graph retain a fixed 50/50 split. Inside the graph group,
+    # Every top-level group has coefficient 1.0. Inside the graph group,
     # [1, 1/2, 1/4] normalizes to [4/7, 2/7, 1/7].
     expected_rel = (
-        0.5 * metrics["loss_amb"]
-        + (2.0 / 7.0) * metrics["loss_nbr"]
-        + (3.0 / 14.0) * metrics["loss_diff"]
+        metrics["loss_amb"]
+        + (4.0 / 7.0) * metrics["loss_nbr"]
+        + (3.0 / 7.0) * metrics["loss_diff"]
     )
     assert metrics["loss_rel"] == pytest.approx(expected_rel, rel=1e-6)
+    assert metrics["loss_rel"] == pytest.approx(
+        metrics["loss_graph"] + metrics["loss_cal"], rel=1e-6
+    )
+    assert metrics["weight_graph"] == 1.0
+    assert metrics["weight_cal"] == 1.0
+    assert metrics["weight_row"] == 0.0
     assert loss.item() == pytest.approx(metrics["loss_rel"], rel=1e-6)
     assert metrics["loss_total"] == pytest.approx(metrics["loss_rel"], rel=1e-6)
 
@@ -619,6 +625,9 @@ def test_row_loss_forward_takes_no_walk_input_and_backpropagates():
 
     assert metrics["loss_row"] > 0.0
     assert metrics["row_count"] > 0.0
+    assert metrics["loss_total"] == pytest.approx(
+        metrics["loss_rel"] + metrics["loss_row"], rel=1e-6
+    )
     loss.backward()
     assert torch.isfinite(anchors.grad).all()
     assert torch.isfinite(candidates.grad).all()
@@ -935,6 +944,10 @@ def test_ggpkd_cli_diffusion_scales_and_derived_direct_temp(monkeypatch):
             "1",
             "--direct_temp",
             "0",
+            "--calibration_mode",
+            "fixed_cosine",
+            "--reference_size",
+            "17",
         ],
     )
     args = main.parse_args()
@@ -943,6 +956,8 @@ def test_ggpkd_cli_diffusion_scales_and_derived_direct_temp(monkeypatch):
     # 0 is the "derive from the graph" sentinel; the distiller resolves it to the
     # median entropic-affinity bandwidth before the criterion is constructed.
     assert config.direct_temp == 0.0
+    assert config.calibration_mode == "fixed_cosine"
+    assert config.reference_size == 17
 
     from config import GGPKDConfig
 

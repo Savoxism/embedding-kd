@@ -39,9 +39,9 @@ class GGPKDConfig(BaseConfig):
     # sharing is part of the method definition and is always enabled when corpus
     # indices are available.
 
-    # ---- Direct Scale (r=0) --------------------------------------------------
-    # The ambient group is assigned the same total weight as the complete graph
-    # group inside the criterion; it is not configurable.
+    # ---- Calibration ---------------------------------------------------------
+    # Every active top-level group -- graph, calibration, and optional auxiliary
+    # rows -- has coefficient 1.0. There is no normalization over active groups.
     # The notebook requests 0, which derives this value at startup as the median
     # entropic-affinity bandwidth of the graph. The ambient target is the
     # transition-row construction with sparsification removed, so the graph's
@@ -80,10 +80,16 @@ class GGPKDConfig(BaseConfig):
     use_ambient = True
     # Calibration is orthogonal to the graph target. `pool` reproduces the
     # historical ambient KL over the current batch's shared candidate union;
-    # `fixed_reference` evaluates it on Omega_i union one corpus-defined set R;
-    # `none` deletes it. `use_ambient` remains as a backwards-compatible alias.
+    # `fixed_reference` evaluates the KL on Omega_i union one corpus-defined set R;
+    # `fixed_cosine` regresses raw cosine values on that same fixed domain; `none`
+    # deletes calibration. Every active objective group has coefficient 1.0.
+    # `use_ambient` remains as a backwards-compatible alias.
     calibration_mode = "pool"
     reference_size = 200
+    # Derived from the selected reference texts during data setup and persisted in
+    # run.json. It is not a tunable parameter; the sweep runner uses it to verify
+    # that fixed-KL and fixed-cosine saw exactly the same R.
+    reference_fingerprint = None
     knn_mode = "mutual"
     batch_local = False
 
@@ -137,8 +143,8 @@ class GGPKDConfig(BaseConfig):
     # bundled into the canonical method.
     diffusion_scales = (1,)
     # Within the graph group omega_r is proportional to 1/r. The graph group is
-    # normalized to total weight 1 and matched by ambient weight 1, so Table 4
-    # changes radius without changing the ambient--graph balance.
+    # normalized to total weight 1. Calibration independently has coefficient
+    # 1.0, so Table 4 changes radius without changing either top-level weight.
 
     # ---- Row Supervision -----------------------------------------------------
     # L_row promotes the teacher-selected pool columns (the diffusion support, not
@@ -354,9 +360,9 @@ class GGPKDConfig(BaseConfig):
                 f"knn_mode must be one of {KNN_MODES}, got {self.knn_mode!r}"
             )
         if self.batch_local:
-            if self.calibration_mode == "fixed_reference":
+            if self.calibration_mode in ("fixed_reference", "fixed_cosine"):
                 raise ValueError(
-                    "fixed_reference calibration is defined for corpus graph rows; "
+                    "fixed-reference calibration is defined for corpus graph rows; "
                     "it cannot be combined with batch_local"
                 )
             if self.relation_target not in ("ambient_only", "direct"):
@@ -380,6 +386,14 @@ class GGPKDConfig(BaseConfig):
             raise ValueError(
                 "relation_target='ambient_only' is the ambient scale itself; it "
                 "cannot be combined with use_ambient=False"
+            )
+        if (
+            self.relation_target == "ambient_only"
+            and self.calibration_mode == "fixed_cosine"
+        ):
+            raise ValueError(
+                "relation_target='ambient_only' is the KL similarity-profile "
+                "baseline and cannot be combined with fixed_cosine"
             )
         if self.holdout_edge_frac < 0.0 or self.holdout_edge_frac >= 1.0:
             raise ValueError(

@@ -44,6 +44,18 @@ def build_fixed_reference_indices(
     return np.asarray([index for _, index in keyed[:size]], dtype=np.int64)
 
 
+def fixed_reference_fingerprint(
+    corpus_texts: list[str], reference_indices: np.ndarray
+) -> str:
+    """Fingerprint the selected texts, independent of their corpus row numbers."""
+    hasher = hashlib.sha256()
+    for index in reference_indices:
+        encoded = corpus_texts[int(index)].encode("utf-8")
+        hasher.update(len(encoded).to_bytes(8, "big"))
+        hasher.update(encoded)
+    return hasher.hexdigest()[:12]
+
+
 def resolve_anchor_column(ctx, df: pd.DataFrame) -> str:
     cfg = ctx.config
     column = cfg.ggpkd_anchor_column
@@ -156,15 +168,18 @@ def build_data(ctx, df: pd.DataFrame, teacher_cls: torch.Tensor):
     )
     anchor_texts = df[ctx.ggpkd_anchor_column].astype(str).tolist()
     reference_indices = None
-    if ctx.config.calibration_mode == "fixed_reference":
+    if ctx.config.calibration_mode in ("fixed_reference", "fixed_cosine"):
         reference_indices = build_fixed_reference_indices(
             anchor_texts, ctx.config.reference_size
         )
-        reference_fingerprint = hashlib.sha256(
-            np.sort(reference_indices).tobytes()
-        ).hexdigest()[:12]
+        reference_fingerprint = fixed_reference_fingerprint(
+            anchor_texts, reference_indices
+        )
+        # build_data runs before telemetry writes run.json, so the concrete
+        # corpus-defined R becomes part of the reproducibility manifest.
+        ctx.config.reference_fingerprint = reference_fingerprint
         print(
-            "GGPKD fixed-reference calibration: "
+            f"GGPKD {ctx.config.calibration_mode} calibration: "
             f"{reference_indices.size} corpus columns, "
             f"fingerprint={reference_fingerprint}"
         )

@@ -12,7 +12,7 @@ from src.ggpkd.policy import (
 )
 
 RELATION_TARGETS = ("diffusion", "direct", "ambient_only")
-CALIBRATION_MODES = ("none", "pool", "fixed_reference")
+CALIBRATION_MODES = ("none", "pool", "fixed_reference", "fixed_cosine")
 
 
 def _assert_finite_tensors(named_tensors: Sequence[tuple[str, torch.Tensor]]) -> None:
@@ -236,12 +236,11 @@ class GGPKDDistillation(nn.Module):
       per-row tie automatically: tau_r(i) = sqrt(r) * tau_i.
 
     **Scale weights.** Within the graph group, ``omega_r`` is proportional to
-    ``1/r``.  Those graph weights are normalized to sum to one, and the ambient
-    group receives the same total unnormalized weight.  The final normalization
-    therefore keeps a 50/50 ambient--graph split whenever ambient supervision is
-    active, independent of how many diffusion radii are requested.  This makes the
-    radius ablation change the graph target ladder without also increasing the
-    graph group's effective loss weight.
+    ``1/r`` and normalized to sum to one. Every top-level group -- graph,
+    calibration, and optional auxiliary rows -- has coefficient 1.0. There is no
+    normalization over active groups, so deleting calibration cannot silently
+    increase the graph coefficient. The internal normalization only ensures that
+    adding diffusion radii does not increase the graph group's total weight.
 
     Passing removed or derived knobs raises rather than being silently absorbed.
     """
@@ -305,7 +304,7 @@ class GGPKDDistillation(nn.Module):
         direct_temp: float = 0.10,
         transition_neighbors: torch.Tensor | None = None,
         transition_probs: torch.Tensor | None = None,
-        row_weight: float = 0.5,
+        row_weight: float = 1.0,
         row_temps: torch.Tensor | None = None,
         relation_target: str = "diffusion",
         use_ambient_scale: bool = True,
@@ -346,10 +345,9 @@ class GGPKDDistillation(nn.Module):
         # as one KL against the teacher's similarity profile over the scored
         # columns. That is batch-local relational knowledge distillation in KL
         # form, and it is the S1 baseline: no graph, no support selection, no rows.
-        # The group is *removed* rather than given a zero target -- a zero-target
-        # scale still holds its weight in the normalization, so leaving it in would
-        # silently scale the whole loss down by the dead group's share (0.64 at
-        # R={1,2,4}) and hand the baseline a different effective learning rate.
+        # The graph group is removed rather than represented by a zero-target
+        # scale. Top-level groups are not renormalized, so this deletion changes
+        # only the objective's semantics and does not rescale the surviving term.
         if relation_target not in RELATION_TARGETS:
             raise ValueError(
                 f"relation_target must be one of {RELATION_TARGETS}, "
@@ -411,9 +409,10 @@ class GGPKDDistillation(nn.Module):
         # `pool` is the historical ambient loss over the union supplied by the
         # current mini-batch. `fixed_reference` evaluates the same teacher/student
         # similarity KL on C_i = Omega_i union R, where R is fixed before
-        # training. The latter changes only which columns calibration scores; the
-        # graph target and its domain remain Omega_i. `use_ambient_scale` is kept
-        # as a compatibility surface for older scripts and tests.
+        # training. `fixed_cosine` uses that same fixed domain but regresses raw
+        # teacher/student cosine values instead of normalized distributions. These
+        # modes change neither the graph target nor its domain. `use_ambient_scale`
+        # is kept as a compatibility surface for older scripts and tests.
         if calibration_mode is None:
             calibration_mode = "pool" if use_ambient_scale else "none"
         if calibration_mode not in CALIBRATION_MODES:
@@ -421,12 +420,26 @@ class GGPKDDistillation(nn.Module):
                 f"calibration_mode must be one of {CALIBRATION_MODES}, "
                 f"got {calibration_mode!r}"
             )
+        if calibration_mode in ("fixed_reference", "fixed_cosine") and (
+            teacher_embeddings is None
+        ):
+            raise ValueError(
+                f"calibration_mode={calibration_mode!r} needs teacher_embeddings"
+            )
         self.calibration_mode = calibration_mode
         self.use_ambient_scale = calibration_mode != "none"
         if self.relation_target == "ambient_only" and not self.use_ambient_scale:
             raise ValueError(
                 "relation_target='ambient_only' is the ambient scale and nothing "
                 "else; use_ambient_scale=False would leave the objective empty"
+            )
+        if (
+            self.relation_target == "ambient_only"
+            and self.calibration_mode == "fixed_cosine"
+        ):
+            raise ValueError(
+                "relation_target='ambient_only' is the KL similarity-profile "
+                "baseline and cannot be combined with fixed_cosine"
             )
         self.use_direct = teacher_embeddings is not None
         if self.use_direct:
@@ -447,9 +460,9 @@ class GGPKDDistillation(nn.Module):
             self.teacher_bank = None
             self.direct_temp = float(direct_temp)
 
-        # Relative graph weights follow 1/r but sum to one as a group. The ambient
-        # entry also has unnormalized weight one, so adding broader radii cannot
-        # silently move weight from ambient supervision into graph supervision.
+        # Relative graph weights follow 1/r but sum to one inside the graph group.
+        # Calibration independently has coefficient one, so adding broader radii
+        # cannot move weight between the two top-level objectives.
         # The whole diffusion ladder is derived from the sharpest scale by
         # tau_r = sqrt(r) * tau_1. The sharpest scale is itself tied (its target IS
         # the transition row), so no student temperature on this ladder is free.
@@ -494,8 +507,9 @@ class GGPKDDistillation(nn.Module):
         weights = torch.tensor(diffusion_weights(scales), dtype=torch.float32)
         weights = weights / weights.sum().clamp_min(1e-12)
         self.register_buffer("scale_weights", weights)
-        # The ambient profile has the same unnormalized weight as the complete
-        # graph group, giving a fixed 50/50 split after the runtime normalization.
+        # Every objective group has coefficient 1.0. In particular, adding a
+        # calibration term never renormalizes the graph group from 1.0 to 0.5;
+        # deletion arms therefore remove exactly one term and change nothing else.
         self.register_buffer("direct_weight", weights.new_ones(1))
         sqrt_r = torch.tensor(
             [(r / scales[0]) ** 0.5 for r in scales], dtype=torch.float32
@@ -621,7 +635,7 @@ class GGPKDDistillation(nn.Module):
         """Columns excluded from the calibration softmax for each anchor."""
         if self.calibration_mode == "pool":
             return self_mask
-        if self.calibration_mode == "fixed_reference":
+        if self.calibration_mode in ("fixed_reference", "fixed_cosine"):
             domain = own_mask | reference_columns.view(1, -1)
             return self_mask | ~domain
         return self_mask
@@ -910,6 +924,20 @@ class GGPKDDistillation(nn.Module):
             ("candidate_embeddings", candidate_embeddings),
             ("teacher_probs", teacher_probs),
         )
+        if self.calibration_mode in ("fixed_reference", "fixed_cosine") and (
+            candidate_is_reference is None
+        ):
+            raise ValueError(
+                f"calibration_mode={self.calibration_mode!r} needs "
+                "candidate_is_reference from GGPKDCollate"
+            )
+        if self.calibration_mode in ("fixed_reference", "fixed_cosine") and (
+            candidate_idx is None or anchor_idx is None
+        ):
+            raise ValueError(
+                f"calibration_mode={self.calibration_mode!r} needs corpus indices "
+                "for anchors and candidates"
+            )
 
         batch_size = anchor_embeddings.size(0)
         candidate_size = teacher_probs.size(-1)
@@ -1009,8 +1037,8 @@ class GGPKDDistillation(nn.Module):
                 .unsqueeze(1)
                 .to(target.dtype)
             )
-            # One scale carrying the diffusion group's whole weight, so the
-            # graph-group / ambient balance is identical to the full method.
+            # One scale carrying the graph group's unit weight: this control
+            # changes the target, not the top-level coefficient.
             weights = weights.sum(dim=0, keepdim=True)
             temps = temps[:1]
             n_scales = 1
@@ -1023,11 +1051,18 @@ class GGPKDDistillation(nn.Module):
         # `getattr(self, ..., False)`, and would have crossed batches under any
         # concurrent use.
         direct_active = (
-            self.calibration_mode != "none"
+            self.calibration_mode in ("pool", "fixed_reference")
             and self.use_direct
             and anchor_idx is not None
             and column_idx is not None
         )
+        cosine_active = (
+            self.calibration_mode == "fixed_cosine"
+            and self.use_direct
+            and anchor_idx is not None
+            and column_idx is not None
+        )
+        calibration_active = direct_active or cosine_active
         if self.relation_target == "ambient_only" and not direct_active:
             # The graph group has already been dropped, so without the ambient
             # scale there is no scale left at all and the stack below would be
@@ -1037,17 +1072,13 @@ class GGPKDDistillation(nn.Module):
                 "else; it needs the teacher bank and corpus indices for both the "
                 "anchors and the scored columns"
             )
-        if direct_active:
-            if self.calibration_mode == "fixed_reference" and (
-                candidate_is_reference is None
-            ):
-                raise ValueError(
-                    "calibration_mode='fixed_reference' needs "
-                    "candidate_is_reference from GGPKDCollate"
-                )
+        if calibration_active:
             direct_mask = self._calibration_exclusion_mask(
                 self_mask, own_mask, reference_columns
             )
+        else:
+            direct_mask = self_mask
+        if direct_active:
             direct = self._direct_target(anchor_idx, column_idx, direct_mask, share)
             target = torch.cat([direct.unsqueeze(1).to(target.dtype), target], dim=1)
             weights = torch.cat([self.direct_weight.to(weights.dtype), weights])
@@ -1055,9 +1086,25 @@ class GGPKDDistillation(nn.Module):
             # that makes the target attainable rather than a rescaling exercise.
             temps = torch.cat([temps.new_full((1,), self.direct_temp), temps])
             n_scales += 1
+
+        # Fixed-reference cosine calibration matches scalar relations directly.
+        # It uses exactly the same C_i mask as fixed-reference KL and coefficient
+        # 1.0, but has no softmax normalization and no temperature.
+        if cosine_active:
+            teacher_similarity = self._teacher_cosine_logits(
+                anchor_idx, column_idx, share
+            ).to(similarity.dtype)
+            valid_calibration = ~direct_mask
+            squared_error = (similarity - teacher_similarity).square()
+            cosine_per_anchor = (
+                squared_error * valid_calibration.to(squared_error.dtype)
+            ).sum(dim=-1) / valid_calibration.sum(dim=-1).clamp_min(1).to(
+                squared_error.dtype
+            )
+            loss_cos_ref = cosine_per_anchor.mean()
         else:
-            direct_mask = self_mask
-        weights = weights / weights.sum().clamp_min(1e-12)
+            cosine_per_anchor = similarity.new_zeros(batch_size)
+            loss_cos_ref = similarity.new_zeros(())
 
         log_target = torch.where(
             target > 0, target.clamp_min(1e-12).log(), torch.zeros_like(target)
@@ -1112,17 +1159,21 @@ class GGPKDDistillation(nn.Module):
             )
             kl_per_scale.append(contribution.sum(dim=-1))
         kl_per_scale = torch.stack(kl_per_scale, dim=1)
-        # Semantic decomposition of the relational stack. Scale r=0 is the
-        # ambient teacher-similarity profile, r=1 is the direct transition row,
-        # and r>1 are the genuinely multi-hop diffusion targets. The grouped
-        # diagnostics are normalized within their own groups; ``loss_rel`` keeps
-        # the configured fixed group weighting exactly, so this split does not
-        # alter the optimized objective.
-        loss_rel = (kl_per_scale * weights.view(1, -1)).sum(dim=-1).mean()
-        zero = loss_rel.new_zeros(())
+        # Semantic decomposition of the objective. The graph group is internally
+        # averaged by its derived multi-scale weights, while every top-level term
+        # has coefficient exactly 1.0. No normalization over active groups: adding
+        # or deleting calibration cannot silently change the graph coefficient.
+        zero = similarity.new_zeros(())
         loss_amb = kl_per_scale[:, 0].mean() if offset else zero
 
         graph_kl = kl_per_scale[:, offset:]
+        graph_weights = weights[offset:]
+        if graph_kl.size(1):
+            graph_per_anchor = (graph_kl * graph_weights.view(1, -1)).sum(dim=-1)
+            loss_graph = graph_per_anchor.mean()
+        else:
+            graph_per_anchor = similarity.new_zeros(batch_size)
+            loss_graph = zero
         loss_nbr = graph_kl[:, 0].mean() if graph_kl.size(1) else zero
         multi_hop_kl = graph_kl[:, 1:]
         multi_hop_weights = weights[offset + 1 :]
@@ -1137,6 +1188,12 @@ class GGPKDDistillation(nn.Module):
             )
         else:
             loss_diff = zero
+
+        loss_cal = loss_amb if direct_active else loss_cos_ref
+        per_anchor_rel = graph_per_anchor + (
+            kl_per_scale[:, 0] if direct_active else cosine_per_anchor
+        )
+        loss_rel = loss_graph + loss_cal
 
         loss_row = anchor_embeddings.new_zeros(())
         row_metrics: dict[str, torch.Tensor] = {}
@@ -1160,7 +1217,10 @@ class GGPKDDistillation(nn.Module):
             _assert_finite_tensors(
                 (
                     ("loss_rel", loss_rel),
+                    ("loss_graph", loss_graph),
+                    ("loss_cal", loss_cal),
                     ("loss_amb", loss_amb),
+                    ("loss_cos_ref", loss_cos_ref),
                     ("loss_nbr", loss_nbr),
                     ("loss_diff", loss_diff),
                     ("loss_row", loss_row),
@@ -1178,7 +1238,10 @@ class GGPKDDistillation(nn.Module):
         metrics = self._diagnostics(
             total_loss=total_loss,
             loss_rel=loss_rel,
+            loss_graph=loss_graph,
+            loss_cal=loss_cal,
             loss_amb=loss_amb,
+            loss_cos_ref=loss_cos_ref,
             loss_nbr=loss_nbr,
             loss_diff=loss_diff,
             loss_row=loss_row,
@@ -1193,6 +1256,8 @@ class GGPKDDistillation(nn.Module):
             diffusion_mask=diffusion_mask,
             temps=temps,
             direct_active=direct_active,
+            calibration_active=calibration_active,
+            per_anchor_rel=per_anchor_rel,
             extra_entries=self._ambient_diffusion_audit(
                 target, self_mask, own_mask, direct_active
             ),
@@ -1204,7 +1269,10 @@ class GGPKDDistillation(nn.Module):
         self,
         total_loss: torch.Tensor,
         loss_rel: torch.Tensor,
+        loss_graph: torch.Tensor,
+        loss_cal: torch.Tensor,
         loss_amb: torch.Tensor,
+        loss_cos_ref: torch.Tensor,
         loss_nbr: torch.Tensor,
         loss_diff: torch.Tensor,
         loss_row: torch.Tensor,
@@ -1219,6 +1287,8 @@ class GGPKDDistillation(nn.Module):
         diffusion_mask: torch.Tensor,
         temps: torch.Tensor,
         direct_active: bool,
+        calibration_active: bool,
+        per_anchor_rel: torch.Tensor,
         extra_entries: list[tuple[str, torch.Tensor]] = (),
     ) -> dict[str, float]:
         """Loss value alone cannot distinguish "learned the geometry" from "went uniform".
@@ -1305,17 +1375,15 @@ class GGPKDDistillation(nn.Module):
             0.0
         )
 
-        # Full-stack weighted entropy: loss_rel = CE - H holds over every scale that
-        # is actually in the loss, ambient included.
+        # Entropy of the KL stack (graph plus KL calibration when active). Raw
+        # cosine calibration is outside this identity and has its own metric.
         weighted_entropy = (target_entropy * weights.view(1, -1)).sum(dim=-1)
         row_zero = loss_row.new_zeros(())
 
-        # Per-anchor L_rel, before it is averaged away. `loss_rel` alone cannot say
-        # whether the objective is uniformly hard or dominated by a few anchors --
-        # and the graph build already warns that a handful sit in tiny components
-        # with a near one-hot r=1 target, which is exactly the shape that would show
-        # up here as a heavy tail.
-        per_anchor_rel = (kl_per_scale * weights.view(1, -1)).sum(dim=-1).detach()
+        # Per-anchor L_rel, including either calibration family, before it is
+        # averaged away. It is assembled in forward because fixed-cosine
+        # calibration is not a member of the KL scale stack.
+        per_anchor_rel = per_anchor_rel.detach()
 
         # Do the diffusion scales say anything the sharpest one does not? The
         # targets are matched at tau_r = sqrt(r) * tau_1, so the *student*
@@ -1345,10 +1413,17 @@ class GGPKDDistillation(nn.Module):
         entries: list[tuple[str, torch.Tensor]] = [
             ("loss_total", total_loss.detach()),
             ("loss_rel", loss_rel.detach()),
-            # `loss_cal` is the paper-facing name. Keep `loss_amb` as an exact
-            # alias so old result exporters and ablation tables remain readable.
-            ("loss_cal", loss_amb.detach()),
+            ("loss_graph", loss_graph.detach()),
+            ("loss_cal", loss_cal.detach()),
+            ("weight_graph", loss_rel.new_ones(())),
+            (
+                "weight_cal",
+                loss_rel.new_tensor(1.0 if calibration_active else 0.0),
+            ),
+            ("weight_row", loss_rel.new_tensor(self.row_weight)),
+            # Keep the old KL-specific name so historical exporters remain usable.
             ("loss_amb", loss_amb.detach()),
+            ("loss_cos_ref", loss_cos_ref.detach()),
             ("loss_nbr", loss_nbr.detach()),
             ("loss_diff", loss_diff.detach()),
             ("loss_row", loss_row.detach()),
@@ -1373,8 +1448,11 @@ class GGPKDDistillation(nn.Module):
             ("loss_rel_max", per_anchor_rel.max()),
             ("scale_divergence", scale_divergence),
             ("js_floor", js_floor.mean()),
-            ("loss_excess", (loss_rel - js_floor.mean()).detach()),
-            ("loss_cross_entropy", (loss_rel + weighted_entropy.mean()).detach()),
+            ("loss_excess", (loss_graph - js_floor.mean()).detach()),
+            (
+                "loss_cross_entropy",
+                (loss_graph + loss_amb + weighted_entropy.mean()).detach(),
+            ),
             ("target_entropy", weighted_entropy.mean()),
             # `target_entropy` above is the whole weighted stack, because that is what
             # loss_cross_entropy needs. It is therefore the one metric here that is not
@@ -1394,14 +1472,15 @@ class GGPKDDistillation(nn.Module):
                     log_probs_per_scale[offset], target[:, offset, :], diffusion_mask
                 )
             )
-        if offset:
-            entries.append(("teacher_entropy_amb", target_entropy[:, 0].mean()))
+        if calibration_active:
             entries.append(
                 (
                     "calibration_columns",
                     (~direct_mask).sum(dim=-1).float().mean(),
                 )
             )
+        if offset:
+            entries.append(("teacher_entropy_amb", target_entropy[:, 0].mean()))
             entries.extend(
                 _distribution_stats(
                     log_probs_per_scale[0],

@@ -126,17 +126,18 @@ def parse_args():
     )
     parser.add_argument(
         "--calibration_mode",
-        choices=["none", "pool", "fixed_reference"],
+        choices=["none", "pool", "fixed_reference", "fixed_cosine"],
         default=None,
-        help="Calibration loss domain: none, the historical batch-shared pool, "
-        "or Omega_i union a fixed corpus reference set",
+        help="Calibration: none; KL on the historical batch-shared pool; KL on "
+        "Omega_i union a fixed reference set; or raw-cosine regression on that "
+        "same fixed domain",
     )
     parser.add_argument(
         "--reference_size",
         type=int,
         default=None,
         help="Number of deterministic corpus references used by "
-        "--calibration_mode fixed_reference",
+        "--calibration_mode fixed_reference or fixed_cosine",
     )
     parser.add_argument(
         "--batch_sampler",

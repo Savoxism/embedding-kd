@@ -1,15 +1,16 @@
 #!/usr/bin/env bash
-# Ambient-replacement gate for the canonical Qwen-0.6B -> MiniLM-H384 pair.
+# Full calibration x auxiliary-row factorial for the canonical
+# Qwen-0.6B -> MiniLM-H384 pair.
 #
-# Default new runs (3 arms x 3 seeds = 9):
-#   none_row1             Is the existing auxiliary row loss sufficient alone?
-#   none_row0             Graph-row objective with no calibration.
-#   fixed_reference_row0  Replace batch-pool Ambient with fixed-reference KL.
+# Default runs (4 calibration modes x 2 row settings x 3 seeds = 24):
+#   none_row{0,1}             Graph only, optionally plus L_row.
+#   pool_row{0,1}             Historical batch-pool KL calibration.
+#   fixed_reference_row{0,1}  Fixed-domain KL calibration.
+#   fixed_cosine_row{0,1}     Fixed-domain raw-cosine MSE calibration.
 #
-# The already-measured pool_row0 arm is omitted by default. To reproduce the
-# complete isolated comparison, include it explicitly:
-#   ARMS=pool_row0,none_row0,fixed_reference_row0 \
-#     bash scripts/ggpkd/run_calibration_gate.sh
+# Every active top-level loss has coefficient 1.0. All arms share the same
+# teacher cache, graph, data, training schedule and seed set. The fixed-domain
+# arms also share exactly the same deterministic reference set.
 #
 # Useful overrides:
 #   GPUS=0,1,2 SEEDS=42,43,44 REFERENCE_SIZE=200 \
@@ -23,7 +24,7 @@ cd "$REPO_ROOT"
 PYTHON_BIN="${PYTHON_BIN:-$REPO_ROOT/.venv/bin/python}"
 PAIR_KEY="${PAIR_KEY:-qwen3_0_6b_to_minilmv2_h384}"
 RUN_ID="${RUN_ID:-$(date -u +%Y%m%d-%H%M%S)}"
-RESULT_BASE="${RESULT_BASE:-$REPO_ROOT/results/ggpkd_calibration}"
+RESULT_BASE="${RESULT_BASE:-$REPO_ROOT/runs/ggpkd_calibration}"
 RUN_ROOT="$RESULT_BASE/$RUN_ID"
 CACHE_ROOT="${CACHE_ROOT:-$REPO_ROOT/cache/ggpkd}"
 REFERENCE_SIZE="${REFERENCE_SIZE:-200}"
@@ -32,7 +33,7 @@ TRUNCATION_TOLERANCE="${TRUNCATION_TOLERANCE:-0.01}"
 DIFFUSION_SCALES="${DIFFUSION_SCALES:-1}"
 
 IFS=',' read -r -a ARMS_LIST <<< \
-    "${ARMS:-none_row1,none_row0,fixed_reference_row0}"
+    "${ARMS:-none_row0,none_row1,pool_row0,pool_row1,fixed_reference_row0,fixed_reference_row1,fixed_cosine_row0,fixed_cosine_row1}"
 IFS=',' read -r -a SEEDS_LIST <<< "${SEEDS:-42,43,44}"
 
 if [[ -n "${GPUS:-}" ]]; then
@@ -50,8 +51,29 @@ if [[ ! -x "$PYTHON_BIN" ]]; then
     echo "Python is not executable: $PYTHON_BIN" >&2
     exit 2
 fi
+if ! command -v jq >/dev/null 2>&1; then
+    echo "jq is required to verify every completed run's resolved config" >&2
+    exit 2
+fi
+
+GIT_COMMIT="$(git rev-parse HEAD 2>/dev/null || echo unknown)"
+GIT_STATUS="$(git status --porcelain --untracked-files=all 2>/dev/null || true)"
+if [[ -n "$GIT_STATUS" && "${ALLOW_DIRTY:-0}" != "1" ]]; then
+    echo "Refusing a non-reproducible sweep from a dirty worktree." >&2
+    echo "Commit the calibration changes first, or set ALLOW_DIRTY=1 explicitly." >&2
+    exit 2
+fi
 if [[ ! "$REFERENCE_SIZE" =~ ^[1-9][0-9]*$ ]]; then
     echo "REFERENCE_SIZE must be a positive integer, got: $REFERENCE_SIZE" >&2
+    exit 2
+fi
+if [[ ! "$GRAPH_K" =~ ^[1-9][0-9]*$ ]]; then
+    echo "GRAPH_K must be a positive integer, got: $GRAPH_K" >&2
+    exit 2
+fi
+if ! jq -en --arg value "$TRUNCATION_TOLERANCE" \
+    '($value | tonumber) as $number | $number >= 0' >/dev/null 2>&1; then
+    echo "TRUNCATION_TOLERANCE must be a non-negative number, got: $TRUNCATION_TOLERANCE" >&2
     exit 2
 fi
 if (( ${#GPU_LIST[@]} == 0 )); then
@@ -63,16 +85,35 @@ if [[ -e "$RUN_ROOT" ]]; then
     exit 2
 fi
 
+declare -A SEEN_ARMS=()
 for arm in "${ARMS_LIST[@]}"; do
     case "$arm" in
-        pool_row0|none_row1|none_row0|fixed_reference_row0|fixed_reference_row1)
+        none_row0|none_row1|pool_row0|pool_row1|fixed_reference_row0|fixed_reference_row1|fixed_cosine_row0|fixed_cosine_row1)
             ;;
         *)
             echo "Unknown arm: $arm" >&2
-            echo "Expected pool_row0, none_row1, none_row0, fixed_reference_row0, or fixed_reference_row1" >&2
+            echo "Expected CALIBRATION_rowN with CALIBRATION in {none,pool,fixed_reference,fixed_cosine} and N in {0,1}" >&2
             exit 2
             ;;
     esac
+    if [[ -n "${SEEN_ARMS[$arm]:-}" ]]; then
+        echo "Duplicate arm would overwrite the same run directory: $arm" >&2
+        exit 2
+    fi
+    SEEN_ARMS["$arm"]=1
+done
+
+declare -A SEEN_SEEDS=()
+for seed in "${SEEDS_LIST[@]}"; do
+    if [[ ! "$seed" =~ ^[0-9]+$ ]]; then
+        echo "Every seed must be a non-negative integer, got: $seed" >&2
+        exit 2
+    fi
+    if [[ -n "${SEEN_SEEDS[$seed]:-}" ]]; then
+        echo "Duplicate seed would overwrite the same run directory: $seed" >&2
+        exit 2
+    fi
+    SEEN_SEEDS["$seed"]=1
 done
 
 STATUS_DIR="$RUN_ROOT/status"
@@ -100,7 +141,11 @@ printf 'arm\tseed\tgpu\tpid\tstate\n' > "$MANIFEST"
     printf 'graph_k\t%s\n' "$GRAPH_K"
     printf 'truncation_tolerance\t%s\n' "$TRUNCATION_TOLERANCE"
     printf 'diffusion_scales\t%s\n' "$DIFFUSION_SCALES"
-    printf 'commit\t%s\n' "$(git rev-parse HEAD 2>/dev/null || echo unknown)"
+    printf 'graph_weight\t1.0\n'
+    printf 'calibration_weight\t1.0\n'
+    printf 'active_row_weight\t1.0\n'
+    printf 'commit\t%s\n' "$GIT_COMMIT"
+    printf 'dirty_at_start\t%s\n' "$([[ -n "$GIT_STATUS" ]] && echo true || echo false)"
 } > "$RUN_ROOT/run_config.tsv"
 
 export TOKENIZERS_PARALLELISM=false
@@ -113,6 +158,14 @@ echo "  arms:      ${ARMS_LIST[*]}"
 echo "  seeds:     ${SEEDS_LIST[*]}"
 echo "  references:$REFERENCE_SIZE"
 echo "  output:    $RUN_ROOT"
+
+if [[ "${SKIP_PREFLIGHT:-0}" != "1" ]]; then
+    echo "Running objective/domain fairness preflight tests"
+    "$PYTHON_BIN" -m pytest -q \
+        tests/test_fixed_reference_calibration.py \
+        tests/test_new_experiment_config.py::test_ggpkd_relational_loss_reports_semantic_decomposition \
+        tests/test_ablation_arms.py::test_ambient_only_gives_the_ambient_scale_the_whole_weight
+fi
 
 # Build the seed-independent teacher cache and graph once before concurrent
 # training starts. Calibration mode does not alter either artifact.
@@ -153,6 +206,7 @@ declare -A PID_SEED=()
 ACTIVE_PIDS=()
 NEXT_TASK=0
 FAILED=0
+EXPECTED_REFERENCE_FINGERPRINT=""
 
 launch_task() {
     local task_index=$1
@@ -165,14 +219,17 @@ launch_task() {
     local -a arm_args
 
     case "$arm" in
-        pool_row0)
-            arm_args=(--calibration_mode pool --row_weight 0)
+        none_row0)
+            arm_args=(--calibration_mode none --row_weight 0)
             ;;
         none_row1)
             arm_args=(--calibration_mode none --row_weight 1)
             ;;
-        none_row0)
-            arm_args=(--calibration_mode none --row_weight 0)
+        pool_row0)
+            arm_args=(--calibration_mode pool --row_weight 0)
+            ;;
+        pool_row1)
+            arm_args=(--calibration_mode pool --row_weight 1)
             ;;
         fixed_reference_row0)
             arm_args=(
@@ -184,6 +241,20 @@ launch_task() {
         fixed_reference_row1)
             arm_args=(
                 --calibration_mode fixed_reference
+                --reference_size "$REFERENCE_SIZE"
+                --row_weight 1
+            )
+            ;;
+        fixed_cosine_row0)
+            arm_args=(
+                --calibration_mode fixed_cosine
+                --reference_size "$REFERENCE_SIZE"
+                --row_weight 0
+            )
+            ;;
+        fixed_cosine_row1)
+            arm_args=(
+                --calibration_mode fixed_cosine
                 --reference_size "$REFERENCE_SIZE"
                 --row_weight 1
             )
@@ -244,7 +315,65 @@ while (( ${#ACTIVE_PIDS[@]} > 0 )); do
         FAILED=1
         echo "FAILED: $COMPLETED_ARM seed=$COMPLETED_SEED; see $LOG_DIR/$COMPLETED_ARM.seed_$COMPLETED_SEED.log" >&2
     else
-        echo "Completed: $COMPLETED_ARM seed=$COMPLETED_SEED"
+        EXPECTED_MODE="${COMPLETED_ARM%_row*}"
+        EXPECTED_ROW="${COMPLETED_ARM##*_row}"
+        EXPECTED_CAL_WEIGHT=1
+        if [[ "$EXPECTED_MODE" == "none" ]]; then
+            EXPECTED_CAL_WEIGHT=0
+        fi
+        RUN_JSON="$RUNS_DIR/$COMPLETED_ARM/seed_$COMPLETED_SEED/run.json"
+        METRICS_JSONL="$RUNS_DIR/$COMPLETED_ARM/seed_$COMPLETED_SEED/metrics.jsonl"
+        REFERENCE_OK=1
+        if [[ "$EXPECTED_MODE" == "fixed_reference" || "$EXPECTED_MODE" == "fixed_cosine" ]]; then
+            RUN_REFERENCE_FINGERPRINT="$(jq -r '.config.reference_fingerprint // empty' "$RUN_JSON")"
+            if [[ -z "$RUN_REFERENCE_FINGERPRINT" ]]; then
+                REFERENCE_OK=0
+            elif [[ -z "$EXPECTED_REFERENCE_FINGERPRINT" ]]; then
+                EXPECTED_REFERENCE_FINGERPRINT="$RUN_REFERENCE_FINGERPRINT"
+            elif [[ "$RUN_REFERENCE_FINGERPRINT" != "$EXPECTED_REFERENCE_FINGERPRINT" ]]; then
+                REFERENCE_OK=0
+            fi
+        elif ! jq -e '.config.reference_fingerprint == null' "$RUN_JSON" >/dev/null; then
+            REFERENCE_OK=0
+        fi
+
+        if (( REFERENCE_OK == 1 )) && jq -e \
+            --arg mode "$EXPECTED_MODE" \
+            --arg commit "$GIT_COMMIT" \
+            --arg scales "$DIFFUSION_SCALES" \
+            --argjson tolerance "$TRUNCATION_TOLERANCE" \
+            --argjson row "$EXPECTED_ROW" \
+            --argjson reference_size "$REFERENCE_SIZE" \
+            --argjson graph_k "$GRAPH_K" \
+            '.config.calibration_mode == $mode
+             and .config.row_weight == $row
+             and .config.reference_size == $reference_size
+             and .config.graph_k == $graph_k
+             and .config.truncation_tolerance == $tolerance
+             and .config.relation_target == "diffusion"
+             and ((.config.diffusion_scales | map(tostring) | join(",")) == $scales)
+             and .config.hard_neg_k == 0
+             and .config.random_neg_k == 0
+             and .git.sha == $commit' "$RUN_JSON" >/dev/null \
+            && jq -e \
+                --argjson row "$EXPECTED_ROW" \
+                --argjson calibration "$EXPECTED_CAL_WEIGHT" \
+                -s \
+                '([.[] | select(.train != null)] | last | .train) as $train
+                 | $train != null
+                   and $train.weight_graph == 1
+                   and $train.weight_cal == $calibration
+                   and $train.weight_row == $row
+                   and ((($train.loss_rel
+                           - ($train.loss_graph + $train.loss_cal)) | fabs) < 1e-5)
+                   and ((($train.loss_total
+                           - ($train.loss_rel + $row * $train.loss_row)) | fabs) < 1e-5)' \
+                "$METRICS_JSONL" >/dev/null; then
+            echo "Completed and verified: $COMPLETED_ARM seed=$COMPLETED_SEED"
+        else
+            FAILED=1
+            echo "CONFIG MISMATCH: $COMPLETED_ARM seed=$COMPLETED_SEED; inspect $RUN_JSON" >&2
+        fi
     fi
 
     REMAINING=()
@@ -263,10 +392,17 @@ while (( ${#ACTIVE_PIDS[@]} > 0 )); do
     fi
 done
 
+FINAL_COMMIT="$(git rev-parse HEAD 2>/dev/null || echo unknown)"
+FINAL_GIT_STATUS="$(git status --porcelain --untracked-files=all 2>/dev/null || true)"
+if [[ "$FINAL_COMMIT" != "$GIT_COMMIT" || "$FINAL_GIT_STATUS" != "$GIT_STATUS" ]]; then
+    FAILED=1
+    echo "Source tree changed while the sweep was running; results are not one-code comparisons" >&2
+fi
+
 if (( FAILED != 0 )); then
     echo "At least one calibration-gate run failed" >&2
     exit 1
 fi
 
 echo "Calibration gate complete: $RUN_ROOT"
-echo "Each run contains metrics.json, run_stats.json, and final student weights."
+echo "Each run contains metrics.jsonl, run_stats.json, and final student weights."
