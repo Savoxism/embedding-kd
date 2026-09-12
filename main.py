@@ -65,19 +65,6 @@ def parse_args():
     )
     parser.add_argument("--truncation_tolerance", type=float, default=None)
     parser.add_argument("--row_weight", type=float, default=None)
-    parser.add_argument("--row_start_epoch", type=int, default=None)
-    parser.add_argument(
-        "--direct_temp",
-        type=float,
-        default=None,
-        help="Calibration temperature; 0 derives it as the median graph bandwidth",
-    )
-    parser.add_argument(
-        "--diffusion_scales",
-        type=str,
-        default=None,
-        help="Comma-separated diffusion scales, e.g. '1,2,4'; '1' drops multi-hop",
-    )
     parser.add_argument("--diffusion_quota", type=int, default=None)
     # Ablation switches. Each defaults to the method's value,
     # so omitting all four reproduces the full model exactly.
@@ -100,7 +87,7 @@ def parse_args():
     )
     parser.add_argument(
         "--relation_target",
-        choices=["diffusion", "direct", "ambient_only"],
+        choices=["transition", "diffusion", "direct", "ambient_only"],
         default=None,
         help="Target on the selected columns: diffusion (method), direct teacher "
         "cosine, or ambient_only (no graph relations at all)",
@@ -109,7 +96,7 @@ def parse_args():
         "--knn_mode",
         choices=["mutual", "directed", "symmetrized"],
         default=None,
-        help="kNN edge rule for the teacher graph: mutual (method), directed, symmetrized",
+        help="kNN edge rule for the teacher graph: directed (method), mutual, symmetrized",
     )
     parser.add_argument(
         "--batch_local",
@@ -126,18 +113,9 @@ def parse_args():
     )
     parser.add_argument(
         "--calibration_mode",
-        choices=["none", "pool", "fixed_reference", "fixed_cosine"],
+        choices=["none", "pool"],
         default=None,
-        help="Calibration: none; KL on the historical batch-shared pool; KL on "
-        "Omega_i union a fixed reference set; or raw-cosine regression on that "
-        "same fixed domain",
-    )
-    parser.add_argument(
-        "--reference_size",
-        type=int,
-        default=None,
-        help="Number of deterministic corpus references used by "
-        "--calibration_mode fixed_reference or fixed_cosine",
+        help="Calibration loss domain: the batch-shared candidate pool, or none",
     )
     parser.add_argument(
         "--batch_sampler",
@@ -273,8 +251,6 @@ def get_config(method: str, args):
         "graph_k",
         "truncation_tolerance",
         "row_weight",
-        "row_start_epoch",
-        "direct_temp",
         "diffusion_quota",
         "hard_neg_k",
         "random_neg_k",
@@ -284,7 +260,6 @@ def get_config(method: str, args):
         "pooling_method",
         "support_policy",
         "relation_target",
-        "reference_size",
         "knn_mode",
         "batch_sampler",
         "holdout_edge_frac",
@@ -298,26 +273,8 @@ def get_config(method: str, args):
     # entropic-affinity bandwidth and selects the fixed-bandwidth baseline.
     if args.fixed_bandwidth:
         config.fixed_bandwidth = True
-    # Parsed here rather than in the generic loop above because the flag is a
-    # comma-separated string and the config stores a tuple of ints. Sorting,
-    # uniqueness and the r=1 anchor are validated downstream by the artifact
-    # builder and the criterion, which both raise with the reason.
-    if args.diffusion_scales is not None:
-        try:
-            config.diffusion_scales = tuple(
-                int(part) for part in args.diffusion_scales.split(",") if part.strip()
-            )
-        except ValueError as exc:
-            raise ValueError(
-                f"--diffusion_scales must be comma-separated integers, "
-                f"got {args.diffusion_scales!r}"
-            ) from exc
-        if not config.diffusion_scales:
-            raise ValueError("--diffusion_scales must name at least one scale")
-
     if args.calibration_mode is not None:
         config.calibration_mode = args.calibration_mode
-        config.use_ambient = args.calibration_mode != "none"
 
     # A store_true flag cannot express "leave the config alone". Keep it as a
     # compatibility alias, but reject two contradictory objective requests.
@@ -327,7 +284,6 @@ def get_config(method: str, args):
                 "--no_ambient conflicts with "
                 f"--calibration_mode {args.calibration_mode}"
             )
-        config.use_ambient = False
         config.calibration_mode = "none"
 
     # The baseline has no graph relations to target, so the objective it implies

@@ -11,4 +11,18 @@ DistilCSE combines teacher supervision with contrastive learning~\citep{gao2021d
 \subsection{Beyond Mini-batch Relational Supervision}
 
 %Relational KD is often instantiated within mini-batches --> prior works recognize that batch-local relations provide limited coverage --> some extend supervision beyond batches
-Neighborhood graphs recover manifold structure in Laplacian Eigenmaps and Diffusion Maps~\citep{belkin2003laplacian,coifman2006diffusionmaps}; heat-based constructions provide multi-scale summaries~\citep{sun2009hks,huguet2023heatgeo}. Geometric KD aligns heat kernels between teacher and student graphs~\citep{yang2022geometrickd}, while graph-to-MLP methods distill observed graph structure into graphless models~\citep{zhang2022glnn,yang2023graphkd_survey}. RIPPLE instead constructs a graph from cached text embeddings to define supervision for a standard text encoder. It diffuses teacher relations before training and reuses pooled candidates as additional row centers; neither the graph nor the teacher is required at inference.
+Neighborhood graphs recover manifold structure in Laplacian Eigenmaps and
+Diffusion Maps, where a row-stochastic transition matrix over a $k$NN graph
+serves as the primitive description of local geometry~\citep{belkin2003laplacian,coifman2006diffusionmaps};
+heat-based constructions summarize the same operator at multiple
+scales~\citep{sun2009hks,huguet2023heatgeo}. Geometric KD aligns heat kernels
+between teacher and student graphs~\citep{yang2022geometrickd}, and graph-to-MLP
+methods distill observed graph structure into graphless
+models~\citep{zhang2022glnn,yang2023graphkd_survey}; both assume a graph given by
+the task. GGPKD instead constructs the graph from cached text embeddings, so the
+teacher's own retrieval behavior defines which relations a standard text encoder
+is supervised on. We use the transition operator at a single hop rather than its
+diffused powers: the one-hop rows already provide a teacher-weighted support and
+a per-row bandwidth, and multi-hop targets are treated as an alternative the
+method does not require. Neither the graph nor the teacher is needed at
+inference.

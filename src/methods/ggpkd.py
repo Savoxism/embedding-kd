@@ -6,7 +6,6 @@ private methods on the distiller, all of them reachable only through
 `if distill_method == "ggpkd"`.
 """
 
-import hashlib
 
 import numpy as np
 import pandas as pd
@@ -20,40 +19,6 @@ from src.distill.steps.ggpkd import step
 from src.ggpkd import GGPKDCandidateSampler, build_or_load_ggpkd_artifact
 from src.ggpkd.policy import FIXED_BANDWIDTH_TEMP
 from src.methods.spec import MethodSpec
-
-
-def build_fixed_reference_indices(
-    corpus_texts: list[str], reference_size: int
-) -> np.ndarray:
-    """Choose a reproducible, teacher-independent corpus reference set.
-
-    Ranking texts by a namespaced SHA-256 digest behaves like a uniform sample,
-    but is stable across training seeds and corpus row reordering. Exact duplicate
-    anchors have already been removed by ``prepare_frame``.
-    """
-    if reference_size < 1:
-        raise ValueError("reference_size must be at least 1")
-    keyed = []
-    for index, text in enumerate(corpus_texts):
-        digest = hashlib.sha256(
-            b"ggpkd-fixed-reference-v1\0" + str(text).encode("utf-8")
-        ).digest()
-        keyed.append((digest, index))
-    keyed.sort()
-    size = min(reference_size, len(keyed))
-    return np.asarray([index for _, index in keyed[:size]], dtype=np.int64)
-
-
-def fixed_reference_fingerprint(
-    corpus_texts: list[str], reference_indices: np.ndarray
-) -> str:
-    """Fingerprint the selected texts, independent of their corpus row numbers."""
-    hasher = hashlib.sha256()
-    for index in reference_indices:
-        encoded = corpus_texts[int(index)].encode("utf-8")
-        hasher.update(len(encoded).to_bytes(8, "big"))
-        hasher.update(encoded)
-    return hasher.hexdigest()[:12]
 
 
 def resolve_anchor_column(ctx, df: pd.DataFrame) -> str:
@@ -152,7 +117,7 @@ def build_data(ctx, df: pd.DataFrame, teacher_cls: torch.Tensor):
         graph_k=ctx.config.graph_k,
         fixed_bandwidth=ctx.config.fixed_bandwidth,
         truncation_tolerance=ctx.config.truncation_tolerance,
-        diffusion_scales=ctx.config.diffusion_scales,
+        hard_negatives=ctx.config.hard_neg_k > 0,
         knn_mode=ctx.config.knn_mode,
         holdout_edge_frac=ctx.config.holdout_edge_frac,
         holdout_seed=ctx.config.holdout_seed,
@@ -167,22 +132,6 @@ def build_data(ctx, df: pd.DataFrame, teacher_cls: torch.Tensor):
         support_policy=ctx.config.support_policy,
     )
     anchor_texts = df[ctx.ggpkd_anchor_column].astype(str).tolist()
-    reference_indices = None
-    if ctx.config.calibration_mode in ("fixed_reference", "fixed_cosine"):
-        reference_indices = build_fixed_reference_indices(
-            anchor_texts, ctx.config.reference_size
-        )
-        reference_fingerprint = fixed_reference_fingerprint(
-            anchor_texts, reference_indices
-        )
-        # build_data runs before telemetry writes run.json, so the concrete
-        # corpus-defined R becomes part of the reproducibility manifest.
-        ctx.config.reference_fingerprint = reference_fingerprint
-        print(
-            f"GGPKD {ctx.config.calibration_mode} calibration: "
-            f"{reference_indices.size} corpus columns, "
-            f"fingerprint={reference_fingerprint}"
-        )
     # Rebuild the probe on the deduplicated anchor column. The set built
     # in setup_data was sampled from the pre-dedup frame, whose row
     # positions no longer index the teacher cache -- so pairing the two
@@ -206,8 +155,7 @@ def build_data(ctx, df: pd.DataFrame, teacher_cls: torch.Tensor):
         ctx.config.max_length,
         corpus_texts=anchor_texts,
         batch_local=ctx.config.batch_local,
-        n_scales=len(ctx.config.diffusion_scales),
-        reference_indices=reference_indices,
+        n_scales=1,
     )
     if ctx.config.batch_local:
         print(
@@ -258,37 +206,31 @@ def build_criterion(ctx, config):
     # criterion `None` and make it blame the graph artifact for what is really a
     # setup-ordering bug.
     artifact = ctx.ggpkd_artifact
-    # --direct_temp 0 derives the last free student temperature from the graph
-    # itself: the median entropic-affinity bandwidth. The ambient target is the
-    # same softmax-of-cosines construction as the transition rows with the
-    # sparsification removed, so the graph's own typical bandwidth is the natural
-    # scale for it. Written back onto the config so the run manifest and banner
-    # record the concrete value, exactly as derived diffusion_quota is.
-    if config.direct_temp == 0.0:
-        row_temps = artifact.get("row_temps")
-        config.direct_temp = (
-            float(row_temps.median()) if row_temps is not None else FIXED_BANDWIDTH_TEMP
-        )
-        print(
-            f"Derived direct_temp={config.direct_temp:.4f} "
-            "(median graph bandwidth; requested via --direct_temp 0)"
-        )
-    # `use_ambient=False` is the S4 deletion arm. It used to be expressed by
+    # The calibration temperature is derived from the graph itself: the median
+    # row bandwidth. The ambient target is the same softmax-of-cosines
+    # construction as the transition rows with the sparsification removed, so the
+    # graph's own typical bandwidth is the natural scale for it. Written onto the
+    # config so the run manifest and banner record the concrete value, exactly as
+    # the derived diffusion_quota is.
+    row_temps = artifact.get("row_temps")
+    config.direct_temp = (
+        float(row_temps.median()) if row_temps is not None else FIXED_BANDWIDTH_TEMP
+    )
+    print(f"Derived direct_temp={config.direct_temp:.4f} (median graph bandwidth)")
+    # `calibration_mode="none"` is the S4 deletion arm. It used to be expressed by
     # withholding the teacher bank, which also removed the only way to compute a
     # `direct` target -- and the controlled support study needs exactly that
     # combination: no ambient scale (so nothing couples the anchors and batch
     # composition cannot reach the loss) with direct targets (so a column drawn
     # off-graph still carries a real teacher opinion). The bank is therefore
-    # passed whenever some term reads it, and `use_ambient_scale` alone decides
+    # passed whenever some term reads it, and `calibration_mode` alone decides
     # whether scale r=0 is in the objective.
     needs_bank = config.calibration_mode != "none" or config.relation_target in (
         "direct",
         "ambient_only",
     )
     criterion = GGPKDDistillation(
-        diffusion_scales=config.diffusion_scales,
         teacher_embeddings=ctx.teacher_cls_all if needs_bank else None,
-        use_ambient_scale=config.use_ambient,
         calibration_mode=config.calibration_mode,
         direct_temp=config.direct_temp,
         row_weight=config.row_weight,
@@ -310,7 +252,7 @@ def build_criterion(ctx, config):
 def on_epoch_start(ctx, epoch: int):
     """Gate the auxiliary row loss for this epoch."""
     cfg = ctx.config
-    use_row = cfg.row_weight > 0 and epoch + 1 >= cfg.row_start_epoch
+    use_row = cfg.row_weight > 0
     if ctx.criterion is not None and hasattr(ctx.criterion, "use_row_loss"):
         ctx.criterion.use_row_loss = use_row
     if use_row:

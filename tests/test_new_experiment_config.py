@@ -16,8 +16,6 @@ from src.ggpkd.graph_builder import _knn_bandwidths, _mass_prefix
 from src.ggpkd.policy import (
     FIXED_BANDWIDTH_TEMP,
     candidate_budget,
-    hard_negative_pool_size,
-    normalized_diffusion_weights,
 )
 
 
@@ -33,8 +31,6 @@ def test_ggpkd_cli_overrides(monkeypatch):
             "0",
             "--row_weight",
             "0.8",
-            "--row_start_epoch",
-            "2",
             "--fixed_bandwidth",
             "--diffusion_quota",
             "20",
@@ -58,7 +54,6 @@ def test_ggpkd_cli_overrides(monkeypatch):
     config = main.get_config(args.method, args)
 
     assert config.row_weight == 0.8
-    assert config.row_start_epoch == 2
     # Per-epoch evaluation is off by default: convergence inside the 5-epoch
     # budget is established (plateau from epoch 2 at lr 3e-5), so only the final
     # evaluation runs.
@@ -71,7 +66,6 @@ def test_ggpkd_cli_overrides(monkeypatch):
     )
     for removed in (
         "graph_temp",
-        "scale_weights",
         "direct_weight",
         "candidate_size",
         "hard_neg_pool",
@@ -215,55 +209,6 @@ def test_rkd_cli_uses_paper_defaults_and_accepts_overrides(monkeypatch):
     assert config.pooling_method == "mean"
 
 
-def test_ggpkd_temperature_ties():
-    criterion = GGPKDDistillation(
-        diffusion_scales=(1, 2, 4),
-        row_weight=0.0,  # L_rel only: no graph passed, so L_row must be off
-    )
-    # The scalar baseline is fixed; omega_r and tau_r are derived from the scales.
-    assert criterion.scale_temps.tolist() == pytest.approx(
-        [
-            FIXED_BANDWIDTH_TEMP,
-            FIXED_BANDWIDTH_TEMP * 2**0.5,
-            FIXED_BANDWIDTH_TEMP * 2.0,
-        ]
-    )
-    assert criterion.scale_weights.tolist() == pytest.approx(
-        np.asarray([1.0, 0.5, 0.25]) / 1.75
-    )
-    assert criterion.direct_weight.item() == pytest.approx(1.0)
-
-    for removed in (
-        "scale_weights",
-        "direct_weight",
-        "share_in_batch",
-        "graph_temp",
-        "scale_temps",
-        "broad_scale_temps",
-        "walk_temp",
-        "walk_weight",
-        "row_temp",
-        "mass_weight",
-        "geo_weight",
-        "sym_weight",
-        "direct_student_temp",
-    ):
-        with pytest.raises(ValueError, match=removed):
-            GGPKDDistillation(
-                row_weight=0.0,
-                **{removed: 0.07},
-            )
-
-
-def test_canonical_policy_preserves_the_previous_resolved_values():
-    assert candidate_budget(14, 26, 26) == 66
-    assert hard_negative_pool_size(200) == 200
-    np.testing.assert_allclose(
-        normalized_diffusion_weights((1, 2, 4)),
-        np.asarray([1.0, 0.5, 0.25]) / 1.75,
-    )
-
-
 def test_none_quota_takes_the_whole_transition_row():
     # The method's draw: no budget, no selection. Every column the teacher put mass
     # on is taken, and only those -- a ragged pool must not be padded out with
@@ -280,7 +225,7 @@ def test_none_quota_takes_the_whole_transition_row():
         "pool_indices": torch.from_numpy(pool),
         "pool_probs": torch.from_numpy(probs),
         "hard_neg_indices": torch.full((3, 2), -1, dtype=torch.long),
-        "metadata": {"diffusion_scales": (1,)},
+        "metadata": {},
     }
     sampler = GGPKDCandidateSampler(artifact, None, 0, 0, seed=0)
     assert sampler.full_pool
@@ -311,10 +256,9 @@ def test_ggpkd_relational_loss_reports_semantic_decomposition():
     candidate_embeddings = F.normalize(torch.randn(2, 3, 4), dim=-1)
     candidate_idx = torch.tensor([[1, 2, 3], [0, 4, 5]], dtype=torch.long)
     anchor_idx = torch.tensor([0, 1], dtype=torch.long)
-    teacher_probs = torch.rand(2, 3, 3)
+    teacher_probs = torch.rand(2, 1, 3)
 
     criterion = GGPKDDistillation(
-        diffusion_scales=(1, 2, 4),
         teacher_embeddings=teacher_bank,
         row_weight=0.0,
     )
@@ -326,29 +270,14 @@ def test_ggpkd_relational_loss_reports_semantic_decomposition():
         anchor_idx=anchor_idx,
     )
 
-    # Raw semantic terms: ambient r=0, neighbor r=1, and the normalized
-    # multi-hop group (2/3 at r=2 and 1/3 at r=4).
+    # Raw semantic terms: ambient r=0 and neighbour r=1. There is no multi-hop
+    # group left, so the graph group is the neighbour term alone.
     assert metrics["loss_amb"] == pytest.approx(metrics["kl_amb"], rel=1e-6)
     assert metrics["loss_nbr"] == pytest.approx(metrics["kl_nbr"], rel=1e-6)
-    expected_diff = (2.0 / 3.0) * metrics["kl_diff_r2"] + (1.0 / 3.0) * metrics[
-        "kl_diff_r4"
-    ]
-    assert metrics["loss_diff"] == pytest.approx(expected_diff, rel=1e-6)
 
-    # Every top-level group has coefficient 1.0. Inside the graph group,
-    # [1, 1/2, 1/4] normalizes to [4/7, 2/7, 1/7].
-    expected_rel = (
-        metrics["loss_amb"]
-        + (4.0 / 7.0) * metrics["loss_nbr"]
-        + (3.0 / 7.0) * metrics["loss_diff"]
-    )
+    # Ambient and graph keep the fixed 50/50 split.
+    expected_rel = 0.5 * metrics["loss_amb"] + 0.5 * metrics["loss_nbr"]
     assert metrics["loss_rel"] == pytest.approx(expected_rel, rel=1e-6)
-    assert metrics["loss_rel"] == pytest.approx(
-        metrics["loss_graph"] + metrics["loss_cal"], rel=1e-6
-    )
-    assert metrics["weight_graph"] == 1.0
-    assert metrics["weight_cal"] == 1.0
-    assert metrics["weight_row"] == 0.0
     assert loss.item() == pytest.approx(metrics["loss_rel"], rel=1e-6)
     assert metrics["loss_total"] == pytest.approx(metrics["loss_rel"], rel=1e-6)
 
@@ -391,7 +320,7 @@ def _row_artifact() -> dict:
             [[0.7, 0.3], [0.6, 0.4], [0.55, 0.45], [0.8, 0.2]],
             dtype=torch.float32,
         ),
-        "metadata": {"diffusion_scales": (1,)},
+        "metadata": {},
     }
 
 
@@ -466,51 +395,6 @@ def test_short_support_without_any_fallback_is_refused():
     )
     with pytest.raises(ValueError, match="no diffusion support"):
         sampler.sample(0)
-
-
-def test_sampler_mixture_row_matches_the_weighted_pool_and_feeds_the_spill():
-    """The scale mixture is computed per anchor instead of being precomputed.
-
-    It used to be an (n_items, width) float64 array -- 224 MB at the production
-    shape, in every DataLoader worker -- serving only the rare spill branch of
-    `_select_support`. This pins both the value and that the branch still works.
-    """
-    n_items, width = 12, 6
-    pool_probs = torch.zeros(2, n_items, width)
-    pool_probs[0, :, 0] = 0.4
-    pool_probs[0, :, 1] = 0.3
-    pool_probs[0, :, 2] = 0.2
-    pool_probs[0, :, 3] = 0.1
-    # Scale 1 only covers columns the sharper scale takes first, so its quota
-    # cannot be filled and the spill has to make up the deficit.
-    pool_probs[1, :, 0] = 0.5
-    pool_probs[1, :, 1] = 0.5
-    artifact = {
-        "pool_indices": torch.stack([torch.arange(width) for _ in range(n_items)]),
-        "pool_probs": pool_probs,
-        "hard_neg_indices": torch.full((n_items, 1), -1, dtype=torch.long),
-        "metadata": {"diffusion_scales": (1, 2)},
-    }
-    sampler = GGPKDCandidateSampler(
-        artifact=artifact,
-        diffusion_quota=5,
-        hard_neg_k=0,
-        random_neg_k=1,
-        seed=0,
-    )
-
-    weights = np.array([1.0, 0.5])
-    weights = weights / weights.sum()
-    expected = (pool_probs[:, 0, :].numpy() * weights.reshape(-1, 1)).sum(axis=0)
-    # Bit-exact, not approximate: same operands, same order over the scale axis.
-    assert np.array_equal(sampler._mixture_row(0), expected)
-    assert not hasattr(sampler, "mixture"), "the precomputed array must be gone"
-
-    _, positions = sampler._select_support(0, sampler._rng(0, 0))
-    # Both scales together can supply at most 4 distinct columns; reaching 4 means
-    # the spill branch ran and used the mixture.
-    assert len(positions) == 4
-    assert sorted(positions.tolist()) == [0, 1, 2, 3]
 
 
 def _closure_graph() -> dict:
@@ -608,7 +492,7 @@ def test_row_loss_ignores_columns_without_teacher_mass():
 
 def test_row_loss_forward_takes_no_walk_input_and_backpropagates():
     torch.manual_seed(0)
-    criterion = _closure_criterion(diffusion_scales=(1,))
+    criterion = _closure_criterion()
     criterion.use_row_loss = True
 
     anchors = torch.randn(2, 3, requires_grad=True)
@@ -625,9 +509,6 @@ def test_row_loss_forward_takes_no_walk_input_and_backpropagates():
 
     assert metrics["loss_row"] > 0.0
     assert metrics["row_count"] > 0.0
-    assert metrics["loss_total"] == pytest.approx(
-        metrics["loss_rel"] + metrics["loss_row"], rel=1e-6
-    )
     loss.backward()
     assert torch.isfinite(anchors.grad).all()
     assert torch.isfinite(candidates.grad).all()
@@ -658,8 +539,16 @@ def test_row_selection_knobs_are_gone():
         with pytest.raises(ValueError, match=removed):
             GGPKDDistillation(**{removed: 1})
 
+    # Config-only removals: a second name for a switch, and two knobs whose only
+    # supported value was the derived one.
+    for removed in ("use_ambient", "row_start_epoch", "direct_temp"):
+        assert not hasattr(config, removed)
+        with pytest.raises(AttributeError):
+            GGPKDConfig(**{removed: 1})
+    with pytest.raises(ValueError, match="use_ambient_scale"):
+        GGPKDDistillation(use_ambient_scale=False)
+
     assert config.row_weight == 1.0
-    assert config.row_start_epoch == 1
 
 
 def test_knn_bandwidth_makes_the_kth_neighbour_k_times_less_likely():
@@ -852,7 +741,6 @@ def test_ggpkd_train_step_updates_the_student(monkeypatch):
     distiller.device_s = torch.device("cpu")
     distiller.model_student = _TinyGGPKDStudent(vocab=corpus, dim=dim)
     distiller.criterion = GGPKDDistillation(
-        diffusion_scales=(1,),
         teacher_embeddings=F.normalize(torch.randn(corpus, dim), dim=-1),
         transition_neighbors=neighbors,
         transition_probs=probs,
@@ -931,40 +819,6 @@ def test_final_student_weights_are_idempotent(tmp_path):
     assert payload["epoch"] == 5
 
 
-def test_ggpkd_cli_diffusion_scales_and_derived_direct_temp(monkeypatch):
-    """The two new ablation surfaces: R override and the derived tau_0 sentinel."""
-    monkeypatch.setattr(
-        sys,
-        "argv",
-        [
-            "main.py",
-            "--method",
-            "ggpkd",
-            "--diffusion_scales",
-            "1",
-            "--direct_temp",
-            "0",
-            "--calibration_mode",
-            "fixed_cosine",
-            "--reference_size",
-            "17",
-        ],
-    )
-    args = main.parse_args()
-    config = main.get_config(args.method, args)
-    assert config.diffusion_scales == (1,)
-    # 0 is the "derive from the graph" sentinel; the distiller resolves it to the
-    # median entropic-affinity bandwidth before the criterion is constructed.
-    assert config.direct_temp == 0.0
-    assert config.calibration_mode == "fixed_cosine"
-    assert config.reference_size == 17
-
-    from config import GGPKDConfig
-
-    with pytest.raises(ValueError, match="direct_temp"):
-        GGPKDConfig(direct_temp=-0.1)
-
-
 def test_ggpkd_ambient_diffusion_audit_metrics():
     """The residual ambient-vs-diffusion audit inside the own draw.
 
@@ -981,13 +835,12 @@ def test_ggpkd_ambient_diffusion_audit_metrics():
     anchor_idx = torch.tensor([0, 1], dtype=torch.long)
 
     criterion = GGPKDDistillation(
-        diffusion_scales=(1, 2),
         teacher_embeddings=teacher_bank,
         row_weight=0.0,
     )
 
     # Every own column carries diffusion mass -> nothing is contested.
-    dense_probs = torch.rand(2, 2, 3) + 0.1
+    dense_probs = torch.rand(2, 1, 3) + 0.1
     _, metrics = criterion(
         anchor_embeddings=anchor_embeddings,
         candidate_embeddings=candidate_embeddings,
@@ -1002,7 +855,7 @@ def test_ggpkd_ambient_diffusion_audit_metrics():
     # The last own column of each anchor has zero mass at every diffusion scale
     # (a stand-in hard negative): the ambient mass it carries is the contested
     # ground the metric must report.
-    contested = torch.rand(2, 2, 3) + 0.1
+    contested = torch.rand(2, 1, 3) + 0.1
     contested[:, :, -1] = 0.0
     _, metrics = criterion(
         anchor_embeddings=anchor_embeddings,

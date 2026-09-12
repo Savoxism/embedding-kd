@@ -1,7 +1,11 @@
-from src.criterions.ggpkd_distillation import CALIBRATION_MODES, RELATION_TARGETS
+from src.criterions.ggpkd_distillation import (
+    CALIBRATION_MODES,
+    RELATION_TARGET_ALIASES,
+    RELATION_TARGETS,
+)
 from src.data_utils.batch_samplers import BATCH_SAMPLERS
 from src.ggpkd.graph_builder import KNN_MODES
-from src.ggpkd.policy import SUPPORT_POLICIES, TRUNCATION_TOLERANCE
+from src.ggpkd.policy import SUPPORT_POLICIES
 
 from .base_config import BaseConfig
 
@@ -33,21 +37,19 @@ class GGPKDConfig(BaseConfig):
     #                        previously written out by hand as (0.07, 0.10);
     #   tau_row(j) = tau_j   row targets are transition rows, so each supervised
     #                        row reuses its stored graph bandwidth;
-    #   direct scale         one temperature (direct_temp) on both teacher and
-    #                        student side (Hinton et al. 2015 convention).
-    # direct_temp is the only student temperature left to choose. In-batch
-    # sharing is part of the method definition and is always enabled when corpus
-    # indices are available.
+    #   direct scale         one temperature on both teacher and student side
+    #                        (Hinton et al. 2015 convention), derived at startup
+    #                        as the median graph bandwidth.
+    # No student temperature is left to choose. In-batch sharing is part of the
+    # method definition and is always enabled when corpus indices are available.
 
-    # ---- Calibration ---------------------------------------------------------
-    # Every active top-level group -- graph, calibration, and optional auxiliary
-    # rows -- has coefficient 1.0. There is no normalization over active groups.
-    # The notebook requests 0, which derives this value at startup as the median
-    # entropic-affinity bandwidth of the graph. The ambient target is the
+    # ---- Direct Scale (r=0) --------------------------------------------------
+    # The ambient group is assigned the same total weight as the complete graph
+    # group inside the criterion; it is not configurable. Its temperature is
+    # derived at startup as the median graph bandwidth: the ambient target is the
     # transition-row construction with sparsification removed, so the graph's
     # typical bandwidth is its natural scale and no fixed temperature has to be
     # retuned across teachers.
-    direct_temp = 0.0
 
     # ---- Ablation switches ---------------------------------------------------
     # Every one of these sits at the method's value. They exist so an ablation
@@ -60,12 +62,18 @@ class GGPKDConfig(BaseConfig):
     #                 selects the quota under P^1 while preserving the full
     #                 artifact and therefore the method's graph/ambient balance.
     # relation_target what the selected columns are supervised *against* (S3):
-    #                 diffusion (method, composed multi-scale transition rows) or
-    #                 direct (the teacher's raw cosine over the same columns).
-    # use_ambient     the r=0 scale (S4). False drops it entirely; the criterion
-    #                 then sees no teacher bank, which is what "no ambient" means.
+    #                 transition (method, the teacher transition row) or direct
+    #                 (the teacher's raw cosine over the same columns). The former
+    #                 spelling `diffusion` still resolves to `transition`: at one
+    #                 hop there is no composition step left for the name to mean.
     # knn_mode        which retrieval edges survive into the graph (G1):
-    #                 mutual (method) / directed / symmetrized.
+    #                 directed (method) / mutual / symmetrized. `directed`
+    #                 keeps each node's raw top-k, so every row is supervised
+    #                 on exactly the relations the teacher retrieved for it.
+    #                 The mutual filter was the earlier default; it is kept as
+    #                 an arm because E2 measured it at 73.93 against directed's
+    #                 74.29 on the minimal objective (runs/exp2/results.csv),
+    #                 and a filter that costs accuracy has to justify itself.
     # batch_local     the S1 baseline (batch-local relational KD): no graph, no
     #                 candidate draw, no rows -- each anchor is scored against the
     #                 texts that happen to share its minibatch. Implies
@@ -76,21 +84,12 @@ class GGPKDConfig(BaseConfig):
     #                 is diffusion_quota=0 with the whole quota spent on uniform
     #                 corpus draws, which needs no flag of its own.
     support_policy = "topk"
-    relation_target = "diffusion"
-    use_ambient = True
-    # Calibration is orthogonal to the graph target. `pool` reproduces the
-    # historical ambient KL over the current batch's shared candidate union;
-    # `fixed_reference` evaluates the KL on Omega_i union one corpus-defined set R;
-    # `fixed_cosine` regresses raw cosine values on that same fixed domain; `none`
-    # deletes calibration. Every active objective group has coefficient 1.0.
-    # `use_ambient` remains as a backwards-compatible alias.
+    relation_target = "transition"
+    # Calibration is orthogonal to the graph target (S4). `pool` is the method:
+    # the ambient KL over the current batch's shared candidate union. `none`
+    # deletes the r=0 scale; `--no_ambient` is its CLI spelling.
     calibration_mode = "pool"
-    reference_size = 200
-    # Derived from the selected reference texts during data setup and persisted in
-    # run.json. It is not a tunable parameter; the sweep runner uses it to verify
-    # that fixed-KL and fixed-cosine saw exactly the same R.
-    reference_fingerprint = None
-    knn_mode = "mutual"
+    knn_mode = "directed"
     batch_local = False
 
     # ---- Motivation study: batch composition, edge holdout -------------------
@@ -135,20 +134,9 @@ class GGPKDConfig(BaseConfig):
     # knob doing two jobs: a sweep over it cannot separate the two effects, which is
     # the price of not having a second constant.
     fixed_bandwidth = False
-    # Sorted, unique, and starting at 1. All three are enforced: the artifact stores
-    # its scales sorted, and the temperature ladder is anchored to the r=1 target
-    # being the transition row.
-    # One-hop transition matching is the paper default. Broader {1,2} and
-    # {1,2,4} ladders are reported as the radius ablation rather than being
-    # bundled into the canonical method.
-    diffusion_scales = (1,)
-    # Within the graph group omega_r is proportional to 1/r. The graph group is
-    # normalized to total weight 1. Calibration independently has coefficient
-    # 1.0, so Table 4 changes radius without changing either top-level weight.
-
     # ---- Row Supervision -----------------------------------------------------
-    # L_row promotes the teacher-selected pool columns (the diffusion support, not
-    # the hard/uniform negatives) to auxiliary rows and matches each one's complete
+    # L_row promotes the teacher-selected pool columns (not the hard/uniform
+    # negatives of an arm) to auxiliary rows and matches each one's complete
     # available transition row, weighted uniformly. Batch anchors are excluded:
     # L_rel already matches their transition row as its r=1 target. The row set is a
     # deterministic function of the candidate pool, so this term costs no selection
@@ -171,30 +159,25 @@ class GGPKDConfig(BaseConfig):
     #
     # uniform closure:                    74.86 at row_start_epoch 2, 74.82 at 1
     row_weight = 1.0
-    # Human-facing, one-based epoch number. At 1 the knob is inert: L_row is on for
-    # every epoch, and the curriculum disappears along with the parameter. The
-    # warm-up existed because walk selection produced stochastic, noisy auxiliary
-    # rows worth withholding for an epoch; the promoted columns are not noisy, and
-    # the epoch-1 diagnostics of the start-at-1 run match every later epoch (same
-    # ~843 rows at the same 0.44 exposed mass) with a lower final loss_rel.
-    row_start_epoch = 1
 
     # ---- Truncation ----------------------------------------------------------
-    # Every capacity in the build is the same operation: keep a subset S of a
-    # probability row and renormalize. Discarding mass delta gives exactly
-    # TV(p, ptilde) = delta and KL(ptilde || p) = -log(1 - delta), so this single
-    # tolerance bounds the perturbation of the targets *in nats* -- the units of
-    # the loss. At 1% that is <= 0.01 nats per truncation against a loss around
-    # 0.84, and it compounds to at most r * tolerance across the r-step lazy walk.
+    # 0 is the method: no truncation. The support of anchor i is its whole
+    # retrieved row N_i = top-k(i), every column at its teacher probability, so
+    # every row has exactly graph_k columns and nothing about the target depends
+    # on a numerical constant.
     #
-    # This replaces pool_size, walk_keep_topk and walk_topk outright rather than
-    # sitting alongside them: each anchor now keeps exactly as many nodes as the
-    # tolerance requires and the arrays are allocated at the width the widest anchor
-    # needed. The only remaining sizes are DIFFUSION_ROW_CAP / POOL_ROW_CAP in
-    # graph_builder, which are memory guards -- the build reports
-    # pool_capped_rows / diffusion_capped_rows if either binds before the tolerance
-    # is met, and then the guarantee does not hold.
-    truncation_tolerance = TRUNCATION_TOLERANCE
+    # A positive value restores the mass-prefix arm, where each row keeps the
+    # smallest prefix carrying 1 - tolerance of its mass. That is a real
+    # truncation with a stated cost: discarding mass delta gives exactly
+    # TV(p, ptilde) = delta and KL(ptilde || p) = -log(1 - delta), so the
+    # tolerance bounds the perturbation of the targets in nats -- the units of the
+    # loss. It is kept because the multi-hop arms need it: a diffused row is dense
+    # and cannot be carried whole.
+    #
+    # The remaining sizes are DIFFUSION_ROW_CAP / POOL_ROW_CAP in graph_builder,
+    # which are memory guards -- the build reports pool_capped_rows /
+    # diffusion_capped_rows if either binds.
+    truncation_tolerance = 0.0
 
     # ---- Per-Epoch Candidate Sampling ---------------------------------------
     # None is the method: no sampling at all. The candidate set is the anchor's
@@ -320,27 +303,18 @@ class GGPKDConfig(BaseConfig):
         An arm like `--relation_target direct --no_ambient` would then get as far
         as caching the teacher before the criterion refused it.
         """
-        # Allow old programmatic callers to keep using `use_ambient=False`, while
-        # making calibration_mode the authoritative surface for new runs.
-        mode_was_set = "calibration_mode" in self.__dict__
-        ambient_was_set = "use_ambient" in self.__dict__
-        if ambient_was_set and not mode_was_set:
-            self.calibration_mode = "pool" if self.use_ambient else "none"
-        else:
-            self.use_ambient = self.calibration_mode != "none"
+        if self.truncation_tolerance < 0.0 or self.truncation_tolerance >= 1.0:
+            raise ValueError(
+                "truncation_tolerance is the mass each row may discard; must be in "
+                f"[0, 1), got {self.truncation_tolerance}"
+            )
         if self.calibration_mode not in CALIBRATION_MODES:
             raise ValueError(
                 f"calibration_mode must be one of {CALIBRATION_MODES}, "
                 f"got {self.calibration_mode!r}"
             )
-        if self.reference_size < 1:
-            raise ValueError("reference_size must be at least 1")
         if self.row_weight < 0:
             raise ValueError("row_weight must be non-negative")
-        if self.direct_temp < 0:
-            raise ValueError("direct_temp must be positive, or 0 to derive it")
-        if self.row_start_epoch < 1:
-            raise ValueError("row_start_epoch must be at least 1")
         if self.diffusion_quota is not None and self.diffusion_quota < 1:
             raise ValueError(
                 "diffusion_quota must be None (the whole transition row) or positive"
@@ -350,6 +324,9 @@ class GGPKDConfig(BaseConfig):
                 f"support_policy must be one of {SUPPORT_POLICIES}, "
                 f"got {self.support_policy!r}"
             )
+        self.relation_target = RELATION_TARGET_ALIASES.get(
+            self.relation_target, self.relation_target
+        )
         if self.relation_target not in RELATION_TARGETS:
             raise ValueError(
                 f"relation_target must be one of {RELATION_TARGETS}, "
@@ -360,11 +337,6 @@ class GGPKDConfig(BaseConfig):
                 f"knn_mode must be one of {KNN_MODES}, got {self.knn_mode!r}"
             )
         if self.batch_local:
-            if self.calibration_mode in ("fixed_reference", "fixed_cosine"):
-                raise ValueError(
-                    "fixed-reference calibration is defined for corpus graph rows; "
-                    "it cannot be combined with batch_local"
-                )
             if self.relation_target not in ("ambient_only", "direct"):
                 raise ValueError(
                     "batch_local forms no graph relations, so its target must be "
@@ -377,7 +349,7 @@ class GGPKDConfig(BaseConfig):
                     "batch_local needs at least two texts per batch to have any "
                     f"relation at all; got batch_size={self.batch_size}"
                 )
-        if self.relation_target == "ambient_only" and not self.use_ambient:
+        if self.relation_target == "ambient_only" and self.calibration_mode == "none":
             # `ambient_only` *is* scale r=0. Removing the scale leaves no term.
             # `direct` is deliberately not caught here any more: it reads the
             # teacher bank, which the criterion now receives independently of
@@ -385,15 +357,7 @@ class GGPKDConfig(BaseConfig):
             # relational objective the controlled support study is built on.
             raise ValueError(
                 "relation_target='ambient_only' is the ambient scale itself; it "
-                "cannot be combined with use_ambient=False"
-            )
-        if (
-            self.relation_target == "ambient_only"
-            and self.calibration_mode == "fixed_cosine"
-        ):
-            raise ValueError(
-                "relation_target='ambient_only' is the KL similarity-profile "
-                "baseline and cannot be combined with fixed_cosine"
+                "cannot be combined with calibration_mode='none'"
             )
         if self.holdout_edge_frac < 0.0 or self.holdout_edge_frac >= 1.0:
             raise ValueError(

@@ -1,4 +1,60 @@
-# Motivation study: four experiments
+# Experiments
+
+Two generations live here.
+
+## The staged sweeps (current — `experiments.md`)
+
+One script per stage, run in order. The orchestrator stops after Stage 0 on
+purpose: Stage 0 chooses the operating point, choosing it is a judgement call,
+and no script may guess it.
+
+```bash
+GPUS=0,1,2,3            bash scripts/exp/run_all.sh   # Stage 0, then stop
+column -s, -t runs/stage0_graph_k/results.csv | less -S
+GRAPH_K=<winner> GPUS=0,1,2,3 bash scripts/exp/run_all.sh   # Stages 1-3
+DRY_RUN=1 GRAPH_K=50    bash scripts/exp/run_all.sh   # print the plan only
+```
+
+| stage | script | question | runs |
+|---|---|---|---|
+| 0 | `stage0_graph_k.sh` | what operating point? also the full-model reference | 12 |
+| 1 | `stage1_deletions.sh` | does each component earn its place? | 12 |
+| 2B | `stage2b_ladder.sh` | which texts should an anchor be compared against? | 12/pair |
+| 2C | `stage2c_dose_response.sh` | does the score follow the count, however it is bought? | 27 |
+| 2D | `stage2d_components.sh` | ablation on the shipped objective | 9 |
+| 3 | `stage3_main_table.sh` | the deliverable | 6–15 |
+
+Two stages need no GPU: **A** is the formula $(B-1)k/(N-1)$ plus one exposure
+curve from `coverage.py`, and **E** scores Stage 2D's checkpoints post-hoc with
+`exp3_heldout_geometry.sh`.
+
+`FROM` / `TO` restrict the range (`0`, `1`, `2b`, `2c`, `2d`, `3`). Everything
+else — `GPUS`, `SEEDS`, `PAIR`/`PAIRS`, `CORPUS`, `CACHE_ROOT`, `DRY_RUN` — is
+forwarded to the stage scripts.
+
+### Three arms cannot run yet
+
+`stage1_deletions.sh` checks `main.py --help` and skips what the code does not
+support rather than failing one run at a time:
+
+| arm | missing |
+|---|---|
+| `row_centers_random` | a switch that draws the extra anchors' columns at random |
+| `uniform_target` | a `relation_target` that is uniform over the retrieved neighbours |
+| `student_knn` (one-factor) | the arm currently takes its row temperatures from the student too |
+
+The first two are skipped automatically. The third runs, with a warning, as an
+indicative arm.
+
+---
+
+## The original motivation study (E1–E4)
+
+Superseded by the stages above, and kept because `exp3_heldout_geometry.sh` is
+still the held-out probe and `coverage.py` is still the exposure measurement.
+Their numbers were all measured before the mutual filter, row truncation,
+multi-hop diffusion and fixed-reference calibration were removed, so they
+describe a different method — read them for relative structure only.
 
 One `.sh` per experiment, three seeds each, every result exported to CSV under
 `runs/<experiment>/`. The four answer four different questions, in order:

@@ -1,3 +1,28 @@
 \begin{abstract}
-A text embedding teacher encodes knowledge in the geometry it induces over an entire corpus, but exhaustively supervising all pairwise relations is infeasible. Standard relational knowledge distillation (KD) instead forms its supervision support from examples that happen to co-occur in a mini-batch, making relation exposure independent of teacher relevance. We show that preserving global teacher geometry depends on two factors: alignment, requiring the student to accurately reproduce the selected relations, and coverage, requiring those relations to capture most of the relationships the teacher considers important. This motivates a more effective estimator for corpus-level geometry preservation, using a compact set of teacher-relevant relations to capture the teacher's most important structure. To this end, we introduce \textbf{Global Geometry Preservation Knowledge Distillation (GGP-KD)}. GGP-KD builds a teacher-derived mutual kNN graph and uses diffusion to capture semantic structure at multiple scales. It then selects a compact set of informative relations and shares candidates across the mini-batch, allowing the student to learn both broader corpus structure and additional local relationships without extra encoding. Empirical results on nine standard sentence-embedding benchmarks across three teacher--student settings show that GGP-KD outperforms strong distillation baselines on both in-domain and out-of-domain benchmarks, with particularly strong gains on semantic textual similarity. GGP-KD requires no task labels or online teacher inference, and only the student is used at deployment.
+A text embedding teacher stores knowledge in the geometry it induces over an
+entire corpus, but supervising all pairwise relations is infeasible. Standard
+relational knowledge distillation (KD) instead forms its supervision support
+from examples that happen to co-occur in a mini-batch, so relation exposure is
+independent of teacher relevance: an important teacher relation and an
+unrelated corpus pair are equally likely to be supervised. We argue that a
+corpus-level relational objective should separate two decisions that mini-batch
+KD conflates---which relations are \emph{eligible} for supervision, and how
+eligible relations are \emph{realized} efficiently---and that preserving global
+geometry depends on both alignment, reproducing the supervised relations
+accurately, and coverage, supervising most of the relational mass the teacher
+considers important. We introduce \textbf{Global Geometry Preservation
+Knowledge Distillation (GGPKD)}, which lets teacher geometry choose the support
+and uses mini-batches only to realize it. GGPKD encodes the corpus once with
+the teacher, builds a $k$-nearest-neighbor graph whose per-row bandwidth is
+read off the retrieved similarities, and supervises each anchor on its own
+retrieved neighborhood, every column included. The deduplicated candidate pool of a batch is encoded
+once and reused twice more: to calibrate similarity levels across the batch,
+and to supervise additional teacher-selected rows without any extra student
+encoding. Supports, bandwidths, temperatures, and term weights are all derived
+from the graph, leaving two hyperparameters: the graph width and the
+auxiliary-row weight. Across nine standard sentence-embedding benchmarks and
+three teacher--student settings, GGPKD obtains the best mean score in every
+setting, with the largest and most consistent gains on semantic textual
+similarity. GGPKD requires no task labels and no online teacher inference, and
+only the student encoder is used at deployment.
 \end{abstract}

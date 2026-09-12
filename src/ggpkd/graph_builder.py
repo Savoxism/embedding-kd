@@ -5,7 +5,6 @@ from collections.abc import Sequence
 from pathlib import Path
 
 import numpy as np
-import scipy.sparse as sp
 import torch
 import torch.nn.functional as F
 from tqdm import tqdm
@@ -14,38 +13,20 @@ from .policy import (
     FIXED_BANDWIDTH_TEMP,
     TRUNCATION_TOLERANCE,
     hard_negative_pool_size,
-    normalized_diffusion_weights,
 )
 
 # 8: restore padded transition rows required by L_row. Version 7 diffusion targets
 #    remain mathematically valid, but do not contain the arrays needed to sample and
 #    supervise non-anchor rows, so those caches must be rebuilt once.
-# 9: DIFFUSION_ROW_CAP raised 4096 -> 16384. At the 13553-item corpus the old cap
-#    bound before the tolerance on 2346 rows (17.3%) at r=4, so their targets
-#    violated the stated truncation guarantee. The cap is not in the cache
-#    metadata, so the version bump is what forces those caches to rebuild.
-ARTIFACT_VERSION = 9
+# 9: DIFFUSION_ROW_CAP raised 4096 -> 16384, forcing r>=2 caches to rebuild.
+# 10: multi-hop diffusion removed. The method supervises one hop, so a pool IS a
+#    transition row; `diffusion_scales` and `scale_weights` have left the metadata
+#    and every cache written under them is rejected.
+ARTIFACT_VERSION = 10
 
-# Anchors diffused per sparse matrix product. The intermediate X @ P holds up to
-# block_size * keep_topk * max_degree nonzeros, so this trades memory for the
-# number of scipy calls; 256 keeps the intermediate under a few hundred MB at
-# graph_k=200.
-DIFFUSION_BLOCK = 256
-
-# Memory guards, not modelling choices, which is why they are constants here and
-# not configuration. What a row actually keeps is decided by truncation_tolerance;
-# these only bound the arrays while that decision is being made, and the build
-# reports pool_capped_rows / diffusion_capped_rows if either ever binds first -- at
-# which point the tolerance is no longer a guarantee and the number must go up.
-DIFFUSION_ROW_CAP = 16384
-POOL_ROW_CAP = 2048
 # Anchors per block in `_target_sharpness_stats`. Pure memory control: the stats
 # are per-anchor reductions, so the block size cannot change any reported number.
 ANCHOR_STATS_CHUNK = 4096
-
-
-def _as_tuple(values: Sequence[int]) -> tuple[int, ...]:
-    return tuple(sorted({int(v) for v in values}))
 
 
 # Floor for a degenerate bandwidth. A row whose k retrieved neighbours all carry
@@ -82,7 +63,7 @@ def _knn_bandwidths(top_scores: np.ndarray, graph_k: int) -> np.ndarray:
     and it survives here in closed form -- no bisection, no target entropy.
 
     *A fixed sample size for every node.* The scores come from the raw top-k, read
-    before the mutual filter, so all k values exist for every node whenever
+    before any edge filter, so all k values exist for every node whenever
     graph_k < n_items. The entropic-affinity solve this replaces ran on the
     filtered neighbour list, where degree varies and 18.9% of the production
     corpus had degree at or below the requested perplexity: those rows never
@@ -93,12 +74,15 @@ def _knn_bandwidths(top_scores: np.ndarray, graph_k: int) -> np.ndarray:
     Calibrating on the raw top-k rather than on the surviving edges is deliberate.
     It is the wider set, so the gap is larger and the rows come out flatter than a
     degree-matched calibration would give; the trade is that the sample size stops
-    depending on how many edges the mutual filter happened to leave.
+    depending on how many edges an edge filter happened to leave. Under the
+    canonical ``directed`` mode nothing is filtered and the two sets coincide.
     """
     k_eff = min(int(graph_k), top_scores.shape[1])
     if k_eff < 2:
         raise ValueError(f"graph_k must retrieve at least 2 neighbours, got {k_eff}")
-    span = top_scores[:, 0].astype(np.float64) - top_scores[:, k_eff - 1].astype(np.float64)
+    span = top_scores[:, 0].astype(np.float64) - top_scores[:, k_eff - 1].astype(
+        np.float64
+    )
     return np.maximum(span / np.log(k_eff), MIN_BANDWIDTH)
 
 
@@ -247,7 +231,7 @@ def _build_transition(
     graph_k: int,
     graph_temp: float,
     fixed_bandwidth: bool,
-    knn_mode: str = "mutual",
+    knn_mode: str = "directed",
     holdout_edge_frac: float = 0.0,
     holdout_seed: int = 0,
 ) -> tuple[
@@ -256,13 +240,16 @@ def _build_transition(
     """Neighbour lists and their transition rows, under one of three kNN rules.
 
     `knn_mode` selects which edges survive retrieval, and nothing else in the
-    build changes with it -- same bandwidth solve, same truncation, same pools --
+    build changes with it -- same bandwidth rule, same truncation, same pools --
     so the three arms differ only in the edge set:
 
-    * ``mutual`` (canonical): keep j iff j in topk(i) *and* i in topk(j). A hub
-      that everything retrieves but that retrieves nothing back loses those edges.
-    * ``directed``: keep all of topk(i). Every node has degree graph_k, and hubs
-      keep every edge pointing at them.
+    * ``directed`` (canonical): keep all of topk(i). Every node has degree
+      graph_k, hubs keep every edge pointing at them, and a row is supervised on
+      exactly the relations the teacher retrieved for it.
+    * ``mutual``: keep j iff j in topk(i) *and* i in topk(j). A hub that
+      everything retrieves but that retrieves nothing back loses those edges.
+      This was the earlier default; it suppresses hubness but discards teacher
+      mass, and E2 measured it 0.36 points below ``directed``.
     * ``symmetrized``: keep the union, j in topk(i) *or* i in topk(j). Degrees are
       the largest of the three and hubs are amplified rather than suppressed.
 
@@ -282,7 +269,13 @@ def _build_transition(
     if knn_mode not in KNN_MODES:
         raise ValueError(f"knn_mode must be one of {KNN_MODES}, got {knn_mode!r}")
     n_items = top_indices.shape[0]
-    top_sets = [set(top_indices[i, :graph_k].tolist()) for i in range(n_items)]
+    # Only the mutual arm reads this, and building it is n_items sets of graph_k
+    # ints. The canonical directed graph filters nothing, so it never looks.
+    top_sets = (
+        [set(top_indices[i, :graph_k].tolist()) for i in range(n_items)]
+        if knn_mode == "mutual"
+        else None
+    )
     reverse = (
         _reverse_adjacency(top_indices, top_scores, graph_k)
         if knn_mode == "symmetrized"
@@ -308,7 +301,7 @@ def _build_transition(
         seen: set[int] = set()
         for pos, j in enumerate(top_indices[i, :graph_k]):
             j_int = int(j)
-            if knn_mode == "mutual" and i not in top_sets[j_int]:
+            if top_sets is not None and i not in top_sets[j_int]:
                 continue
             neighbors.append(j_int)
             scores.append(float(top_scores[i, pos]))
@@ -385,7 +378,9 @@ def _hubness_stats(row_neighbors: list[np.ndarray]) -> dict[str, float]:
     """Indegree concentration of the edge set.
 
     The kNN-mode comparison is not settled by a downstream score alone: mutual
-    kNN is claimed to suppress hubness, and that claim is about the *graph*. A hub
+    kNN is claimed to suppress hubness, and that claim is about the *graph*.
+    The method keeps the unfiltered top-k, so this is the statistic that says
+    what that choice costs on the graph side. A hub
     is a node that appears in many other nodes' neighbour lists, so the quantity
     is the indegree distribution -- its tail (max, p99) and how much of the total
     edge mass the top 1% of nodes absorb. Reported for every build so the three
@@ -394,9 +389,11 @@ def _hubness_stats(row_neighbors: list[np.ndarray]) -> dict[str, float]:
     n_items = len(row_neighbors)
     if n_items == 0:
         return {}
-    flat = np.concatenate([n for n in row_neighbors if n.size]) if any(
-        n.size for n in row_neighbors
-    ) else np.empty(0, dtype=np.int64)
+    flat = (
+        np.concatenate([n for n in row_neighbors if n.size])
+        if any(n.size for n in row_neighbors)
+        else np.empty(0, dtype=np.int64)
+    )
     indegree = np.bincount(flat.astype(np.int64), minlength=n_items)
     total_edges = int(indegree.sum())
     order = np.sort(indegree)[::-1]
@@ -483,31 +480,6 @@ def _write_knn_graph_log(
     return log_path, stats
 
 
-def _transition_matrix(
-    row_neighbors: list[np.ndarray],
-    row_probs: list[np.ndarray],
-    n_items: int,
-) -> sp.csr_matrix:
-    """Row-stochastic P as CSR, so a diffusion step is one sparse matrix product."""
-    sizes = np.fromiter(
-        (int(neighbors.size) for neighbors in row_neighbors),
-        dtype=np.int64,
-        count=n_items,
-    )
-    indptr = np.zeros(n_items + 1, dtype=np.int64)
-    np.cumsum(sizes, out=indptr[1:])
-    matrix = sp.csr_matrix(
-        (
-            np.concatenate(row_probs).astype(np.float64),
-            np.concatenate(row_neighbors).astype(np.int64),
-            indptr,
-        ),
-        shape=(n_items, n_items),
-    )
-    matrix.sort_indices()
-    return matrix
-
-
 def _mass_prefix(data: np.ndarray, total: float, tolerance: float) -> np.ndarray:
     """Positions of the smallest set of entries carrying at least 1 - tolerance.
 
@@ -518,9 +490,10 @@ def _mass_prefix(data: np.ndarray, total: float, tolerance: float) -> np.ndarray
 
     so a tolerance on the discarded mass is a bound on the target perturbation in
     nats -- the units of the loss itself. That is what lets one stated tolerance
-    replace a capacity knob per truncation site. The bound is per truncation; the
-    lazy walk truncates once per step, so after r steps the total is at most r
-    times it.
+    replace a capacity knob per truncation site. The bound is per truncation; a
+    multi-hop arm truncates once per diffusion step, so after r steps the total is
+    at most r times it. The method runs at R={1} with tolerance 0, where nothing
+    is discarded and the bound is vacuous.
     """
     order = np.argsort(-data)
     cumulative = np.cumsum(data[order])
@@ -529,475 +502,125 @@ def _mass_prefix(data: np.ndarray, total: float, tolerance: float) -> np.ndarray
     return order[: min(keep, order.size)]
 
 
-def _truncate_renormalize(
-    matrix: sp.csr_matrix,
-    keep_topk: int,
-    tolerance: float | None = None,
-    protect: np.ndarray | None = None,
-) -> tuple[sp.csr_matrix, float, int]:
-    """Row-wise truncation to `tolerance` of discarded mass, then renormalize.
-
-    `keep_topk` is a memory ceiling, not a modelling choice: the row is cut to the
-    smallest prefix carrying 1 - tolerance, and only clipped at keep_topk if that
-    prefix would be larger. Rows where the ceiling binds are counted and reported,
-    because for those the tolerance above is no longer a guarantee.
-
-    `protect` names one column per row that is kept unconditionally and left out of
-    the tolerance budget. It exists because the row this function truncates is not
-    the row that becomes a target: the lazy walk's snapshot has its self-mass
-    dropped and is renormalized afterwards. At step r the self entry alone carries
-    at least 2^-r, so spending the budget on the whole row spends it against a total
-    the target never sees -- at r=1 the self entry is half the row, the surviving
-    non-self mass came out at 1 - 2*tolerance, and the stated per-step tolerance
-    was off by a factor of two on the one scale the temperature tie binds
-    (measured: 0.9874 mean retained against a claimed 0.99). Excluding the
-    protected column makes the discarded fraction *of the target* equal to
-    `tolerance` at every scale, which is what the TV/KL bound in `_mass_prefix` is
-    stated over.
-
-    Truncating without renormalizing leaks mass at every step, and the leak
-    compounds with r, so the later scales end up systematically under-weighted
-    relative to r=1 -- which silently distorts the mixture target the loss
-    actually optimizes.
-
-    Renormalizing hides the leak from the row sums but not from the distribution:
-    dropping the tail and rescaling the head makes the walk *sharper* than the true
-    lazy walk, and the distortion grows with r. Since the broad scales exist
-    precisely to be broad, this is the one approximation in the build that can
-    quietly collapse the multi-scale objective, so the dropped fraction is returned
-    and logged rather than discarded.
-    """
-    indptr, indices, data = matrix.indptr, matrix.indices, matrix.data
-    n_rows = matrix.shape[0]
-    kept_indices: list[np.ndarray] = []
-    kept_data: list[np.ndarray] = []
-    new_indptr = np.zeros(n_rows + 1, dtype=np.int64)
-    dropped = 0.0
-    capped = 0
-
-    for row in range(n_rows):
-        start, end = indptr[row], indptr[row + 1]
-        row_indices, row_data = indices[start:end], data[start:end]
-        full_total = float(row_data.sum())
-        # Split off the protected column before anything else, so neither the
-        # keep_topk cut nor the tolerance budget can spend itself on mass the
-        # target will discard anyway.
-        held_index = np.empty(0, dtype=row_indices.dtype)
-        held_data = np.empty(0, dtype=row_data.dtype)
-        if protect is not None:
-            is_held = row_indices == protect[row]
-            if is_held.any():
-                held_index, held_data = row_indices[is_held], row_data[is_held]
-                row_indices, row_data = row_indices[~is_held], row_data[~is_held]
-        # The budget is stated over the mass that survives to the target, i.e. the
-        # row minus whatever is held out.
-        budget_total = full_total - float(held_data.sum())
-        room = max(keep_topk - held_index.size, 1)
-        if row_data.size > room:
-            # Cheap O(n) cut to the ceiling first, so the sort inside _mass_prefix
-            # only ever runs on `room` entries.
-            top = np.argpartition(-row_data, room - 1)[:room]
-            row_indices, row_data = row_indices[top], row_data[top]
-            if float(row_data.sum()) < (1.0 - (tolerance or 0.0)) * budget_total:
-                capped += 1
-        if tolerance is not None and budget_total > 0.0 and row_data.size > 1:
-            keep = _mass_prefix(row_data, budget_total, tolerance)
-            row_indices, row_data = row_indices[keep], row_data[keep]
-        # Reported before the protected column is put back: the discarded fraction
-        # is what the tolerance bounds, and it is stated over the mass the target
-        # actually keeps, not over a row whose self entry is dropped downstream.
-        if budget_total > 0.0:
-            dropped += 1.0 - float(row_data.sum()) / budget_total
-        if held_index.size:
-            row_indices = np.concatenate([held_index, row_indices])
-            row_data = np.concatenate([held_data, row_data])
-        total = float(row_data.sum())
-        if total > 0.0:
-            row_data = row_data / total
-        kept_indices.append(row_indices)
-        kept_data.append(row_data)
-        new_indptr[row + 1] = new_indptr[row] + row_data.size
-
-    out = sp.csr_matrix(
-        (np.concatenate(kept_data), np.concatenate(kept_indices), new_indptr),
-        shape=matrix.shape,
-    )
-    # argpartition scrambles column order; searchsorted downstream needs it sorted.
-    out.sort_indices()
-    return out, dropped / max(1, n_rows), capped
-
-
-def _drop_self_renormalize(dist: sp.csr_matrix, start_ids: np.ndarray) -> sp.csr_matrix:
-    """Remove each row's own start node and renormalize what is left."""
-    out = dist.copy()
-    indptr, indices, data = out.indptr, out.indices, out.data
-    for row, start in enumerate(start_ids):
-        lo, hi = indptr[row], indptr[row + 1]
-        pos = lo + int(np.searchsorted(indices[lo:hi], start))
-        if pos < hi and indices[pos] == start:
-            data[pos] = 0.0
-
-    row_sums = np.asarray(out.sum(axis=1)).ravel()
-    scale = np.where(row_sums > 0.0, 1.0 / np.maximum(row_sums, 1e-300), 0.0)
-    out = (sp.diags(scale) @ out).tocsr()
-    out.eliminate_zeros()
-    out.sort_indices()
-    return out
-
-
 # The "walk" the diffusion_* stats describe is the lazy diffusion walk
 # X <- (X + XP)/2 below, not the row-selection walk L_row used to run. They were
 # renamed from walk_* so a later cleanup does not mistake one for the other.
-def _diffuse_block(
-    start_ids: np.ndarray,
-    scales: tuple[int, ...],
-    transition: sp.csr_matrix,
-    keep_topk: int,
-    tolerance: float | None = None,
-) -> tuple[list[sp.csr_matrix], dict[int, float], int]:
-    """Lazy random walk X <- (X + XP)/2 for a whole block of anchors, snapshotted
-    at each scale.
-
-    The lazy walk is what makes the scales a graded family: a plain walk on a mutual
-    kNN graph mixes within two steps, so (P)^2 and (P)^4 collapse onto the same
-    distribution and the multi-scale objective degenerates into a duplicated term.
-
-    Diffusing one anchor at a time through Python dicts costs ~250k interpreter-level
-    operations per anchor; the same recursion expressed as a sparse product over a
-    block of anchors is the identical arithmetic (agreement with the dict version is
-    at the 1e-17 level) with the inner loops in compiled code.
-    """
-    n_items = transition.shape[0]
-    block = start_ids.size
-    dist = sp.csr_matrix(
-        (
-            np.ones(block, dtype=np.float64),
-            (np.arange(block, dtype=np.int64), start_ids.astype(np.int64)),
-        ),
-        shape=(block, n_items),
-    )
-
-    snapshots: dict[int, sp.csr_matrix] = {}
-    truncation_loss: dict[int, float] = {}
-    capped_total = 0
-    for step in range(1, max(scales) + 1):
-        dist, dropped, capped = _truncate_renormalize(
-            ((dist + dist @ transition) * 0.5).tocsr(),
-            keep_topk,
-            tolerance,
-            # The anchor's own column is dropped by `_drop_self_renormalize` before
-            # the snapshot becomes a target, so it is held out of the tolerance
-            # budget rather than consuming it.
-            protect=start_ids.astype(np.int64),
-        )
-        truncation_loss[step] = dropped
-        capped_total += capped
-        if step in scales:
-            snapshots[step] = _drop_self_renormalize(dist, start_ids)
-
-    return [snapshots[scale] for scale in scales], truncation_loss, capped_total
 
 
-def _select_pool(
-    supports: list[tuple[np.ndarray, np.ndarray]],
-    weights: np.ndarray,
-    row_cap: int,
-    tolerance: float | None = None,
-) -> tuple[np.ndarray, bool]:
-    """Nodes of the weighted mixture carrying all but `tolerance` of its mass.
-
-    `row_cap` is the memory guard. Returns the selection and whether the guard bound
-    before the tolerance was met.
-    """
-    nodes = np.concatenate([support[0] for support in supports])
-    if nodes.size == 0:
-        return np.empty(0, dtype=np.int64), False
-    mass = np.concatenate(
-        [
-            float(weights[scale_idx]) * support[1]
-            for scale_idx, support in enumerate(supports)
-        ]
-    )
-    unique_nodes, inverse = np.unique(nodes, return_inverse=True)
-    mixture = np.bincount(inverse, weights=mass, minlength=unique_nodes.size)
-
-    if tolerance is None:
-        order = np.argsort(-mixture, kind="stable")[:row_cap]
-        return unique_nodes[order].astype(np.int64), False
-
-    total = float(mixture.sum())
-    keep = (
-        _mass_prefix(mixture, total, tolerance)
-        if total > 0.0
-        else np.empty(0, np.int64)
-    )
-    capped = keep.size > row_cap
-    keep = keep[:row_cap]
-    return unique_nodes[keep].astype(np.int64), capped
-
-
-def _gather_masses(
-    support: tuple[np.ndarray, np.ndarray], nodes: np.ndarray
-) -> np.ndarray:
-    """Diffusion mass of `nodes` under one scale; 0 for nodes outside its support."""
-    support_indices, support_data = support
-    if support_indices.size == 0 or nodes.size == 0:
-        return np.zeros(nodes.size, dtype=np.float64)
-    pos = np.searchsorted(support_indices, nodes)
-    in_range = pos < support_indices.size
-    clipped = np.where(in_range, pos, 0)
-    hit = in_range & (support_indices[clipped] == nodes)
-    return np.where(hit, support_data[clipped], 0.0)
-
-
-def _build_diffusion_pools(
-    top_indices: np.ndarray,
-    scales: tuple[int, ...],
-    weights: np.ndarray,
+def _build_pools(
     row_neighbors: list[np.ndarray],
     row_probs: list[np.ndarray],
-    hard_neg_pool: int,
-    source_ids: np.ndarray,
-    tolerance: float,
-    block_size: int = DIFFUSION_BLOCK,
+    tolerance: float | None,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, dict[str, float]]:
-    """Per-anchor sparse diffusion support plus a same-source hard-negative pool.
+    """Candidate pool of an anchor: its transition row, as it stands.
 
-    Candidate *sets* are no longer frozen here. The previous design precomputed one
-    fixed 64-slot set per anchor and reused it for every epoch, so after epoch 1 the
-    student had fit those exact comparisons and the objective had nothing left to
-    say. What is precomputed now is the diffusion support; the candidate set is
-    resampled from it each epoch by GGPKDCandidateSampler.
+    There is nothing else it could be. The method supervises one hop, so the
+    support of anchor i *is* row i; the multi-hop machinery this replaced built a
+    sparse transition matrix and multiplied it only to read back the rows it was
+    built from.
 
-    There is no pool-size argument. How many nodes an anchor keeps is decided by
-    `tolerance` alone, per anchor, and the array is allocated afterwards at the
-    width the widest anchor actually needed. A configured size could only be one of
-    two things: larger than the tolerance requires, which wastes memory and pads
-    with -1, or smaller, which silently breaks the guarantee.
+    With `tolerance` falsy the row is kept whole and the pool is exactly the
+    teacher's top-k. A positive tolerance keeps the smallest prefix carrying
+    1 - tolerance of the row's mass, which is the truncation ablation arm.
     """
-    n_items = top_indices.shape[0]
-    n_scales = len(scales)
-
-    # Collected per anchor, then packed once the true width is known.
+    n_items = len(row_neighbors)
     selected_nodes: list[np.ndarray] = [None] * n_items
     selected_probs: list[np.ndarray] = [None] * n_items
-    hard_neg_indices = np.full((n_items, hard_neg_pool), -1, dtype=np.int64)
-
-    residual_mass = np.zeros(n_scales, dtype=np.float64)
     pool_fill = np.zeros(n_items, dtype=np.int64)
-    hard_fill = np.zeros(n_items, dtype=np.int64)
-    empty_scale = np.zeros(n_scales, dtype=np.int64)
+    residual = 0.0
+    empty = 0
 
-    transition = _transition_matrix(row_neighbors, row_probs, n_items)
-    truncation_totals: dict[int, float] = {}
-    n_blocks = 0
-    # Rows where the allocation ceiling bound before the tolerance was met. For
-    # those the TV/KL guarantee on the targets does not hold, so they are counted
-    # rather than absorbed.
-    pool_capped_rows = 0
-    diffusion_capped_rows = 0
+    for i in range(n_items):
+        nodes = np.asarray(row_neighbors[i], dtype=np.int64)
+        probs = np.asarray(row_probs[i], dtype=np.float64)
+        total = float(probs.sum())
+        if tolerance:
+            # Sorted back into the row's own column order: the prefix decides which
+            # columns survive, not how they are laid out.
+            keep = np.sort(_mass_prefix(probs, total, float(tolerance)))
+            nodes, probs = nodes[keep], probs[keep]
+            kept = float(probs.sum())
+            residual += max(0.0, total - kept) / max(total, 1e-12)
+            total = kept
+        if nodes.size == 0 or total <= 0.0:
+            empty += 1
+            continue
+        selected_nodes[i] = nodes
+        selected_probs[i] = (probs / total).astype(np.float32)
+        pool_fill[i] = nodes.size
 
-    for block_start in tqdm(
-        range(0, n_items, block_size), desc="GGPKD diffusion pools"
-    ):
-        block_ids = np.arange(
-            block_start, min(block_start + block_size, n_items), dtype=np.int64
-        )
-        scale_matrices, truncation_loss, diffusion_capped = _diffuse_block(
-            block_ids, scales, transition, DIFFUSION_ROW_CAP, tolerance
-        )
-        diffusion_capped_rows += diffusion_capped
-        n_blocks += 1
-        for step, dropped in truncation_loss.items():
-            truncation_totals[step] = truncation_totals.get(step, 0.0) + dropped
-
-        for row, i in enumerate(block_ids):
-            i = int(i)
-            supports = [
-                (
-                    matrix.indices[matrix.indptr[row] : matrix.indptr[row + 1]],
-                    matrix.data[matrix.indptr[row] : matrix.indptr[row + 1]],
-                )
-                for matrix in scale_matrices
-            ]
-
-            selected, pool_capped = _select_pool(
-                supports, weights, POOL_ROW_CAP, tolerance
-            )
-            pool_capped_rows += int(pool_capped)
-            pool_fill[i] = selected.size
-            selected_nodes[i] = selected
-
-            row_probs_per_scale = np.zeros((n_scales, selected.size), dtype=np.float32)
-            for scale_idx, support in enumerate(supports):
-                if support[0].size == 0:
-                    empty_scale[scale_idx] += 1
-                    continue
-                kept = _gather_masses(support, selected)
-                kept_sum = float(kept.sum())
-                total = float(support[1].sum())
-                residual_mass[scale_idx] += max(0.0, total - kept_sum) / max(
-                    total, 1e-12
-                )
-                if kept_sum <= 0.0:
-                    empty_scale[scale_idx] += 1
-                    continue
-                row_probs_per_scale[scale_idx] = (kept / kept_sum).astype(np.float32)
-            selected_probs[i] = row_probs_per_scale
-
-            # Hard negatives: nearest teacher neighbours from the SAME source corpus
-            # that carry no diffusion mass. Sampling negatives uniformly from a corpus
-            # made of three disjoint datasets makes ~2/3 of them separable by domain
-            # alone, which is why the discrimination task was exhausted within one
-            # epoch.
-            candidates = top_indices[i]
-            outside_pool = ~np.isin(candidates, selected)
-            eligible = outside_pool & (candidates != i)
-            hard = candidates[eligible & (source_ids[candidates] == source_ids[i])][
-                :hard_neg_pool
-            ]
-            if hard.size < hard_neg_pool:
-                # Same-source pool exhausted: top up with cross-source nearest
-                # neighbours rather than leaving the quota unfilled.
-                extra = candidates[eligible & ~np.isin(candidates, hard)][
-                    : hard_neg_pool - hard.size
-                ]
-                hard = np.concatenate([hard, extra])
-            hard_fill[i] = hard.size
-            if hard.size:
-                hard_neg_indices[i, : hard.size] = hard.astype(np.int64)
-
-    # Pack at the width the tolerance actually asked for, not at a configured one.
     width = max(1, int(pool_fill.max()))
     pool_indices = np.full((n_items, width), -1, dtype=np.int64)
-    pool_probs = np.zeros((n_scales, n_items, width), dtype=np.float32)
+    pool_probs = np.zeros((1, n_items, width), dtype=np.float32)
     for i in range(n_items):
         nodes = selected_nodes[i]
         if nodes is None or nodes.size == 0:
             continue
         pool_indices[i, : nodes.size] = nodes
-        pool_probs[:, i, : nodes.size] = selected_probs[i]
+        pool_probs[0, i, : nodes.size] = selected_probs[i]
 
     stats = {
         "pool_width": float(width),
         "pool_fill_avg": float(pool_fill.mean()),
         "pool_fill_min": float(pool_fill.min()),
-        "hard_pool_fill_avg": float(hard_fill.mean()),
-        "hard_pool_fill_min": float(hard_fill.min()),
-        "truncation_tolerance": -1.0 if tolerance is None else float(tolerance),
-        # Non-zero means the ceiling, not the tolerance, decided the truncation for
-        # that many rows -- raise POOL_ROW_CAP / DIFFUSION_ROW_CAP until both are 0,
-        # or the stated guarantee is not the one the targets actually satisfy.
-        "pool_capped_rows": float(pool_capped_rows),
-        "diffusion_capped_rows": float(diffusion_capped_rows),
+        "hard_pool_fill_avg": 0.0,
+        "hard_pool_fill_min": 0.0,
+        "truncation_tolerance": 0.0 if not tolerance else float(tolerance),
+        "pool_capped_rows": 0.0,
+        "diffusion_capped_rows": 0.0,
+        "pool_residual_mass_r1": float(residual / max(1, n_items)),
+        "pool_empty_r1": float(empty / max(1, n_items)),
     }
-    # Mass discarded by the top-keep_topk truncation at each walk step, before the
-    # renormalization hides it. This is the only number that says whether keep_topk
-    # is large enough; pool_residual_mass_r* cannot see it, because it compares the
-    # pool against the already-truncated support.
-    cumulative = 0.0
-    for step in sorted(truncation_totals):
-        per_step = truncation_totals[step] / max(1, n_blocks)
-        cumulative = 1.0 - (1.0 - cumulative) * (1.0 - per_step)
-        stats[f"diffusion_truncation_step{step}"] = float(per_step)
-        if step in scales:
-            stats[f"diffusion_truncation_cum_r{step}"] = float(cumulative)
-    for scale_idx, scale in enumerate(scales):
-        stats[f"pool_residual_mass_r{scale}"] = float(
-            residual_mass[scale_idx] / max(1, n_items)
-        )
-        stats[f"pool_empty_r{scale}"] = float(empty_scale[scale_idx] / max(1, n_items))
-    return pool_indices, pool_probs, hard_neg_indices, stats
+    return pool_indices, pool_probs, np.full((n_items, 0), -1, dtype=np.int64), stats
 
 
 def _target_sharpness_stats(
     pool_indices: np.ndarray,
     pool_probs: np.ndarray,
-    scales: tuple[int, ...],
-    weights: np.ndarray,
 ) -> dict[str, float]:
-    """Is the target informative, are the scales different, and what is the loss floor?
+    """Is the target informative?
 
-    KL(p || uniform-on-support) near zero means the target degenerates into a binary
-    neighbour/non-neighbour label and carries no ranking signal. The Jensen-Shannon
-    term is the exact irreducible value of L_diff when all scales share one student
-    distribution, so it is the number the training loss can never go below.
+    KL(p || uniform-on-support) near zero means the target has degenerated into a
+    binary neighbour/non-neighbour label and carries no ranking signal. That is
+    the failure `graph_k` can walk into: the bandwidth is the retrieval span, so a
+    wide enough k measures the distance out of the neighbourhood rather than the
+    local decay and flattens every row.
     """
     stats: dict[str, float] = {}
-    n_scales, n_items, _ = pool_probs.shape
+    _, n_items, _ = pool_probs.shape
 
-    # Every quantity below is a reduction along the candidate axis, so the anchor
-    # axis can be walked in blocks. Materializing the whole float64 copy of
-    # pool_probs -- plus the renormalized `clamped` copy -- costs hundreds of
-    # megabytes at corpus scale (>2 GB peak measured) purely to compute
-    # diagnostics. The per-anchor result vectors kept here are n_items floats
-    # each, and the final reductions run over the full vectors exactly as before,
-    # so the reported numbers are unchanged rather than merely close.
-    supp_size = np.zeros((n_scales, n_items), dtype=np.float64)
-    entropies = np.zeros((n_scales, n_items), dtype=np.float64)
-    top1 = np.zeros((n_scales, n_items), dtype=np.float64)
-    mixture_entropy = np.zeros(n_items, dtype=np.float64)
-    mixture_top1 = np.zeros(n_items, dtype=np.float64)
-    cross_kl = np.zeros((max(n_scales - 1, 0), n_items), dtype=np.float64)
+    # Reductions along the candidate axis, walked in blocks: a float64 copy of the
+    # whole pool_probs costs hundreds of megabytes at corpus scale (>2 GB peak
+    # measured) purely for diagnostics. The per-anchor vectors kept here are
+    # n_items floats each and the final reductions run over them in full, so the
+    # reported numbers are unchanged rather than merely close.
+    supp_size = np.zeros(n_items, dtype=np.float64)
+    entropies = np.zeros(n_items, dtype=np.float64)
+    top1 = np.zeros(n_items, dtype=np.float64)
 
     for start in range(0, n_items, ANCHOR_STATS_CHUNK):
         block = slice(start, min(start + ANCHOR_STATS_CHUNK, n_items))
         valid = pool_indices[block] >= 0
-        probs = np.clip(pool_probs[:, block, :].astype(np.float64), 0.0, None)
-        probs = np.where(valid[None, :, :], probs, 0.0)
+        p = np.clip(pool_probs[0, block, :].astype(np.float64), 0.0, None)
+        p = np.where(valid, p, 0.0)
+        mask = p > 0
+        supp_size[block] = mask.sum(axis=-1)
+        safe = np.where(mask, p, 1.0)
+        entropies[block] = -(np.where(mask, p * np.log(safe), 0.0)).sum(axis=-1)
+        top1[block] = p.max(axis=-1)
 
-        for scale_idx in range(n_scales):
-            p = probs[scale_idx]
-            mask = p > 0
-            supp_size[scale_idx, block] = mask.sum(axis=-1)
-            safe = np.where(mask, p, 1.0)
-            entropies[scale_idx, block] = -(np.where(mask, p * np.log(safe), 0.0)).sum(
-                axis=-1
-            )
-            top1[scale_idx, block] = p.max(axis=-1)
+    kl_uniform = np.log(np.maximum(supp_size, 1.0)) - entropies
+    stats["target_support_r1"] = float(supp_size.mean())
+    stats["target_kl_uniform_r1"] = float(kl_uniform.mean())
+    stats["target_top1_r1"] = float(top1.mean())
+    stats["target_min_support_r1"] = float(supp_size.min())
 
-        mixture = (probs * weights.reshape(-1, 1, 1)).sum(axis=0)
-        mask = mixture > 0
-        safe = np.where(mask, mixture, 1.0)
-        mixture_entropy[block] = -(np.where(mask, mixture * np.log(safe), 0.0)).sum(
-            axis=-1
-        )
-        mixture_top1[block] = mixture.max(axis=-1)
-
-        clamped = np.clip(probs, 1e-12, None)
-        clamped = clamped / clamped.sum(axis=-1, keepdims=True)
-        for scale_idx in range(n_scales - 1):
-            a, b = clamped[scale_idx], clamped[scale_idx + 1]
-            cross_kl[scale_idx, block] = (a * (np.log(a) - np.log(b))).sum(axis=-1)
-
-    for scale_idx, scale in enumerate(scales):
-        kl_uniform = (
-            np.log(np.maximum(supp_size[scale_idx], 1.0)) - entropies[scale_idx]
-        )
-        stats[f"target_support_r{scale}"] = float(supp_size[scale_idx].mean())
-        stats[f"target_kl_uniform_r{scale}"] = float(kl_uniform.mean())
-        stats[f"target_top1_r{scale}"] = float(top1[scale_idx].mean())
-
-    js = mixture_entropy - (entropies * weights.reshape(-1, 1)).sum(axis=0)
-    stats["target_js_floor"] = float(js.mean())
-    stats["target_js_floor_p90"] = float(np.percentile(js, 90))
-    stats["target_mixture_entropy"] = float(mixture_entropy.mean())
-    stats["target_mixture_top1"] = float(mixture_top1.mean())
-
-    # Anchors whose sharpest-scale target is (near) one-hot. These sit in tiny
-    # connected components: the lazy walk never leaves them, so every scale returns
-    # the same point mass, JS_omega is 0, and the loss reduces to "drive this one
-    # cosine to 1" at the sharpest temperature against every negative in the batch.
-    # That is a memorization signal, not geometry, so it is worth counting.
-    degenerate = top1[0] > 0.99
+    # Anchors whose target is (near) one-hot. They sit in tiny neighbourhoods, and
+    # their loss reduces to "drive this one cosine to 1" against every other column
+    # in the batch -- a memorization signal rather than geometry, worth counting.
+    degenerate = top1 > 0.99
     stats["target_degenerate_count"] = float(degenerate.sum())
     stats["target_degenerate_rate"] = float(degenerate.mean())
-    stats["target_min_support_r%d" % scales[0]] = float(supp_size[0].min())
-
-    for scale_idx in range(len(scales) - 1):
-        stats[f"target_cross_kl_r{scales[scale_idx]}_r{scales[scale_idx + 1]}"] = float(
-            cross_kl[scale_idx].mean()
-        )
     return stats
 
 
@@ -1006,11 +629,8 @@ _METADATA_KEYS = (
     "graph_k",
     "bandwidth",
     "graph_temp",
-    "diffusion_scales",
-    "scale_weights",
     "hard_neg_pool",
     "truncation_tolerance",
-    "lazy_walk",
     "knn_mode",
     "holdout_edge_frac",
     "holdout_seed",
@@ -1048,32 +668,19 @@ def build_or_load_ggpkd_artifact(
     cache_path: str,
     log_dir: str,
     graph_k: int,
-    diffusion_scales: Sequence[int],
     source_ids: Sequence[int] | None = None,
     fixed_bandwidth: bool = False,
     truncation_tolerance: float = TRUNCATION_TOLERANCE,
-    knn_mode: str = "mutual",
+    hard_negatives: bool = False,
+    knn_mode: str = "directed",
     holdout_edge_frac: float = 0.0,
     holdout_seed: int = 0,
 ) -> dict:
     n_items = int(teacher_embeddings.size(0))
-    scales = _as_tuple(diffusion_scales)
-    # `pool_probs`'s first axis is positional. Reject an implicit reorder so every
-    # downstream component derives omega_r = 1/r from the same scale sequence.
-    requested = tuple(int(r) for r in diffusion_scales)
-    if requested != scales:
-        raise ValueError(
-            f"diffusion_scales must be sorted and unique, got {requested}: they are "
-            f"stored as {scales} and consumed by position"
-        )
-    if scales[0] != 1:
-        raise ValueError(
-            f"diffusion_scales must start at 1, got {scales}: the criterion's "
-            f"temperature ladder is anchored to the r=1 target being the "
-            f"transition row"
-        )
-    weights = normalized_diffusion_weights(scales)
-    hard_neg_pool = hard_negative_pool_size(graph_k)
+    # Sized from graph_k only when an arm actually draws hard negatives. The
+    # method draws none, and an unconditional pool cost every build a top-2k
+    # retrieval plus an (N, graph_k) table nothing read.
+    hard_neg_pool = hard_negative_pool_size(graph_k) if hard_negatives else 0
     if source_ids is None:
         source_array = np.zeros(n_items, dtype=np.int64)
     else:
@@ -1091,11 +698,8 @@ def build_or_load_ggpkd_artifact(
         # and store one temperature per row, derived from graph_k.
         "bandwidth": "fixed" if fixed_bandwidth else "knn",
         "graph_temp": FIXED_BANDWIDTH_TEMP,
-        "diffusion_scales": scales,
-        "scale_weights": tuple(round(float(w), 8) for w in weights),
         "hard_neg_pool": int(hard_neg_pool),
         "truncation_tolerance": float(truncation_tolerance),
-        "lazy_walk": True,
         # In _METADATA_KEYS below: two arms of the kNN ablation share every other
         # key, so without it the second arm would silently load the first's graph.
         "knn_mode": str(knn_mode),
@@ -1120,7 +724,7 @@ def build_or_load_ggpkd_artifact(
             # an otherwise valid cache rebuild itself merely because that log was
             # compacted away.
             print(f"Loaded GGPKD artifact from: {artifact_path}")
-            _print_graph_summary(artifact.get("graph_stats", {}), scales)
+            _print_graph_summary(artifact.get("graph_stats", {}))
             return artifact
         else:
             print(f"GGPKD artifact config mismatch, rebuilding: {artifact_path}")
@@ -1131,7 +735,9 @@ def build_or_load_ggpkd_artifact(
     # Hard-negative storage is derived from graph width. Retrieval must still cover
     # both the graph pool and that derived hard-negative pool.
     topk_for_graph = min(n_items - 1, max(graph_k, hard_neg_pool + graph_k))
-    topk_device = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
+    topk_device = (
+        torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
+    )
     top_indices, top_scores = _compute_topk_cosine(
         teacher_embeddings, k=topk_for_graph, device=topk_device
     )
@@ -1167,20 +773,15 @@ def build_or_load_ggpkd_artifact(
         fallback_flags=fallback_flags,
         graph_k=graph_k,
     )
-    pool_indices, pool_probs, hard_neg_indices, pool_stats = _build_diffusion_pools(
-        top_indices=top_indices,
-        scales=scales,
-        weights=weights,
+    pool_indices, pool_probs, hard_neg_indices, pool_stats = _build_pools(
         row_neighbors=row_neighbors,
         row_probs=row_probs,
-        hard_neg_pool=hard_neg_pool,
-        source_ids=source_array,
         tolerance=truncation_tolerance,
     )
     graph_stats.update(temp_stats)
     graph_stats.update(pool_stats)
     graph_stats.update(
-        _target_sharpness_stats(pool_indices, pool_probs, scales, weights)
+        _target_sharpness_stats(pool_indices, pool_probs)
     )
 
     max_degree = max(len(neighbors) for neighbors in row_neighbors)
@@ -1207,13 +808,11 @@ def build_or_load_ggpkd_artifact(
     }
     torch.save(artifact, artifact_path)
     print(f"Saved GGPKD artifact to: {artifact_path}")
-    _print_graph_summary(graph_stats, scales)
+    _print_graph_summary(graph_stats)
     return artifact
 
 
-def _print_graph_summary(
-    graph_stats: dict[str, float], scales: tuple[int, ...]
-) -> None:
+def _print_graph_summary(graph_stats: dict[str, float]) -> None:
     if not graph_stats:
         return
     print(
@@ -1225,70 +824,32 @@ def _print_graph_summary(
     if "pool_fill_avg" in graph_stats:
         print(
             "GGPKD pools: "
-            f"diffusion_fill={graph_stats['pool_fill_avg']:.1f}/"
+            f"fill={graph_stats['pool_fill_avg']:.1f}/"
             f"{graph_stats['pool_width']:.0f} (min {graph_stats['pool_fill_min']:.0f}), "
             f"hard_neg_fill={graph_stats['hard_pool_fill_avg']:.1f} "
             f"(min {graph_stats['hard_pool_fill_min']:.0f})"
         )
-    for scale in scales:
-        key = f"target_kl_uniform_r{scale}"
-        if key in graph_stats:
-            print(
-                f"GGPKD target r={scale}: support={graph_stats[f'target_support_r{scale}']:.1f}, "
-                f"KL(p||uniform_on_support)={graph_stats[key]:.4f}, "
-                f"top1={graph_stats[f'target_top1_r{scale}']:.4f}, "
-                f"residual_mass_outside_pool={graph_stats.get(f'pool_residual_mass_r{scale}', 0.0):.2e}, "
-                f"diffusion_truncation={graph_stats.get(f'diffusion_truncation_cum_r{scale}', 0.0):.2e}"
-            )
-    worst_truncation = max(
-        (
-            graph_stats.get(f"diffusion_truncation_cum_r{scale}", 0.0)
-            for scale in scales
-        ),
-        default=0.0,
-    )
-    tolerance = graph_stats.get("truncation_tolerance", 0.0)
-    if worst_truncation > 0.05:
+    if "target_kl_uniform_r1" in graph_stats:
         print(
-            f"WARNING: GGPKD lazy walk drops {worst_truncation:.1%} of the mass at the "
-            f"broadest scale before renormalizing, against a per-step tolerance of "
-            f"{tolerance:.1%}. The per-step bound compounds across steps, so r*tolerance "
-            f"is the figure to compare against; if it is exceeded, DIFFUSION_ROW_CAP bound "
-            f"first (diffusion_capped_rows={int(graph_stats.get('diffusion_capped_rows', 0))})."
-        )
-    cross_keys = [key for key in graph_stats if key.startswith("target_cross_kl_")]
-    for key in sorted(cross_keys):
-        print(f"GGPKD {key}={graph_stats[key]:.4f}")
-    if "target_js_floor" in graph_stats:
-        print(
-            "GGPKD irreducible L_diff floor (tied student temperature): "
-            f"JS_omega={graph_stats['target_js_floor']:.4f} nats "
-            f"(p90={graph_stats['target_js_floor_p90']:.4f}); "
-            f"mixture H={graph_stats['target_mixture_entropy']:.4f}, "
-            f"top1={graph_stats['target_mixture_top1']:.4f}"
+            f"GGPKD target: support={graph_stats['target_support_r1']:.1f}, "
+            f"KL(p||uniform_on_support)={graph_stats['target_kl_uniform_r1']:.4f}, "
+            f"top1={graph_stats['target_top1_r1']:.4f}, "
+            f"residual_mass_outside_pool="
+            f"{graph_stats.get('pool_residual_mass_r1', 0.0):.2e}"
         )
     degenerate = int(graph_stats.get("target_degenerate_count", 0))
     if degenerate:
         print(
             f"WARNING: GGPKD {degenerate} anchors "
             f"({graph_stats.get('target_degenerate_rate', 0.0):.2%}) have a near one-hot "
-            f"target at r={scales[0]} (min support "
-            f"{int(graph_stats.get(f'target_min_support_r{scales[0]}', 0))}). They sit in "
-            f"tiny components, contribute JS_omega=0, and their loss is just "
-            f"'push one cosine to 1' at the sharpest temperature -- raise graph_k or "
-            f"drop them from training if the count is large."
+            f"target (min support "
+            f"{int(graph_stats.get('target_min_support_r1', 0))}). They sit in "
+            f"tiny neighbourhoods, and their loss is just 'push one cosine to 1' "
+            f"-- raise graph_k or drop them from training if the count is large."
         )
-    low = [s for s in scales if graph_stats.get(f"target_kl_uniform_r{s}", 1.0) < 0.05]
-    if low:
+    if graph_stats.get("target_kl_uniform_r1", 1.0) < 0.05:
         print(
-            f"WARNING: GGPKD targets at scales {low} are close to uniform on their support "
-            f"(KL < 0.05 nats) -- lower graph_k (or the internal "
-            f"fixed-baseline temperature), otherwise L_diff degenerates into a binary "
-            f"neighbour/non-neighbour objective."
-        )
-    if float(graph_stats.get("target_js_floor", 1.0)) < 0.01:
-        print(
-            "WARNING: JS_omega < 0.01 nats -- the diffusion scales carry almost the same "
-            "target, so with a tied student temperature the multi-scale objective is "
-            "numerically identical to a single-scale one."
+            "WARNING: GGPKD targets are close to uniform on their support "
+            "(KL < 0.05 nats) -- lower graph_k, otherwise the graph scale "
+            "degenerates into a binary neighbour/non-neighbour objective."
         )

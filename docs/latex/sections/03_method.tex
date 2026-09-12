@@ -22,65 +22,54 @@ $q$-th largest retrieved cosine, the row bandwidth is
 \label{eq:row-bandwidth}
 \end{equation}
 Thus the $k$-th retrieved neighbor is $k$ times less likely than the nearest
-neighbor before mutual filtering. Because the bandwidth scales with any affine
+neighbor. Because the bandwidth scales with any affine
 rescaling of the similarities, the resulting softmax row is affine-invariant
 and requires no teacher-specific temperature tuning.
 
-We retain an edge $i\rightarrow j$ only when $i$ and $j$ retrieve each other.
-If mutual filtering isolates a node, its raw top-$k$ row is used as a fallback.
-Writing the resulting neighbor set as $\mathcal N_i$, the teacher transition
-row is
+The neighbor set is the retrieved list itself, $\mathcal N_i=\mathrm{top}\text{-}k(i)$:
+we apply no reciprocity filter, so every relation the teacher retrieved for $i$
+is eligible to supervise $i$, and every node has degree exactly $k$. A mutual
+filter, which keeps $i\rightarrow j$ only when the two nodes retrieve each
+other, suppresses hubs but discards teacher-selected relations; we report it as
+an ablation in Section~\ref{sec:experiments}. The teacher transition row is
 \begin{equation}
 P_i^T(j)
 =\frac{\mathbf 1[j\in\mathcal N_i]\exp(c_{ij}^T/\tau_i)}
 {\sum_{u\in\mathcal N_i}\exp(c_{iu}^T/\tau_i)}.
 \label{eq:teacher-transition}
 \end{equation}
-The bandwidth in Equation~\eqref{eq:row-bandwidth} is computed from the raw
-top-$k$ scores before this filter, so it is defined from the same number of
-neighbors for every node.
-
-For numerical efficiency, each row retains the smallest highest-mass prefix
-$\Omega_i\subseteq\mathcal N_i$ satisfying
-\begin{equation}
-\sum_{j\in\Omega_i}P_i^T(j)\geq 0.99,
-\qquad
-\widetilde P_i^T(j)
-=\frac{P_i^T(j)}{\sum_{u\in\Omega_i}P_i^T(u)}.
-\label{eq:row-truncation}
-\end{equation}
-The one-percent tolerance is a numerical-fidelity constant rather than a
-method hyperparameter. It produces ragged rows while bounding the discarded
-teacher mass.
+Because no edges are removed, the bandwidth in
+Equation~\eqref{eq:row-bandwidth} is read from the same scores that define the
+row, and from the same number of neighbors for every node.
 
 \subsection{Deterministic candidate pool}
 \label{sec:candidates}
 
-The candidate set for anchor $i$ is exactly its truncated transition support
-$\Omega_i$. GGPKD draws no hard or random negatives and performs no per-epoch
-sampling: the candidates are a deterministic function of the graph and remain
-fixed throughout training. Within a mini-batch $B$, candidates are deduplicated
-into the shared pool
+The candidate set for anchor $i$ is exactly its neighbor set $\mathcal N_i$.
+Every column the teacher retrieved is supervised and none is discarded, so no
+truncation constant enters the objective and every anchor is scored on the same
+number of columns, $k$. GGPKD draws no hard or random negatives and performs no
+per-epoch sampling: the candidates are a deterministic function of the graph and
+remain fixed throughout training. Within a mini-batch $B$, candidates are
+deduplicated into the shared pool
 \begin{equation}
-\mathcal P_B=\bigcup_{i\in B}\Omega_i,
+\mathcal P_B=\bigcup_{i\in B}\mathcal N_i,
 \label{eq:shared-pool}
 \end{equation}
-so each distinct candidate text is encoded once. Ragged rows are padded with
-their anchor index during collation; a self-mask removes that padding from all
-softmaxes.
+so each distinct candidate text is encoded once.
 
 \subsection{Training objective}
 \label{sec:objective}
 
-The graph-scale loss matches each truncated teacher row with a student softmax
-over the same columns and at the same stored bandwidth:
+The graph-scale loss matches each teacher row with a student softmax over the
+same columns and at the same stored bandwidth:
 \begin{equation}
 \mathcal L_{r=1}
 =\frac{1}{|B|}\sum_{i\in B}
 D_{\mathrm{KL}}\!\left(
-\widetilde P_i^T
+P_i^T
 \,\middle\|\,
-\operatorname{softmax}_{j\in\Omega_i}(c_{ij}^S/\tau_i)
+\operatorname{softmax}_{j\in\mathcal N_i}(c_{ij}^S/\tau_i)
 \right).
 \label{eq:graph-loss}
 \end{equation}

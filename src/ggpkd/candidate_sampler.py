@@ -4,7 +4,6 @@ import torch
 from .policy import (
     SUPPORT_POLICIES,
     candidate_budget,
-    normalized_diffusion_weights,
 )
 
 
@@ -45,8 +44,8 @@ class GGPKDCandidateSampler:
         self.n_items = int(self.pool_indices.shape[0])
         self.n_scales = int(self.pool_probs.shape[0])
 
-        # `None` is the method: the candidate set is the anchor's whole truncated
-        # transition row, so there is no budget and no selection. Resolving it to the
+        # `None` is the method: the candidate set is the anchor's whole transition
+        # row, so there is no budget and no selection. Resolving it to the
         # pool width keeps one fixed row width for collation -- the columns an anchor
         # does not have are padded inertly below, exactly as a short draw already was.
         self.pool_width = int(self.pool_indices.shape[1])
@@ -69,36 +68,16 @@ class GGPKDCandidateSampler:
         # re-tested per draw, because it changes what a short support draw means.
         self.no_negatives = self.hard_neg_k == 0 and self.random_neg_k == 0
         # Anchors padded to the fixed row width because their own row was shorter.
-        # Under `full_pool` this is the normal case, not a fault: the graph is ragged
-        # (fill runs from 1 to pool_width) and every anchor short of the widest row
-        # is padded. With an explicit quota it means the quota outran the pool, which
+        # Under `full_pool` this is inert for the method: a directed graph with no
+        # truncation gives every anchor exactly graph_k columns, so nothing is
+        # padded. It is the arms that produce ragged rows -- a mutual filter, or a
+        # positive truncation tolerance -- where fill runs below pool_width and
+        # every anchor short of the widest row is padded. With an explicit quota it means the quota outran the pool, which
         # is what silently turned a requested width of 500 into a real width of 67 --
         # so it is counted either way and reported by the distiller.
         self.short_support_rows = 0
 
-        scales = tuple(artifact.get("metadata", {}).get("diffusion_scales", ()))
-        if len(scales) != self.n_scales:
-            if self.n_scales == 1:
-                scales = (1,)
-            else:
-                raise ValueError(
-                    "GGPKD artifact metadata must provide one diffusion scale "
-                    f"per target tensor; got scales={scales}, n_scales={self.n_scales}"
-                )
-        self.weights = normalized_diffusion_weights(scales)
         self.epoch = 0
-
-    def _mixture_row(self, idx: int) -> np.ndarray:
-        """Scale-mixture of anchor ``idx``'s diffusion pool, in float64.
-
-        This used to be a precomputed ``(n_items, width)`` array. ``pool_probs`` is
-        float32 and the weights are float64, so the product promoted the whole
-        thing: 224 MB at the production shape, duplicated into every DataLoader
-        worker, to serve one rarely-taken branch of ``_select_support``. Computing
-        the single row on demand is the same arithmetic in the same order over the
-        scale axis, so the values are identical, not merely close.
-        """
-        return (self.pool_probs[:, idx, :] * self.weights.reshape(-1, 1)).sum(axis=0)
 
     def set_epoch(self, epoch: int) -> None:
         self.epoch = int(epoch)
@@ -109,14 +88,6 @@ class GGPKDCandidateSampler:
         return np.random.default_rng(
             np.random.SeedSequence([self.seed, self.epoch, idx, stream])
         )
-
-    def _scale_quotas(self, total: int) -> list[int]:
-        """Split the support quota across scales, favoring sharper remainders."""
-        base = total // self.n_scales
-        quotas = [base] * self.n_scales
-        for position in range(total - base * self.n_scales):
-            quotas[position] += 1
-        return quotas
 
     def _select_support_uniform(
         self,
@@ -201,11 +172,10 @@ class GGPKDCandidateSampler:
         pool = self.pool_indices[idx]
         valid = pool >= 0
         if self.full_pool:
-            # Every column the teacher put mass on, at any scale. Taken directly
-            # rather than through the per-scale loop below: that loop splits a budget
-            # across scales, and with no budget to split it could still miss a column
-            # whose mass sits entirely in a scale whose share was already spent.
-            mass = np.where(valid, self._mixture_row(idx), 0.0)
+            # Every column the teacher put mass on. Taken directly rather than
+            # through the budgeted branch below, which exists only for the arms
+            # that are given a quota smaller than the row.
+            mass = np.where(valid, self.pool_probs[0, idx], 0.0)
             positions = np.flatnonzero(mass > 0).astype(np.int64)
             return pool[positions].astype(np.int64), positions
         if self.support_policy == "uniform":
@@ -221,42 +191,21 @@ class GGPKDCandidateSampler:
             positions = order[: min(self.diffusion_quota, int((probs > 0).sum()))]
             positions = positions[probs[positions] > 0].astype(np.int64)
             return pool[positions].astype(np.int64), positions
-        quotas = self._scale_quotas(self.diffusion_quota)
-        taken = np.zeros(pool.size, dtype=bool)
-        positions: list[int] = []
-        deficit = 0
-
-        for scale_idx in range(self.n_scales):
-            need = quotas[scale_idx] + deficit
-            row_probs = np.where(
-                valid, self.pool_probs[scale_idx, idx], 0.0
-            ).astype(np.float64)
-            probs = row_probs.copy()
-            probs[taken] = 0.0
-            if need <= 0 or not (probs > 0).any():
-                deficit = need
-                continue
-
-            if self.support_policy == "topk":
-                order = np.argsort(-probs)
-                chosen = order[: min(need, int((probs > 0).sum()))]
-                chosen = chosen[probs[chosen] > 0].astype(np.int64)
-            elif self.support_policy == "proportional":
-                chosen = _gumbel_topk(probs, need, rng)
-            else:  # guarded by SUPPORT_POLICIES in __init__
-                raise RuntimeError(f"unsupported support policy {self.support_policy!r}")
-            taken[chosen] = True
-            positions.extend(int(position) for position in chosen)
-            deficit = need - chosen.size
-
-        if deficit > 0:
-            # Only this branch ever needed the mixture, and it is the rare one: the
-            # per-scale quotas normally fill from the scales themselves.
-            spill = np.where(valid, self._mixture_row(idx), 0.0)
-            spill[taken] = 0.0
-            extra = np.argsort(-spill)[:deficit]
-            extra = extra[spill[extra] > 0]
-            positions.extend(int(position) for position in extra)
+        # One hop, so there is one target row and the budget is spent on it in a
+        # single pass. This used to split the quota across diffusion scales and
+        # spill the remainder onto their mixture.
+        probs = np.where(valid, self.pool_probs[0, idx], 0.0).astype(np.float64)
+        need = self.diffusion_quota
+        if not (probs > 0).any():
+            positions: list[int] = []
+        elif self.support_policy == "topk":
+            order = np.argsort(-probs)
+            chosen = order[: min(need, int((probs > 0).sum()))]
+            positions = [int(c) for c in chosen[probs[chosen] > 0]]
+        elif self.support_policy == "proportional":
+            positions = [int(c) for c in _gumbel_topk(probs, need, rng)]
+        else:  # guarded by SUPPORT_POLICIES in __init__
+            raise RuntimeError(f"unsupported support policy {self.support_policy!r}")
 
         support_positions = np.asarray(positions, dtype=np.int64)
         support = pool[support_positions].astype(np.int64)

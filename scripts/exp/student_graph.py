@@ -109,7 +109,6 @@ def main() -> int:
         cache_path=str(out_path),
         log_dir=str(out_path.parent / "student_graph_logs"),
         graph_k=args.graph_k,
-        diffusion_scales=(1,),
         knn_mode="mutual",
         holdout_edge_frac=args.holdout_frac,
         holdout_seed=args.holdout_seed,
