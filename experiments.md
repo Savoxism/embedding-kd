@@ -1,228 +1,319 @@
-# Experiments needed to support `story.md`
+# Experiments
 
-Every claim in `story.md` §3 has to land on a row here. Anything else is
-optional and should be cut before it costs GPU time.
+The set that supports `story.md`, and nothing else. Ordered by information per
+GPU-hour rather than by section number: the runs that can **delete** later runs
+come first.
 
-**Read this first.** Every number below was measured before two method changes
-landed: the mutual filter was removed (`knn_mode=directed`) and row truncation
-was removed (`truncation_tolerance=0.0`). Both are in the artifact cache key, so
-**every cached graph is invalid and every recorded score belongs to a different
-method.** The numbers are kept here because their *relative* structure is what
-the story rests on, and because they say which arms are worth re-running. None
-of them may be quoted in the paper as they stand.
+**Every number recorded before now belongs to a different method.** The mutual
+filter, row truncation, multi-hop diffusion and fixed-reference calibration have
+all been removed, and three of the four sit in the artifact cache key. Old
+results are quoted below only where their *relative* structure says which arms
+are worth paying for. None of them may appear in the paper.
 
 ---
 
-## Status of what already exists
+## Budget
 
-`runs/exp{1,2,3,4}/*.csv`, pair `qwen3_0_6b_to_minilmv2_h384`, 3 seeds, Avg-All.
+Counted after reuse — several cells are the same run serving two purposes.
 
-**E1 — is batching deciding the learning signal?** Yes for batch-local, no for
-teacher support.
-
-| arm | random | teacher_neighbor | teacher_diverse | spread |
-|---|---|---|---|---|
-| in_batch | 71.23 | 73.48 | 71.21 | **2.27** |
-| teacher_support | 73.95 | 73.91 | 73.88 | **0.07** |
-| pointwise (floor) | 68.72 | 66.18 | 68.58 | 2.54 |
-
-Caveat that must be handled in the write-up: the pointwise floor is *not* flat,
-so E1 has to be read as a difference-in-differences against it, not as a raw
-spread. Batch composition changes gradient statistics for every objective; what
-is specific to `in_batch` is the *direction* (+2.25 when batches are teacher
-neighbourhoods, i.e. exactly when the batch accidentally approximates the
-teacher's support).
-
-**E2 — teacher relevance, or just leaving the batch?** Relevance.
-
-| arm | Avg | reading |
+| | runs | reused from |
 |---|---|---|
-| teacher_topk | 74.29 ± 0.05 | teacher support, no edge filter |
-| teacher_mutual | 73.93 ± 0.02 | teacher support, mutual filter |
-| corpus_uniform | 71.61 ± 0.12 | off-graph, batch-independent |
-| in_batch | 71.25 ± 0.17 | baseline |
-| rewired | 71.02 ± 0.11 | teacher degree, wrong endpoints |
+| 0.1 `graph_k` sweep | 12 | — |
+| 1.1 row term (2 arms) | 6 | full reference = 0.1 winner |
+| 1.2 calibration term | 3 | " |
+| 1.3 uniform target | 3 | " |
+| A the count | **0** | analytic |
+| B comparison ladder (4 arms × 2 pairs) | 24 | — |
+| C.1 batch composition | 15 | `full @ random` = 0.1 winner |
+| C.2 batch size | 12 | $B=64$ from B |
+| D component ablation | 9 | −row, −calib from Stage 1 |
+| E held-out relations | **0** | post-hoc on D |
+| F main table | 6 | pair 1 = 0.1 winner |
+| G sensitivity | 0–9 | `graph_k` from 0.1 |
+| **total** | **90–99** | |
 
-This is the paper's central table. `corpus_uniform ≈ in_batch` kills "leaving
-the batch is enough"; `rewired` below both kills "the row shape is enough".
+Most are the 22M student at ~5 min; the 4B→BERT pair in B and F is the expensive
+part.
 
-**E3 — does it generalise past the supervised edges?** Currently says **no**,
-and the metric is broken.
+---
 
-| arm | spearman (held-out edges) | pair_order |
+## Code that must be patched first
+
+Three experiments cannot run as the code stands. All three are small and all
+three are load-bearing, so they are the first thing to write.
+
+| experiment | what is missing |
+|---|---|
+| 1.1 random row centers | the row loss always uses $\mathcal N_j \cap \mathcal P_B$; there is no switch to draw the extra anchors' columns at random |
+| 1.3 uniform target | `relation_target` has no value that treats every retrieved neighbour as equally similar |
+| B `student_knn` | the existing arm builds *both* the neighbour set and the temperatures from the student, so it is not one-factor |
+
+---
+
+## Stage 0 — fix the operating point (12 runs)
+
+Nothing else is interpretable until this is settled, because every other run
+inherits it. The winning setting, at 3 seeds, is also **the full-model reference**
+that Stage 1, D and F compare against.
+
+### 0.1 `graph_k`
+
+`graph_k = 200` was chosen when a row was mutual-filtered and cut down to the
+neighbours holding 99 % of the teacher's similarity, leaving ~67 real columns per
+anchor. An anchor now keeps all `graph_k` of them, so `graph_k` sets the encode
+cost per step directly — and through $\tau_i = (s^{(1)}-s^{(k)})/\log k$ it still
+sets how sharp a row is. The old sweep measured neither quantity.
+
+`graph_k ∈ {25, 50, 100, 200}`, 3 seeds, one pair. Record Avg, wall time, peak
+GPU, `pool_fill_avg`, `train_encoded_texts_cum`, and `target_kl_uniform_r1` (the
+build warns under 0.05 — that is the flat-row failure).
+
+**Rule.** Take the smallest `graph_k` within one seed-sd of the best Avg. Small
+beats tied-and-large: it is the whole cost argument.
+
+---
+
+## Stage 1 — three deletion tests (12 runs)
+
+Each asks whether a component earns its place. Each "no" removes a term, a
+hyperparameter, a paragraph of method, and a later sweep. Run these before
+anything expensive.
+
+### 1.1 Does $\mathcal L_{\text{row}}$ earn a hyperparameter?
+
+Two arms: `--row_weight 0`, and **random row centers** — supervise the extra
+anchor $j$ against random pool columns instead of the ones the teacher retrieved
+for it. The second is the one that matters. The paper claims the extra anchors
+help *because* both ends of each comparison are teacher-chosen, and nothing
+currently tests that.
+
+Old measurement: `row_weight` 0 → 75.45, 1 → 75.60, 2 → 75.63, seed sd ~0.05.
+
+**Rule.** If random centers also gain ~0.15, the term is a regulariser and not an
+eligibility effect. Delete it: the method drops to **one hyperparameter**, the
+eligibility paragraph goes, the `row_weight` sweep in G goes, and so does the
+`row_exposed_mass = 0.44` caveat — the fraction of a neighbourhood a pool
+actually exposes. That is a better outcome for the paper than 0.15 points.
+
+### 1.2 Does the calibration term earn its place?
+
+`--calibration_mode none`. It is the only part of the objective whose compared
+texts are decided by the batch, which is the one internal contradiction in the
+story.
+
+**Rule.** Loses ≤ 0.2 → delete it, and the contradiction with it. Loses ≥ 0.3 →
+keep it, and C.1 decides whether its batch-dependence is real or only structural.
+
+### 1.3 Does $\tau_i$ earn the per-row temperature machinery?
+
+Compare the teacher's similarity profile over a neighbourhood against treating
+every neighbour in it as equally similar. Same texts compared, same columns, same
+everything — only the target values move.
+
+The sharpest experiment in the file. If uniform matches, then *how* similar the
+teacher says each neighbour is carries nothing and only *which texts it
+retrieved* does: $\tau_i$, the affine-invariance argument and the whole
+temperature section disappear, and the method becomes "compare against the
+teacher's top-$k$". If uniform loses, $\tau_i$ is justified by measurement rather
+than by argument, which is strictly better than how it is justified today.
+
+**Rule.** Both outcomes are publishable and one of them is a large
+simplification. Run it early.
+
+---
+
+## Stage 2 — the evidence (60 runs; A and E need no GPU)
+
+### A. The count — the premise, computed (0 runs)
+
+The premise is a quantity, so compute it instead of arguing it. Under random
+batching, the number of an anchor's $k$ nearest neighbours that land in its own
+batch is
+
+$$\mathbb E[\text{informative comparisons per anchor per step}] = (B-1)\frac{k}{N-1}.$$
+
+Three readings, each answering a question a reviewer would otherwise ask.
+
+**How bad is it here.** $N = 13{,}553$, $B = 64$, $k = 200$: **0.93** out of 63
+comparisons. At $k = 20$: 0.09, one every eleven batches.
+
+**How bad does it get.** The count falls as $1/N$ at fixed batch size — the same
+setting at $N = 10^6$ gives 0.013, one informative comparison every 79 steps.
+This is the scaling claim, proved rather than measured. The earlier attempt to
+measure it by training at four corpus sizes varied $N$ and the number of updates
+together and came out *against* the hypothesis; a formula has no confound.
+
+**What batch size would fix it.** Solving for 63 informative comparisons at
+$N = 13{,}553$, $k = 200$ gives $B \approx 4{,}270$. That is the answer to "why
+not just use a bigger batch": you can buy the count with batch size, linearly, at
+two orders of magnitude of encoder work. C.2 checks the prediction.
+
+The figure: teacher similarity on the $x$-axis, probability of being compared on
+the $y$-axis, one curve per method. Batch-local is flat at $(B-1)/(N-1)$
+whatever the similarity; ours is a step at the top-$k$ boundary.
+`scripts/exp/coverage.py` already computes the exposure side.
+
+### B. The comparison ladder — the centrepiece (24 runs)
+
+One axis moves: which texts an anchor is compared against. The number of
+comparisons, the loss, the temperature, the optimiser and the seed are identical
+across arms — a like-for-like swap, not a cap. The objective is deliberately
+minimal (`--relation_target direct --no_ambient --row_weight 0`) so that no part
+of our method can be credited with the gap.
+
+| arm | compared against | kills the explanation |
 |---|---|---|
-| corpus_uniform | 0.796 | 1.0000 |
-| in_batch | 0.789 | 1.0000 |
-| teacher_mutual | 0.726 | 1.0000 |
-| teacher_topk | 0.700 | 1.0000 |
+| `in_batch` | the rest of the batch | — (the baseline) |
+| `corpus_uniform` | the same number, drawn from the corpus | "you just need to leave the batch" |
+| `student_knn` | the **student's** own top-$k$ | "any semantic neighbourhood would do" |
+| `teacher` | the texts the teacher retrieved | — (ours) |
 
-`pair_order = 1.0000` for every arm is degenerate — it measures nothing. And the
-Spearman column contradicts the abstract's geometry claim.
+Old numbers, minimal objective, one pair: teacher 74.29, corpus_uniform 71.61,
+in_batch 71.25, sd ~0.1. The structure is the finding: the arm that compares
+against unrelated texts sits *on top of* the batch-local baseline, not between it
+and ours.
 
-**E4 — does the advantage scale with N/B?** Currently says the opposite.
-Gap (teacher_support − in_batch) at bs=64: +0.94 (N=5k), +0.85 (13.5k), +0.47
-(25k), +0.58 (48k). At bs=256 it vanishes and inverts (−0.37 at N=48k). The
-hypothesis predicted the gap should *widen* with N. Confounded by steps: larger
-N at fixed epochs means more updates.
+`student_knn` is the most interesting arm in the paper — the ANCE comparison made
+empirical, and the one a reviewer thinks of unprompted. It needs the patch above:
+build the neighbour sets from the base student's embeddings but read the targets
+from the teacher (`--relation_target direct`), so that *which texts are compared*
+is the only difference.
 
-**Sensitivity** (`docs/latex/tables/`): `graph_k` 50→400 moves Avg by 0.34 and
-400 costs +36.8 % time / +54.2 % GPU over 200; `row_weight` 0→2 moves Avg by
-0.18 (0 → 75.45, 1 → 75.60, 2 → 75.63).
+**`rewired` has been dropped: it is now the same arm as `corpus_uniform`.** It
+drew each anchor's *own degree* of random texts, which differed from a fixed
+quota only while degrees were ragged — mean 67, min 1, max 181 under the mutual
+filter and the 99 % cut. A directed graph with no truncation gives every anchor
+degree exactly `graph_k`, so the two arms draw the same number from the same
+distribution; verified identical for 400/400 anchors. The "row shape" control it
+used to provide has moved to 1.3, which varies target values over a fixed set of
+texts — the only sense in which shape is still free.
 
----
+4 arms × 3 seeds × 2 teacher→student pairs. The second pair is what turns C1
+from "holds in our setting" into a claim.
 
-## P0 — blocking. The paper cannot be submitted without these.
+Cost columns (`cost_*`, `train_encoded_texts_cum`) fall out of the same runs and
+carry C3 for free. Report `corpus_uniform`'s encode count beside ours: an
+off-graph draw deduplicates far worse, and that gap is part of the argument.
 
-### P0-1. Re-sweep `graph_k`, then rebuild every graph
+### C. Dose–response on the count (27 runs)
 
-**Why.** `graph_k = 200` was chosen when a row was mutual-filtered and truncated
-at 99 % mass, leaving ~67 real columns per anchor. An anchor now keeps all 200,
-so the shared pool and the encode cost that dominates a step grow with it. The
-old sweep measured a different quantity.
+A and B say a number matters. C moves that number two different ways and checks
+the score follows. This is the strongest form the claim can take, and it turns
+two previously awkward results into supporting ones.
 
-**Arms.** `graph_k ∈ {25, 50, 100, 200}`, 3 seeds, one pair. Record Avg, wall
-time, peak GPU, and `pool_fill_avg` / `train_encoded_texts_cum`.
+**C.1 — raise the count by composing batches (15 runs).** `random` vs
+`teacher_neighbor` batching, arms `pointwise` / `in_batch` / **full GGPKD**,
+3 seeds; `full @ random` is the Stage 0 winner. Filling a batch from one teacher
+neighbourhood raises the count for a batch-local objective and changes nothing
+else, so the prediction is that it improves *for that reason*: the old run has
+`in_batch` gaining +2.25 under teacher-neighbour batching while ours moved 0.07.
 
-**Decision rule.** Pick the smallest `graph_k` within one seed-sd of the best
-Avg. Everything downstream uses it. Do not run anything else in this file until
-this is settled — every other run would be at a stale operating point.
+Run it on the **shipped objective**, not the minimal one. The claim that matters
+is about the method we publish, and this is where the calibration term's
+batch-dependence would surface if it is real.
 
-### P0-2. E1 on the **full** objective, plus `--calibration_mode none`
+Read it as difference-in-differences against the pointwise floor: `pointwise`
+moved −2.54 across the same samplers, so batch composition shifts gradient
+statistics for every objective and a raw spread proves nothing. The signature is
+*sign and target* — batch-local improves exactly when the batch happens to supply
+related texts; ours should not move.
 
-**Why.** Two questions in one sweep. (i) Does batch composition reach the full
-objective, or only the minimal one? That is the direct test of the paper's
-central claim on the actual method. (ii) What is $\mathcal L_{r=0}$ worth?
+**C.2 — raise the count by enlarging the batch (12 runs).** `in_batch` and full
+GGPKD at $B \in \{256, 1024\}$, 3 seeds ($B = 64$ comes from B). A predicts the
+baseline's count rises linearly in $B$ and needs $B \approx 4{,}270$ to reach
+ours, so it should climb and not arrive.
 
-**Arms.** 12 runs, 3 seeds:
+**This is the arm that can hurt us, which is exactly why it is here.** In the old
+scaling runs the baseline did climb with batch size — at $N = 48$k: 71.85 (B=16)
+→ 72.82 (B=64) → **73.20** (B=256) — and at $B = 256$ it *passed* the teacher
+arm's 72.83. Counts of 0.06 → 0.26 → 1.06 explain the climb and do not explain
+the overtake. Either the anomaly does not survive the new operating point, or the
+claim is stated per unit of encoder work rather than per step — which the cost
+columns support, since a 1024-text batch encodes an order of magnitude more per
+update. Both outcomes are reportable; being surprised by this in review is not.
 
-```
-full_random | full_teacher_neighbor | full_teacher_diverse   (--batch_sampler ...)
-full_no_ambient                                             (--calibration_mode none)
-```
+**Both halves report the measured count**, not only the score, so the result is a
+curve: score against informative comparisons per anchor, with both ways of buying
+the count landing on it and ours at the right-hand end for a fraction of the
+encoder cost.
 
-**Decision rule.**
-- spread ≤ 0.1 → the ambient term's batch-determined support is empirically
-  inert; keep the method, report the number, handle it in prose.
-- spread > 0.1 **and** `no_ambient` loses ≥ 0.3 → change the ambient target so
-  its estimand stops depending on the pool: per-pair cosine matching, or
-  Horvitz–Thompson weights $1/\pi_j$ with $\pi_j$ from in-degree. (A fixed
-  corpus reference set would also do it and has been ruled out; the code for it
-  is gone.)
-- `no_ambient` loses ≤ 0.2 → delete $\mathcal L_{r=0}$ and the problem with it.
+### D. Component ablation on the shipped objective (9 runs)
 
-### P0-3. Component ablation on the full objective
+Minus both terms at once, plus `--knn_mode mutual` and
+`--truncation_tolerance 0.01`; the single-term arms come from Stage 1 and the
+full model from Stage 0. Those last two defaults were changed on a structural
+argument and have never been measured on the full objective — the ladder put
+mutual 0.36 below directed on the minimal one, which is suggestive and not
+enough.
 
-**Why.** C2 ("the gain is not from the loss") is currently an assertion. This is
-the table that makes it checkable, and reviewers ask for it unconditionally.
+### E. Held-out relations (0 runs, post-hoc on D's checkpoints)
 
-**Arms.** Full; `--row_weight 0`; `--calibration_mode none`; both; plus
-`--knn_mode mutual` and `--truncation_tolerance 0.01`, the two arms whose
-defaults were changed on a structural argument rather than a measurement.
-3 seeds each.
+Withhold 20 % of the teacher's pairs from every arm's comparison sets, then ask
+whether the student reproduces them anyway. This is the coverage half of the
+story and the only evidence that the method generalises past the comparisons it
+was shown.
 
-**Why the last two matter.** E2 measured `teacher_topk` 0.36 above
-`teacher_mutual` on the minimal objective, and the method was changed on that
-basis. If mutual wins on the full objective the default is wrong. Same for
-truncation: it was removed on a structural argument, not a measured one.
+**It currently fails**, and the probe is broken: `pair_order` returns exactly
+1.0000 for every arm, and Spearman puts the teacher arms (0.70–0.73) *below* the
+arms that never saw related pairs (0.79–0.85). Fix the metric, then split
+Spearman into within-neighbourhood and across-neighbourhood — the hypothesis is
+that teacher arms sharpen local structure and compress the global cosine scale,
+and a single mixed Spearman rewards the flat arms for exactly that.
 
-### P0-4. Re-run the main table
-
-**Why.** Three settings × 9 datasets, currently reporting the old method.
-Nothing can be submitted with those numbers.
-
-**Arms.** All three teacher→student pairs, 3 seeds, at the `graph_k` from P0-1.
-
-### P0-5. Repair E3, then re-score
-
-**Why.** It is the only evidence for the geometry claim and it currently
-contradicts it, with one metric visibly degenerate.
-
-**Work.** (i) Debug `pair_order` in `scripts/exp/heldout_geometry.py` — a metric
-that returns exactly 1.0000 for every arm is not measuring the arms. (ii) Split
-the Spearman into within-neighbourhood and across-neighbourhood; the hypothesis
-is that teacher arms sharpen local structure and compress the global cosine
-scale, which a single mixed Spearman rewards the flat arms for. (iii) Re-score
-the P0-3 checkpoints. Post-hoc, no training.
-
-**If the split does not rescue it:** report it as a negative result and weaken
-the title from "global geometry" to "teacher-selected relational supervision".
-A reported negative costs far less than one a reviewer finds.
-
----
-
-## P1 — needed for the claims to generalise.
-
-### P1-1. E2 on a second teacher→student pair
-
-**Why.** The central table rests on one pair. If the +2.7 gap reproduces on
-Qwen3-4B→BERT-base, C1 is general; if not, C1 must be scoped, and it is better
-to scope it ourselves.
-
-**Arms.** The five E2 arms, 3 seeds, `PAIR=qwen3_4b_to_bert_base`.
-
-### P1-2. Cost table for the controlled study
-
-**Why.** C3. The numbers are already exported per arm (`cost_*`,
-`train_encoded_texts_cum`); this is a table, not a sweep. Include
-`corpus_uniform`'s encode count — an off-graph draw deduplicates far worse than
-a teacher draw, and that difference is part of the argument.
+If the split does not rescue it, report the negative and drop "global geometry"
+from the title. A negative we report costs far less than one a reviewer finds.
 
 ---
 
-## P2 — makes the story tighter; cut if time runs out.
+## Stage 3 — the deliverable (6–15 runs)
 
-### P2-1. Is $\mathcal L_{\text{row}}$ actually about eligibility?
+### F. Main table (6 runs)
 
-**Why.** The paper says auxiliary rows work because both endpoints are
-teacher-approved. Nothing tests that, and the term is worth +0.15.
+Three teacher→student pairs, 3 seeds, at the Stage 0 operating point with
+whatever Stage 1 left standing; pair 1 is the Stage 0 winner.
 
-**Arms.** (a) random row centers — supervise $j$ against random pool columns
-instead of $\mathcal N_j \cap \mathcal P_B$; (b) `--row_weight 0` at matched
-compute (larger batch). 3 seeds.
+### G. Sensitivity (0–9 runs)
 
-**Decision rule.** If (a) also gains ~0.15, the term is a regulariser, not an
-eligibility effect: delete it, drop the eligibility paragraph, and the method
-falls to **one** hyperparameter. That is a better outcome for the paper than
-keeping 0.15 points.
-
-### P2-2. Coverage curve from `row_exposed_mass`
-
-**Why.** Turns the 0.44 exposed-mass caveat into a measurement, in the same
-alignment/coverage language the paper uses.
-
-**Work.** Sweep batch size {16, 64, 256}, plot (`row_exposed_mass`, ΔAvg). The
-metric is already logged per step; this rides along on runs that exist.
-
-### P2-3. E4, step-matched — or cut it
-
-**Why.** As it stands E4 argues against the hypothesis and confounds N with the
-number of updates.
-
-**Work.** Re-run with matched optimisation steps rather than matched epochs, or
-drop E4 from the paper. Do not publish it in its current form.
+`graph_k` is already swept in Stage 0 — reuse it. `row_weight` only if 1.1 kept
+the term. This exists to show the defaults are not sitting on a peak, which is
+C4. It is not a search.
 
 ---
 
-## Not worth running
+## Cut
 
-- More `graph_k` / `row_weight` points beyond P0-1. Both surfaces are flat; more
+- **Training at four corpus sizes.** Replaced by the formula in A, which gives
+  the $1/N$ statement with no confound. The old runs varied $N$ and the number of
+  updates together and came out against the hypothesis; their one genuinely
+  informative signal — the baseline climbing with batch size — is now C.2.
+- **`rewired`.** Identical to `corpus_uniform` under the current graph.
+- **Multi-hop radius ablation.** Removed from the codebase; reporting it would
+  mean restoring the pipeline first.
+- **`teacher_diverse` batch sampler.** Within noise of `random`.
+- **More points on either sensitivity sweep.** Both surfaces are flat; extra
   points buy nothing and invite "tuned on test".
-- Multi-hop diffusion scales. Removed from the codebase, not merely defaulted
-  off: the method supervises one hop, so a pool *is* a transition row. Reporting
-  a radius ablation would mean restoring the pipeline first.
-- `student_knn` (E2, opt-in). It differs from the teacher arms in temperature as
-  well as support, so it is not one-factor. Report as indicative or not at all.
 
 ---
 
-## Order of execution
+## Order
 
 ```
-P0-1 (graph_k)  ─► everything else
-                   ├─ P0-2 (12 runs)  ──► decides the L_r0 question
-                   ├─ P0-3 (18 runs)  ──► component table  ──► P0-5 re-scores these
-                   ├─ P0-4 (main table, 9 runs)
-                   └─ P1-1 (15 runs)
+patches  random-centers · uniform-target · one-factor student_knn
+Stage 0  0.1 graph_k                     12   ── fixes the operating point,
+                                              ── and is the full-model reference
+Stage 1  1.1 row term                     6   ── each "no" deletes later work
+         1.2 calibration term             3
+         1.3 uniform target               3
+Stage 2  A   the count                    0   ── formula + one figure
+         B   ladder (4 arms, 2 pairs)     24
+         C.1 batch composition            15
+         C.2 batch size                   12   ── the arm that can hurt us
+         D   component ablation            9
+         E   held-out relations           0   ── post-hoc on D
+Stage 3  F   main table                    6
+         G   sensitivity                0–9
 ```
 
-P0-1 first, always. Everything after it is parallel across GPUs.
+Stage 0 is strictly first. Stage 1 before Stage 2, because a deletion there
+removes arms from D and G. Everything inside Stage 2 runs in parallel across
+GPUs.
