@@ -85,12 +85,10 @@ class GGPKDConfig(BaseConfig):
     #                 corpus draws, which needs no flag of its own.
     support_policy = "topk"
     relation_target = "transition"
-    # Calibration is orthogonal to the graph target (S4). `pool` reproduces the
-    # historical ambient KL over the current batch's shared candidate union;
-    # `fixed_reference` evaluates it on N_i union one corpus-defined set R;
-    # `none` deletes the r=0 scale. `--no_ambient` is the CLI spelling of `none`.
+    # Calibration is orthogonal to the graph target (S4). `pool` is the method:
+    # the ambient KL over the current batch's shared candidate union. `none`
+    # deletes the r=0 scale; `--no_ambient` is its CLI spelling.
     calibration_mode = "pool"
-    reference_size = 200
     knn_mode = "directed"
     batch_local = False
 
@@ -136,20 +134,9 @@ class GGPKDConfig(BaseConfig):
     # knob doing two jobs: a sweep over it cannot separate the two effects, which is
     # the price of not having a second constant.
     fixed_bandwidth = False
-    # Sorted, unique, and starting at 1. All three are enforced: the artifact stores
-    # its scales sorted, and the temperature ladder is anchored to the r=1 target
-    # being the transition row.
-    # One-hop transition matching is the paper default. Broader {1,2} and
-    # {1,2,4} ladders are reported as the radius ablation rather than being
-    # bundled into the canonical method.
-    diffusion_scales = (1,)
-    # Within the graph group omega_r is proportional to 1/r. The graph group is
-    # normalized to total weight 1 and matched by ambient weight 1, so Table 4
-    # changes radius without changing the ambient--graph balance.
-
     # ---- Row Supervision -----------------------------------------------------
-    # L_row promotes the teacher-selected pool columns (the diffusion support, not
-    # the hard/uniform negatives) to auxiliary rows and matches each one's complete
+    # L_row promotes the teacher-selected pool columns (not the hard/uniform
+    # negatives of an arm) to auxiliary rows and matches each one's complete
     # available transition row, weighted uniformly. Batch anchors are excluded:
     # L_rel already matches their transition row as its r=1 target. The row set is a
     # deterministic function of the candidate pool, so this term costs no selection
@@ -321,23 +308,11 @@ class GGPKDConfig(BaseConfig):
                 "truncation_tolerance is the mass each row may discard; must be in "
                 f"[0, 1), got {self.truncation_tolerance}"
             )
-        if tuple(self.diffusion_scales) != (1,) and self.truncation_tolerance <= 0.0:
-            # A diffused row is dense: without a tolerance the only thing bounding
-            # it is POOL_ROW_CAP, and the targets would then be decided by a memory
-            # guard instead of by a stated numerical tolerance.
-            raise ValueError(
-                "multi-hop diffusion_scales need a positive --truncation_tolerance "
-                "(0.01 is the value the multi-scale arms were built at); "
-                f"got scales={tuple(self.diffusion_scales)} with "
-                f"truncation_tolerance={self.truncation_tolerance}"
-            )
         if self.calibration_mode not in CALIBRATION_MODES:
             raise ValueError(
                 f"calibration_mode must be one of {CALIBRATION_MODES}, "
                 f"got {self.calibration_mode!r}"
             )
-        if self.reference_size < 1:
-            raise ValueError("reference_size must be at least 1")
         if self.row_weight < 0:
             raise ValueError("row_weight must be non-negative")
         if self.diffusion_quota is not None and self.diffusion_quota < 1:
@@ -362,11 +337,6 @@ class GGPKDConfig(BaseConfig):
                 f"knn_mode must be one of {KNN_MODES}, got {self.knn_mode!r}"
             )
         if self.batch_local:
-            if self.calibration_mode == "fixed_reference":
-                raise ValueError(
-                    "fixed_reference calibration is defined for corpus graph rows; "
-                    "it cannot be combined with batch_local"
-                )
             if self.relation_target not in ("ambient_only", "direct"):
                 raise ValueError(
                     "batch_local forms no graph relations, so its target must be "

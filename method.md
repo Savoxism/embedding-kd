@@ -7,8 +7,8 @@ The method has **two hyperparameters**: `graph_k` and `row_weight`. Every other
 quantity — bandwidths, temperatures, term weights, the candidate set, the set of
 supervised rows — is derived from those two and the corpus.
 
-The default radius is one hop, so the objective matches the teacher's transition
-rows directly; multi-hop diffusion is a baseline arm, not part of the method.
+The radius is one hop: the objective matches the teacher's transition rows
+directly. Multi-hop diffusion has been removed, not merely defaulted off.
 
 ---
 

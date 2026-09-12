@@ -6,7 +6,6 @@ private methods on the distiller, all of them reachable only through
 `if distill_method == "ggpkd"`.
 """
 
-import hashlib
 
 import numpy as np
 import pandas as pd
@@ -20,28 +19,6 @@ from src.distill.steps.ggpkd import step
 from src.ggpkd import GGPKDCandidateSampler, build_or_load_ggpkd_artifact
 from src.ggpkd.policy import FIXED_BANDWIDTH_TEMP
 from src.methods.spec import MethodSpec
-
-
-def build_fixed_reference_indices(
-    corpus_texts: list[str], reference_size: int
-) -> np.ndarray:
-    """Choose a reproducible, teacher-independent corpus reference set.
-
-    Ranking texts by a namespaced SHA-256 digest behaves like a uniform sample,
-    but is stable across training seeds and corpus row reordering. Exact duplicate
-    anchors have already been removed by ``prepare_frame``.
-    """
-    if reference_size < 1:
-        raise ValueError("reference_size must be at least 1")
-    keyed = []
-    for index, text in enumerate(corpus_texts):
-        digest = hashlib.sha256(
-            b"ggpkd-fixed-reference-v1\0" + str(text).encode("utf-8")
-        ).digest()
-        keyed.append((digest, index))
-    keyed.sort()
-    size = min(reference_size, len(keyed))
-    return np.asarray([index for _, index in keyed[:size]], dtype=np.int64)
 
 
 def resolve_anchor_column(ctx, df: pd.DataFrame) -> str:
@@ -141,7 +118,6 @@ def build_data(ctx, df: pd.DataFrame, teacher_cls: torch.Tensor):
         fixed_bandwidth=ctx.config.fixed_bandwidth,
         truncation_tolerance=ctx.config.truncation_tolerance,
         hard_negatives=ctx.config.hard_neg_k > 0,
-        diffusion_scales=ctx.config.diffusion_scales,
         knn_mode=ctx.config.knn_mode,
         holdout_edge_frac=ctx.config.holdout_edge_frac,
         holdout_seed=ctx.config.holdout_seed,
@@ -156,19 +132,6 @@ def build_data(ctx, df: pd.DataFrame, teacher_cls: torch.Tensor):
         support_policy=ctx.config.support_policy,
     )
     anchor_texts = df[ctx.ggpkd_anchor_column].astype(str).tolist()
-    reference_indices = None
-    if ctx.config.calibration_mode == "fixed_reference":
-        reference_indices = build_fixed_reference_indices(
-            anchor_texts, ctx.config.reference_size
-        )
-        reference_fingerprint = hashlib.sha256(
-            np.sort(reference_indices).tobytes()
-        ).hexdigest()[:12]
-        print(
-            "GGPKD fixed-reference calibration: "
-            f"{reference_indices.size} corpus columns, "
-            f"fingerprint={reference_fingerprint}"
-        )
     # Rebuild the probe on the deduplicated anchor column. The set built
     # in setup_data was sampled from the pre-dedup frame, whose row
     # positions no longer index the teacher cache -- so pairing the two
@@ -192,8 +155,7 @@ def build_data(ctx, df: pd.DataFrame, teacher_cls: torch.Tensor):
         ctx.config.max_length,
         corpus_texts=anchor_texts,
         batch_local=ctx.config.batch_local,
-        n_scales=len(ctx.config.diffusion_scales),
-        reference_indices=reference_indices,
+        n_scales=1,
     )
     if ctx.config.batch_local:
         print(
@@ -268,7 +230,6 @@ def build_criterion(ctx, config):
         "ambient_only",
     )
     criterion = GGPKDDistillation(
-        diffusion_scales=config.diffusion_scales,
         teacher_embeddings=ctx.teacher_cls_all if needs_bank else None,
         calibration_mode=config.calibration_mode,
         direct_temp=config.direct_temp,

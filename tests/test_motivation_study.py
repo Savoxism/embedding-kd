@@ -51,7 +51,7 @@ def _artifact(n_items=200, width=12, n_scales=1, seed=0):
         "hard_neg_indices": torch.from_numpy(
             np.full((n_items, 4), -1, dtype=np.int64)
         ),
-        "metadata": {"diffusion_scales": (1,)},
+        "metadata": {},
     }
 
 
@@ -449,7 +449,6 @@ def test_every_support_policy_survives_the_collate_and_the_criterion(policy):
     candidate_size = batch["candidate_idx"].shape[1]
 
     criterion = GGPKDDistillation(
-        diffusion_scales=(1,),
         teacher_embeddings=torch.randn(n_items, 12),
         calibration_mode="none",
         relation_target="direct",

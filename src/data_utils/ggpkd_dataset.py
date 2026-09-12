@@ -108,7 +108,6 @@ class GGPKDCollate:
         pad_to_multiple_of: int = PAD_TO_MULTIPLE_OF,
         batch_local: bool = False,
         n_scales: int = 1,
-        reference_indices: np.ndarray | torch.Tensor | None = None,
     ):
         self.ts = tok_student
         self.task = task
@@ -117,25 +116,6 @@ class GGPKDCollate:
         self.pad_to_multiple_of = int(pad_to_multiple_of)
         self.batch_local = bool(batch_local)
         self.n_scales = int(n_scales)
-        if reference_indices is None:
-            self.reference_indices = None
-        else:
-            references = torch.as_tensor(reference_indices, dtype=torch.long).reshape(
-                -1
-            )
-            if references.numel() == 0:
-                raise ValueError("reference_indices must contain at least one index")
-            if bool((references < 0).any()) or bool(
-                (references >= len(corpus_texts)).any()
-            ):
-                raise ValueError(
-                    "reference_indices must index corpus_texts; "
-                    f"got range [{int(references.min())}, {int(references.max())}] "
-                    f"for a corpus of size {len(corpus_texts)}"
-                )
-            if torch.unique(references).numel() != references.numel():
-                raise ValueError("reference_indices must be unique")
-            self.reference_indices = references
 
         self.pad_id = tok_student.pad_token_id
         if self.pad_id is None:
@@ -193,27 +173,6 @@ class GGPKDCollate:
                 [item["teacher_probs"] for item in batch], dim=0
             ).float()
 
-        # Fixed-reference calibration uses the same corpus-defined reference set
-        # for every anchor. Append it as columns here so torch.unique below encodes
-        # each reference only once per step. `candidate_is_reference` keeps these
-        # computational columns out of the graph softmax while allowing the
-        # criterion to form C_i = Omega_i union R. A reference that is already in
-        # Omega_i appears twice in this flat layout, but both occurrences map to
-        # one shared-pool column and the graph occurrence remains identifiable.
-        if self.reference_indices is None:
-            candidate_is_reference = None
-        else:
-            references = self.reference_indices.view(1, -1).expand(idx.numel(), -1)
-            reference_probs = torch.zeros(
-                idx.numel(),
-                teacher_probs.size(1),
-                references.size(1),
-                dtype=teacher_probs.dtype,
-            )
-            candidate_idx = torch.cat([candidate_idx, references], dim=1)
-            teacher_probs = torch.cat([teacher_probs, reference_probs], dim=2)
-            candidate_is_reference = torch.zeros_like(candidate_idx, dtype=torch.bool)
-            candidate_is_reference[:, -references.size(1) :] = True
         ys = [item["label"] for item in batch] if "label" in batch[0] else None
 
         unique_idx, inverse = torch.unique(
@@ -250,8 +209,6 @@ class GGPKDCollate:
             "candidate_inverse": candidate_inverse,
             "teacher_probs": teacher_probs,
         }
-        if candidate_is_reference is not None:
-            out["candidate_is_reference"] = candidate_is_reference
         if ys is not None:
             out["labels"] = torch.tensor(ys, dtype=torch.long)
         return out

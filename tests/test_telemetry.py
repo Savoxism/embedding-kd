@@ -44,7 +44,7 @@ def test_run_manifest_pins_config_git_and_artifact(tmp_path):
     config = SimpleNamespace(
         distill_method="ggpkd",
         row_weight=1.0,
-        diffusion_scales=(1, 2, 4),
+        graph_k=200,
         seed=42,
         save_dir=str(tmp_path),
         _private="hidden",
@@ -60,7 +60,7 @@ def test_run_manifest_pins_config_git_and_artifact(tmp_path):
 
     assert payload["run_id"] == run_id
     assert payload["config"]["row_weight"] == 1.0
-    assert payload["config"]["diffusion_scales"] == [1, 2, 4]
+    assert payload["config"]["graph_k"] == 200
     # Private attributes and callables are not configuration.
     assert "_private" not in payload["config"]
     assert "some_method" not in payload["config"]

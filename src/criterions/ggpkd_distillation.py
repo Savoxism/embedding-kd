@@ -8,7 +8,6 @@ from src.ggpkd.policy import (
     DIAG_TOPK,
     EPS_NORM,
     FIXED_BANDWIDTH_TEMP,
-    diffusion_weights,
 )
 
 # "diffusion" is accepted as the former spelling of "transition": at the
@@ -16,7 +15,7 @@ from src.ggpkd.policy import (
 # a diffusion target named a composition step that no longer runs.
 RELATION_TARGETS = ("transition", "direct", "ambient_only")
 RELATION_TARGET_ALIASES = {"diffusion": "transition"}
-CALIBRATION_MODES = ("none", "pool", "fixed_reference")
+CALIBRATION_MODES = ("none", "pool")
 
 
 def _assert_finite_tensors(named_tensors: Sequence[tuple[str, torch.Tensor]]) -> None:
@@ -79,14 +78,22 @@ class GGPKDDistillation(nn.Module):
     factor of the batch size, and the shared columns couple anchors, which is what
     makes similarity levels comparable across the batch.
 
-    **The ambient scale, and why it is not optional.** The diffusion targets are the
+    **The ambient scale, and why it is not optional.** Its current role is stated
+    four paragraphs down, under *What changed when the negatives were removed*:
+    after the domain split it is the only term that scores a pair (i, j) with j
+    outside N_i, which makes it the only term that constrains geometry *between*
+    neighbourhoods, fixes the absolute cosine scale, and stops the whole space
+    collapsing. What follows is the argument that introduced it, kept because the
+    failure it describes is what the domain split was built to remove.
+
+    The diffusion targets are the
     graph's mass renormalized over the scored columns, so every column outside the
     anchor's diffusion pool receives target *exactly zero*. That is not a neutral
     "no information" value: the gradient of the cross-entropy at such a column is
     +p^S(j), which pushes cos(s_i, s_j) down without bound. Under in-batch sharing
     roughly 97% of the columns an anchor sees are zero-target, and they include the
-    hard negatives -- same-source, top-200 by teacher cosine, excluded from the
-    mutual-kNN graph -- whose true teacher similarity is high. The objective is
+    hard negatives -- same-source, top-200 by teacher cosine, outside the graph as
+    it was then built -- whose true teacher similarity is high. The objective is
     therefore actively training the student to drive apart pairs the teacher calls
     similar, which is exactly the calibration STS and a global cosine threshold
     depend on.
@@ -270,7 +277,7 @@ class GGPKDDistillation(nn.Module):
         "num_walks": "removed with walk-based row selection",
         "walk_length": "removed with walk-based row selection",
         "scale_weights": (
-            "derived from diffusion_scales by normalized omega_r proportional to 1/r"
+            "there is one graph scale and its weight equals the ambient weight"
         ),
         "direct_weight": "derived to equal the total graph-group weight",
         "share_in_batch": "in-batch sharing is always used when corpus indices exist",
@@ -300,15 +307,18 @@ class GGPKDDistillation(nn.Module):
             "tied to direct_temp: the ambient scale uses one temperature on both "
             "the teacher and the student side (Hinton et al., 2015)"
         ),
+        "diffusion_scales": (
+            "multi-hop diffusion has been removed; the graph scale is the "
+            "teacher's one-hop transition row"
+        ),
         "broad_scale_temps": (
             "tied to the sharpest scale by tau_r = sqrt(r) * tau_1; pass "
-            "diffusion_scales instead and the ladder is derived from it"
+            "nothing instead: there is one graph scale, tied to its row bandwidth"
         ),
     }
 
     def __init__(
         self,
-        diffusion_scales: Sequence[int] | None = None,
         teacher_embeddings: torch.Tensor | None = None,
         direct_temp: float = 0.10,
         transition_neighbors: torch.Tensor | None = None,
@@ -416,11 +426,8 @@ class GGPKDDistillation(nn.Module):
         #
         # `ambient_only` is the exception that stays coupled: it *is* scale r=0
         # and nothing else, so removing the scale would leave no term at all.
-        # `pool` is the historical ambient loss over the union supplied by the
-        # current mini-batch. `fixed_reference` evaluates the same teacher/student
-        # similarity KL on C_i = Omega_i union R, where R is fixed before
-        # training. The latter changes only which columns calibration scores; the
-        # graph target and its domain remain the anchor's own row.
+        # `pool` is the ambient loss over the candidate union supplied by the
+        # current mini-batch; `none` deletes the scale.
         if calibration_mode is None:
             calibration_mode = "pool"
         if calibration_mode not in CALIBRATION_MODES:
@@ -454,81 +461,23 @@ class GGPKDDistillation(nn.Module):
             self.teacher_bank = None
             self.direct_temp = float(direct_temp)
 
-        # Relative graph weights follow 1/r but sum to one as a group. The ambient
-        # entry also has unnormalized weight one, so adding broader radii cannot
-        # silently move weight from ambient supervision into graph supervision.
-        # The whole diffusion ladder is derived from the sharpest scale by
-        # tau_r = sqrt(r) * tau_1. The sharpest scale is itself tied (its target IS
-        # the transition row), so no student temperature on this ladder is free.
-        # `scale_sqrt` holds sqrt(r / r_sharpest) so it is 1.0 at the sharpest scale
-        # and multiplies whichever tau_1 applies -- graph_temp, or the per-row tau_i
-        # of the entropic-affinity graph. `_resolved` pads by repeating the last
-        # entry when the artifact carries more scales than were declared.
-        if diffusion_scales is None or len(tuple(diffusion_scales)) == 0:
-            scales = (1,)
-        else:
-            scales = tuple(int(r) for r in diffusion_scales)
-        if min(scales) < 1:
-            raise ValueError(f"diffusion_scales must be >= 1, got {scales}")
-        # Two conditions the rest of the class assumes and nothing used to enforce.
-        #
-        # *Sorted and unique.* The artifact stores its scales through `_as_tuple`,
-        # which sorts and deduplicates, so `pool_probs[r]` is indexed by rank in the
-        # sorted order. This class indexes `scale_sqrt` and `scale_weights` by
-        # position in the tuple as given. Pass (4, 1, 2) and the artifact holds
-        # (1, 2, 4) while the criterion matches them at tau = (tau_1, tau_1/2,
-        # tau_1/sqrt(2)) and weights them by 1/4, 1, 1/2 -- every scale supervised
-        # at another scale's temperature, silently.
-        #
-        # *Sharpest scale is r = 1.* The whole temperature ladder hangs off
-        # tau_1 = "the bandwidth this row's target was built at", which holds
-        # because the r=1 lazy-walk target after dropping self-mass IS the
-        # transition row. At r >= 2 it is not, so the tie is simply false and
-        # tau_r = sqrt(r/r_0) tau_1 is anchored to nothing.
-        if scales != tuple(sorted(set(scales))):
-            raise ValueError(
-                f"diffusion_scales must be sorted and unique, got {scales}: the "
-                f"artifact stores them sorted, so any other order matches each "
-                f"scale at another scale's temperature and weight"
-            )
-        if scales[0] != 1:
-            raise ValueError(
-                f"diffusion_scales must start at 1, got {scales}: the temperature "
-                f"tie tau_1 = graph bandwidth holds because the r=1 target is the "
-                f"transition row, and the whole ladder is derived from it"
-            )
-        self.diffusion_scales = scales
-        weights = torch.tensor(diffusion_weights(scales), dtype=torch.float32)
-        weights = weights / weights.sum().clamp_min(1e-12)
-        self.register_buffer("scale_weights", weights)
-        # The ambient profile has the same unnormalized weight as the complete
-        # graph group, giving a fixed 50/50 split after the runtime normalization.
-        self.register_buffer("direct_weight", weights.new_ones(1))
-        sqrt_r = torch.tensor(
-            [(r / scales[0]) ** 0.5 for r in scales], dtype=torch.float32
+        # One hop, so there is no ladder: the graph group is a single scale whose
+        # target IS the transition row, and its temperature is that row's own
+        # bandwidth. `direct_weight` gives the ambient profile the same
+        # unnormalized weight as the graph group, a fixed 50/50 after the runtime
+        # normalization. The multi-hop ladder this replaced derived
+        # tau_r = sqrt(r) * tau_1 and omega_r ~ 1/r from `diffusion_scales`.
+        self.register_buffer("scale_weights", torch.ones(1, dtype=torch.float32))
+        self.register_buffer("direct_weight", torch.ones(1, dtype=torch.float32))
+        self.register_buffer(
+            "scale_temps", torch.full((1,), float(self.graph_temp), dtype=torch.float32)
         )
-        self.register_buffer("scale_sqrt", sqrt_r)
-        temps = self.graph_temp * sqrt_r
-        self.register_buffer("scale_temps", temps)
-        # Whether `loss_excess` is an exact statement rather than an upper bound:
-        # js_floor bounds the graph-scale group only under one shared student
-        # temperature. Fixed for the run, so it is resolved here instead of costing
-        # a device sync inside every _diagnostics call. (The ambient scale sits at
-        # index 0 of the runtime stack and is excluded there; on this ladder the
-        # diffusion scales are the whole of `temps`.)
+        # Whether `loss_excess` is an exact statement rather than an upper bound.
+        # With one graph scale the bound is tight unless per-row temperatures make
+        # the group's scales differ from each other.
         self._excess_is_exact = bool(
-            self.relation_target in ("direct", "ambient_only")
-            or (
-                row_temps is None
-                and (temps.numel() <= 1 or torch.allclose(temps, temps[0]))
-            )
+            self.relation_target in ("direct", "ambient_only") or row_temps is None
         )
-
-    def _resolved(self, buffer: torch.Tensor, n_scales: int) -> torch.Tensor:
-        if buffer.numel() < n_scales:
-            pad = buffer[-1:].repeat(n_scales - buffer.numel())
-            return torch.cat([buffer, pad], dim=0)
-        return buffer[:n_scales]
 
     def _build_shared_pool(
         self,
@@ -536,9 +485,7 @@ class GGPKDDistillation(nn.Module):
         teacher_probs: torch.Tensor,
         candidate_idx: torch.Tensor,
         anchor_idx: torch.Tensor,
-        candidate_is_reference: torch.Tensor | None = None,
     ) -> tuple[
-        torch.Tensor,
         torch.Tensor,
         torch.Tensor,
         torch.Tensor,
@@ -576,38 +523,16 @@ class GGPKDDistillation(nn.Module):
         )
         target.scatter_add_(2, scatter_index, teacher_probs)
 
-        # Keep graph-domain occurrences separate from fixed-reference occurrences.
-        # They can point at the same corpus node, so a last-write-wins bool scatter
-        # would be wrong; counts preserve both roles before reducing to masks.
-        if candidate_is_reference is None:
-            reference_occurrence = torch.zeros_like(candidate_idx, dtype=torch.bool)
-        else:
-            if candidate_is_reference.shape != candidate_idx.shape:
-                raise ValueError(
-                    "candidate_is_reference must have the same shape as "
-                    f"candidate_idx; got {tuple(candidate_is_reference.shape)} and "
-                    f"{tuple(candidate_idx.shape)}"
-                )
-            reference_occurrence = candidate_is_reference.to(
-                device=teacher_probs.device, dtype=torch.bool
-            )
-
+        # Counts rather than a bool scatter: one corpus node can occupy several
+        # columns of an anchor's draw, and a last-write-wins scatter would lose that.
         occurrence_positions = inverse.view(batch_size, candidate_size)
         own_counts = torch.zeros(
             batch_size, pool_size, dtype=torch.int32, device=teacher_probs.device
         )
         own_counts.scatter_add_(
-            1, occurrence_positions, (~reference_occurrence).to(torch.int32)
+            1, occurrence_positions, torch.ones_like(occurrence_positions, dtype=torch.int32)
         )
         own_mask = own_counts > 0
-
-        reference_counts = torch.zeros(
-            pool_size, dtype=torch.int32, device=teacher_probs.device
-        )
-        reference_counts.scatter_add_(
-            0, inverse, reference_occurrence.reshape(-1).to(torch.int32)
-        )
-        reference_columns = reference_counts > 0
 
         self_mask = unique_idx.view(1, -1) == anchor_idx.view(-1, 1)
         return (
@@ -615,23 +540,8 @@ class GGPKDDistillation(nn.Module):
             target,
             self_mask,
             own_mask,
-            reference_columns,
             unique_idx,
         )
-
-    def _calibration_exclusion_mask(
-        self,
-        self_mask: torch.Tensor,
-        own_mask: torch.Tensor,
-        reference_columns: torch.Tensor,
-    ) -> torch.Tensor:
-        """Columns excluded from the calibration softmax for each anchor."""
-        if self.calibration_mode == "pool":
-            return self_mask
-        if self.calibration_mode == "fixed_reference":
-            domain = own_mask | reference_columns.view(1, -1)
-            return self_mask | ~domain
-        return self_mask
 
     @torch.no_grad()
     def _teacher_cosine_logits(
@@ -833,12 +743,15 @@ class GGPKDDistillation(nn.Module):
 
         The domain split silenced their disagreement on *other anchors'* columns,
         but both scales still score the anchor's own candidates, and there the
-        contested ground is the zero-diffusion-target columns: hard negatives carry
-        high teacher cosine (so real ambient mass) and exactly zero diffusion mass
-        (excluded from the mutual-kNN graph), so ambient pulls up what the r>=1
-        softmax normalization pushes down. Uniform negatives sit in the same set but
-        their teacher cosine is low, so `amb_mass_on_zero_diff` is dominated by the
-        hard negatives without the criterion needing to know the draw's segmenting.
+        contested ground is the zero-diffusion-target columns: columns carrying high
+        teacher cosine but no graph mass, so ambient pulls up what the r>=1 softmax
+        normalization pushes down.
+
+        At the method's settings this set is empty by construction -- the draw is
+        the anchor's whole transition row, every column of which carries mass -- so
+        `amb_mass_on_zero_diff` should read ~0 and a non-zero value means an arm is
+        running (negatives drawn, a truncated row, or a mutual filter). It stays
+        because that is exactly when the number is worth having.
 
         This is the same loss-floor accounting that motivated the domain split (the
         0.42-nat JS on the shared pool), scoped to what remains. Read it as: if
@@ -905,7 +818,6 @@ class GGPKDDistillation(nn.Module):
         teacher_probs: torch.Tensor,
         candidate_idx: torch.Tensor | None = None,
         anchor_idx: torch.Tensor | None = None,
-        candidate_is_reference: torch.Tensor | None = None,
     ) -> tuple[torch.Tensor, dict[str, float]]:
         # Checked lazily. Verifying the inputs eagerly cost one host sync per
         # step to answer a question the output check below already answers --
@@ -940,14 +852,12 @@ class GGPKDDistillation(nn.Module):
                 target,
                 self_mask,
                 own_mask,
-                reference_columns,
                 column_idx,
             ) = self._build_shared_pool(
                 candidate_embeddings,
                 teacher_probs,
                 candidate_idx,
                 anchor_idx,
-                candidate_is_reference,
             )
             pool_norm = F.normalize(pool_embeddings, p=2, dim=-1, eps=self.eps_norm)
             similarity = anchor_norm @ pool_norm.t()
@@ -985,12 +895,13 @@ class GGPKDDistillation(nn.Module):
                 self_mask = column_idx == anchor_idx.view(-1, 1)
             else:
                 self_mask = torch.zeros_like(similarity, dtype=torch.bool)
-            reference_columns = torch.zeros(
-                similarity.size(-1), dtype=torch.bool, device=similarity.device
+        if n_scales != 1:
+            raise ValueError(
+                "teacher_probs must carry exactly one target scale; multi-hop "
+                f"diffusion has been removed, got n_scales={n_scales}"
             )
-
-        weights = self._resolved(self.scale_weights, n_scales)
-        temps = self._resolved(self.scale_temps, n_scales)
+        weights = self.scale_weights
+        temps = self.scale_temps
 
         if self.relation_target == "ambient_only":
             # Drop the diffusion group: no scales, no weight, nothing to
@@ -1045,16 +956,8 @@ class GGPKDDistillation(nn.Module):
                 "anchors and the scored columns"
             )
         if direct_active:
-            if self.calibration_mode == "fixed_reference" and (
-                candidate_is_reference is None
-            ):
-                raise ValueError(
-                    "calibration_mode='fixed_reference' needs "
-                    "candidate_is_reference from GGPKDCollate"
-                )
-            direct_mask = self._calibration_exclusion_mask(
-                self_mask, own_mask, reference_columns
-            )
+            # Calibration scores the whole shared pool minus the anchor itself.
+            direct_mask = self_mask
             direct = self._direct_target(anchor_idx, column_idx, direct_mask, share)
             target = torch.cat([direct.unsqueeze(1).to(target.dtype), target], dim=1)
             weights = torch.cat([self.direct_weight.to(weights.dtype), weights])
@@ -1094,16 +997,12 @@ class GGPKDDistillation(nn.Module):
         row_tau = None
         if self.row_temps is not None and anchor_idx is not None:
             row_tau = self.row_temps.index_select(0, anchor_idx).view(-1, 1)
-        # tau_r(i) = sqrt(r) * tau_i: the tie at the sharpest scale propagates up the
-        # ladder, so with per-row bandwidths every diffusion scale is per-row too.
-        sqrt_r = self._resolved(self.scale_sqrt, n_scales - offset)
-
         kl_per_scale = []
         log_probs_per_scale = []
         for scale_idx in range(n_scales):
             is_direct = direct_active and scale_idx == 0
             if row_tau is not None and not is_direct:
-                logits = similarity / (row_tau * sqrt_r[scale_idx - offset])
+                logits = similarity / row_tau
             else:
                 logits = similarity / temps[scale_idx]
             logits = logits.masked_fill(
@@ -1423,13 +1322,8 @@ class GGPKDDistillation(nn.Module):
         per_scale_names = []
         if offset:
             per_scale_names.append("kl_amb")
-        for scale_idx in range(kl_per_scale.size(1) - offset):
-            scale = (
-                self.diffusion_scales[scale_idx]
-                if scale_idx < len(self.diffusion_scales)
-                else scale_idx + 1
-            )
-            per_scale_names.append("kl_nbr" if scale == 1 else f"kl_diff_r{scale}")
+        for _ in range(kl_per_scale.size(1) - offset):
+            per_scale_names.append("kl_nbr")
         entries.extend(zip(per_scale_names, kl_per_scale.mean(dim=0).detach()))
         # The ambient-vs-diffusion audit rides the same stack. It used to run its
         # own `.cpu().tolist()`, which is a second device sync for three scalars.

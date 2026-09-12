@@ -29,7 +29,6 @@ CACHE_ROOT="${CACHE_ROOT:-$REPO_ROOT/cache/ggpkd}"
 REFERENCE_SIZE="${REFERENCE_SIZE:-200}"
 GRAPH_K="${GRAPH_K:-200}"
 TRUNCATION_TOLERANCE="${TRUNCATION_TOLERANCE:-0.01}"
-DIFFUSION_SCALES="${DIFFUSION_SCALES:-1}"
 
 IFS=',' read -r -a ARMS_LIST <<< \
     "${ARMS:-none_row1,none_row0,fixed_reference_row0}"
@@ -99,7 +98,6 @@ printf 'arm\tseed\tgpu\tpid\tstate\n' > "$MANIFEST"
     printf 'reference_size\t%s\n' "$REFERENCE_SIZE"
     printf 'graph_k\t%s\n' "$GRAPH_K"
     printf 'truncation_tolerance\t%s\n' "$TRUNCATION_TOLERANCE"
-    printf 'diffusion_scales\t%s\n' "$DIFFUSION_SCALES"
     printf 'commit\t%s\n' "$(git rev-parse HEAD 2>/dev/null || echo unknown)"
 } > "$RUN_ROOT/run_config.tsv"
 
@@ -129,8 +127,7 @@ PAIR_KEY="$PAIR_KEY" GPU="${GPU_LIST[0]}" PYTHON_BIN="$PYTHON_BIN" \
         --calibration_mode none \
         --row_weight 0 \
         --graph_k "$GRAPH_K" \
-        --truncation_tolerance "$TRUNCATION_TOLERANCE" \
-        --diffusion_scales "$DIFFUSION_SCALES" >"$CACHE_LOG" 2>&1
+        --truncation_tolerance "$TRUNCATION_TOLERANCE" >"$CACHE_LOG" 2>&1
 CACHE_CODE=$?
 set -e
 if (( CACHE_CODE != 0 )); then
@@ -202,7 +199,6 @@ launch_task() {
                 --final_weights_only \
                 --graph_k "$GRAPH_K" \
                 --truncation_tolerance "$TRUNCATION_TOLERANCE" \
-                --diffusion_scales "$DIFFUSION_SCALES" \
                 "${arm_args[@]}" >"$log" 2>&1
         code=$?
         printf '%s\n' "$code" > "$exit_file"

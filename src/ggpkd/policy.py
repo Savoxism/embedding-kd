@@ -5,9 +5,7 @@ hyperparameters. Keeping their derivation here prevents the graph artifact,
 candidate sampler, and criterion from silently using different conventions.
 """
 
-from collections.abc import Sequence
 
-import numpy as np
 
 # Used only by the fixed-bandwidth baseline and by low-level tests without an
 # entropic-affinity artifact. Canonical GGPKD uses the per-row temperatures
@@ -114,19 +112,6 @@ SUPPORT_POLICIES = (
     "corpus_uniform",
     "rewired",
 )
-
-def diffusion_weights(scales: Sequence[int]) -> tuple[float, ...]:
-    """Return the canonical unnormalized rule omega_r = 1 / r."""
-    resolved = tuple(int(scale) for scale in scales)
-    if not resolved or any(scale < 1 for scale in resolved):
-        raise ValueError(f"diffusion scales must be positive, got {resolved}")
-    return tuple(1.0 / scale for scale in resolved)
-
-
-def normalized_diffusion_weights(scales: Sequence[int]) -> np.ndarray:
-    weights = np.asarray(diffusion_weights(scales), dtype=np.float64)
-    return weights / weights.sum()
-
 
 def candidate_budget(diffusion_quota: int, hard_neg_k: int, random_neg_k: int) -> int:
     """The candidate width is exactly the sum of its three source quotas."""

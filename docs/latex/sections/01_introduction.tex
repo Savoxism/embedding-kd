@@ -45,7 +45,7 @@ should serve to realize those relations efficiently.}
 
 Based on this principle, we introduce \textsc{GGPKD}, a framework for
 teacher-selected relational distillation. GGPKD encodes the corpus once with
-the teacher and builds a sparse mutual-nearest-neighbor graph from the cached
+the teacher and builds a sparse nearest-neighbor graph from the cached
 embeddings. Each row of this graph is turned into a transition distribution
 whose bandwidth is read off the retrieved similarities rather than tuned, which
 makes the target invariant to how a particular teacher scales its cosines. An
@@ -76,7 +76,7 @@ are less uniform. Our contributions are:
     on the supervised relations and coverage of the teacher's relational mass.
 
     \item We introduce \textsc{GGPKD}, which realizes this principle with a
-    cached mutual-$k$NN teacher graph, per-row bandwidths derived from the
+    cached $k$NN teacher graph, per-row bandwidths derived from the
     retrieved similarities, deterministic row-shaped supports, and amortized
     auxiliary-row supervision that reuses already-encoded pool members. Every
     temperature and weight is derived from the graph, leaving two

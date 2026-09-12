@@ -84,7 +84,6 @@ def main() -> None:
                 cache_path=str(Path(tmp) / "g.pt"),
                 log_dir=tmp,
                 graph_k=k,
-                diffusion_scales=scales,
             )
         stats = sharpness(artifact)
         rows.append((k, stats))

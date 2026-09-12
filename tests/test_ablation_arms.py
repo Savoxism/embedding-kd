@@ -15,7 +15,7 @@ from src.criterions.ggpkd_distillation import GGPKDDistillation
 from src.ggpkd.graph_builder import _build_transition, _hubness_stats
 
 
-def _criterion_inputs(batch=4, candidates=12, dim=16, n_items=60, scales=3):
+def _criterion_inputs(batch=4, candidates=12, dim=16, n_items=60, scales=1):
     torch.manual_seed(0)
     teacher = torch.randn(n_items, dim)
     probs = torch.rand(batch, scales, candidates)
@@ -43,25 +43,23 @@ def _criterion_inputs(batch=4, candidates=12, dim=16, n_items=60, scales=3):
 
 
 @pytest.mark.parametrize(
-    "arm,kwargs,scales",
+    "arm,kwargs",
     [
-        ("full", {}, (1, 2, 4)),
-        ("no_ambient", {"no_teacher": True}, (1, 2, 4)),
-        ("direct_target", {"relation_target": "direct"}, (1, 2, 4)),
-        ("local_only", {}, (1,)),
+        ("full", {}),
+        ("no_ambient", {"no_teacher": True}),
+        ("direct_target", {"relation_target": "direct"}),
     ],
 )
-def test_every_criterion_arm_produces_a_finite_gradient(arm, kwargs, scales):
+def test_every_criterion_arm_produces_a_finite_gradient(arm, kwargs):
     data = _criterion_inputs()
     no_teacher = kwargs.pop("no_teacher", False)
     criterion = GGPKDDistillation(
-        diffusion_scales=scales,
         teacher_embeddings=None if no_teacher else data["teacher"],
         row_weight=1.0,
         **data["graph"],
         **kwargs,
     )
-    probs = data["probs"][:, : len(scales)]
+    probs = data["probs"]
     probs = probs / probs.sum(-1, keepdim=True)
     loss, metrics = criterion(
         data["anchor"],
@@ -81,7 +79,6 @@ def test_direct_relation_target_needs_the_teacher_bank():
     data = _criterion_inputs()
     with pytest.raises(ValueError, match="teacher_embeddings"):
         GGPKDDistillation(
-            diffusion_scales=(1, 2, 4),
             teacher_embeddings=None,
             relation_target="direct",
             row_weight=1.0,
@@ -101,7 +98,6 @@ def test_direct_relation_target_changes_the_target_not_the_column_set():
     metrics = {}
     for name, target in (("diffusion", "diffusion"), ("direct", "direct")):
         criterion = GGPKDDistillation(
-            diffusion_scales=(1, 2, 4),
             teacher_embeddings=data["teacher"],
             relation_target=target,
             row_weight=1.0,
@@ -212,7 +208,6 @@ def test_config_defaults_are_the_unablated_method():
     )
     assert config.calibration_mode == "pool"
     assert config.knn_mode == "directed"
-    assert config.diffusion_scales == (1,)
 
 
 def test_config_rejects_the_one_impossible_combination():
@@ -244,7 +239,6 @@ def test_criterion_without_the_ambient_scale_still_reads_the_bank():
     """
     data = _criterion_inputs()
     criterion = GGPKDDistillation(
-        diffusion_scales=(1,),
         teacher_embeddings=data["teacher"],
         calibration_mode="none",
         relation_target="direct",
@@ -266,7 +260,6 @@ def test_criterion_without_the_ambient_scale_still_reads_the_bank():
     assert metrics["loss_amb"] == 0.0
 
     with_ambient = GGPKDDistillation(
-        diffusion_scales=(1,),
         teacher_embeddings=data["teacher"],
         calibration_mode="pool",
         relation_target="direct",
@@ -301,7 +294,7 @@ class _CharTokenizer:
         }
 
 
-def _batch_local_batch(corpus_size=40, batch_size=6, n_scales=3):
+def _batch_local_batch(corpus_size=40, batch_size=6, n_scales=1):
     from src.data_utils.ggpkd_dataset import GGPKDCollate, TextPairWithTeacherAndGGPKD
 
     texts = [f"sentence {i} about topic {i % 7}" for i in range(corpus_size)]
@@ -314,7 +307,7 @@ def _batch_local_batch(corpus_size=40, batch_size=6, n_scales=3):
         32,
         corpus_texts=texts,
         batch_local=True,
-        n_scales=n_scales,
+        n_scales=1,
     )
     return collate([dataset[i] for i in range(batch_size)])
 
@@ -340,8 +333,8 @@ def test_batch_local_candidates_are_exactly_the_batch():
 
 
 def test_batch_local_carries_no_diffusion_mass():
-    batch = _batch_local_batch(n_scales=3)
-    assert batch["teacher_probs"].shape == (6, 3, 6)
+    batch = _batch_local_batch(n_scales=1)
+    assert batch["teacher_probs"].shape == (6, 1, 6)
     assert float(batch["teacher_probs"].abs().sum()) == 0.0
 
 
@@ -375,7 +368,6 @@ def test_ambient_only_gives_the_ambient_scale_the_whole_weight():
     data = _criterion_inputs()
     zero_targets = torch.zeros_like(data["probs"])
     criterion = GGPKDDistillation(
-        diffusion_scales=(1, 2, 4),
         teacher_embeddings=data["teacher"],
         relation_target="ambient_only",
         row_weight=0.0,
@@ -395,7 +387,6 @@ def test_ambient_only_gives_the_ambient_scale_the_whole_weight():
     # The same targets under the normal objective are scaled down by the dead
     # group's weight -- which is exactly the failure mode being avoided.
     scaled = GGPKDDistillation(
-        diffusion_scales=(1, 2, 4),
         teacher_embeddings=data["teacher"],
         row_weight=0.0,
         **data["graph"],
@@ -414,7 +405,6 @@ def test_ambient_only_gives_the_ambient_scale_the_whole_weight():
 def test_ambient_only_is_finite_and_differentiable():
     data = _criterion_inputs()
     criterion = GGPKDDistillation(
-        diffusion_scales=(1, 2, 4),
         teacher_embeddings=data["teacher"],
         relation_target="ambient_only",
         row_weight=1.0,
@@ -437,7 +427,6 @@ def test_ambient_only_needs_the_teacher_bank():
     data = _criterion_inputs()
     with pytest.raises(ValueError, match="teacher bank|teacher_embeddings"):
         GGPKDDistillation(
-            diffusion_scales=(1, 2, 4),
             teacher_embeddings=None,
             relation_target="ambient_only",
             row_weight=0.0,
@@ -452,3 +441,18 @@ def test_config_forces_batch_local_onto_the_ambient_only_objective():
         GGPKDConfig(batch_local=True, relation_target="ambient_only", batch_size=1)
     config = GGPKDConfig(batch_local=True, relation_target="ambient_only")
     assert config.batch_local is True
+
+
+def test_calibration_mode_is_the_only_ambient_switch():
+    """`use_ambient` was a second name for calibration_mode and has been removed;
+    `fixed_reference` is gone with the machinery it needed."""
+    from config import GGPKDConfig
+
+    assert GGPKDConfig().calibration_mode == "pool"
+    assert GGPKDConfig(calibration_mode="none").calibration_mode == "none"
+    assert not hasattr(GGPKDConfig(), "use_ambient")
+    assert not hasattr(GGPKDConfig(), "reference_size")
+    with pytest.raises(AttributeError):
+        GGPKDConfig(use_ambient=False)
+    with pytest.raises(ValueError, match="calibration_mode"):
+        GGPKDConfig(calibration_mode="fixed_reference")

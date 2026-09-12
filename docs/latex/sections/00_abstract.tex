@@ -13,9 +13,9 @@ accurately, and coverage, supervising most of the relational mass the teacher
 considers important. We introduce \textbf{Global Geometry Preservation
 Knowledge Distillation (GGPKD)}, which lets teacher geometry choose the support
 and uses mini-batches only to realize it. GGPKD encodes the corpus once with
-the teacher, builds a mutual $k$-nearest-neighbor graph whose per-row bandwidth
-is read off the retrieved similarities, and supervises each anchor with its own
-high-mass transition row. The deduplicated candidate pool of a batch is encoded
+the teacher, builds a $k$-nearest-neighbor graph whose per-row bandwidth is
+read off the retrieved similarities, and supervises each anchor on its own
+retrieved neighborhood, every column included. The deduplicated candidate pool of a batch is encoded
 once and reused twice more: to calibrate similarity levels across the batch,
 and to supervise additional teacher-selected rows without any extra student
 encoding. Supports, bandwidths, temperatures, and term weights are all derived
