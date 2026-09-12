@@ -33,8 +33,6 @@ def test_ggpkd_cli_overrides(monkeypatch):
             "0",
             "--row_weight",
             "0.8",
-            "--row_start_epoch",
-            "2",
             "--fixed_bandwidth",
             "--diffusion_quota",
             "20",
@@ -58,7 +56,6 @@ def test_ggpkd_cli_overrides(monkeypatch):
     config = main.get_config(args.method, args)
 
     assert config.row_weight == 0.8
-    assert config.row_start_epoch == 2
     # Per-epoch evaluation is off by default: convergence inside the 5-epoch
     # budget is established (plateau from epoch 2 at lr 3e-5), so only the final
     # evaluation runs.
@@ -649,8 +646,16 @@ def test_row_selection_knobs_are_gone():
         with pytest.raises(ValueError, match=removed):
             GGPKDDistillation(**{removed: 1})
 
+    # Config-only removals: a second name for a switch, and two knobs whose only
+    # supported value was the derived one.
+    for removed in ("use_ambient", "row_start_epoch", "direct_temp"):
+        assert not hasattr(config, removed)
+        with pytest.raises(AttributeError):
+            GGPKDConfig(**{removed: 1})
+    with pytest.raises(ValueError, match="use_ambient_scale"):
+        GGPKDDistillation(use_ambient_scale=False)
+
     assert config.row_weight == 1.0
-    assert config.row_start_epoch == 1
 
 
 def test_knn_bandwidth_makes_the_kth_neighbour_k_times_less_likely():
@@ -922,8 +927,8 @@ def test_final_student_weights_are_idempotent(tmp_path):
     assert payload["epoch"] == 5
 
 
-def test_ggpkd_cli_diffusion_scales_and_derived_direct_temp(monkeypatch):
-    """The two new ablation surfaces: R override and the derived tau_0 sentinel."""
+def test_ggpkd_cli_diffusion_scales(monkeypatch):
+    """The R override. tau_0 has no surface left: it is always derived."""
     monkeypatch.setattr(
         sys,
         "argv",
@@ -933,21 +938,14 @@ def test_ggpkd_cli_diffusion_scales_and_derived_direct_temp(monkeypatch):
             "ggpkd",
             "--diffusion_scales",
             "1",
-            "--direct_temp",
-            "0",
         ],
     )
     args = main.parse_args()
     config = main.get_config(args.method, args)
     assert config.diffusion_scales == (1,)
-    # 0 is the "derive from the graph" sentinel; the distiller resolves it to the
-    # median entropic-affinity bandwidth before the criterion is constructed.
-    assert config.direct_temp == 0.0
-
-    from config import GGPKDConfig
-
-    with pytest.raises(ValueError, match="direct_temp"):
-        GGPKDConfig(direct_temp=-0.1)
+    # tau_0 is no longer requestable: the distiller resolves it to the median row
+    # bandwidth before the criterion is constructed.
+    assert not hasattr(config, "direct_temp")
 
 
 def test_ggpkd_ambient_diffusion_audit_metrics():

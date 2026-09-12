@@ -41,40 +41,48 @@ spread differently.
 mutual filter, so all $k$ values exist for every node whenever $k < n$. There is
 no degree to fall short of and no target entropy to miss.
 
-**1.4 Mutual filter.** Keep the edge `i→j` only if `j ∈ topk(i)` **and**
-`i ∈ topk(j)`. A hub that everything retrieves but that retrieves nothing back
-loses those edges. Nodes left isolated fall back to their raw top-$k$.
+**1.4 Edge rule.** None. The neighbour set *is* the retrieved list: `N(i) =
+topk(i)`, every node at degree `graph_k`, every relation the teacher retrieved
+kept. The earlier default was a mutual filter (`j ∈ topk(i)` **and** `i ∈
+topk(j)`), which suppresses hubs at the cost of deleting teacher-selected
+relations; E2 measured it 0.36 points below the unfiltered graph (73.93 vs
+74.29, `runs/exp2/results.csv`), so it is now `--knn_mode mutual`, an ablation
+arm. With no filter, no node can be isolated and the raw-top-k fallback is
+unreachable.
 
-**1.5 Transition row.** Over the surviving neighbours,
+**1.5 Transition row.** Over those neighbours,
 
 $$P(j \mid i) = \operatorname{softmax}_j\!\left(s_{ij} / \tau_i\right)$$
 
-**1.6 Truncate.** Each row keeps enough columns that the discarded tail holds at
-most 1% of its mass. This is a numerical-fidelity constant, not a method choice:
-any value small enough that the discarded tail cannot change a ranking gives the
-same objective, and the build reports the residual mass when it binds.
+**1.6 No truncation.** The row is kept whole. Every column the teacher retrieved
+carries its teacher probability into the objective, so all rows have exactly
+`graph_k` columns, nothing about the target depends on a numerical constant, and
+collation needs no padding.
 
-Row lengths are therefore **ragged** — on the production corpus (13,553 texts,
-`graph_k = 200`): mean 66.8 columns, min 1, max 181, average degree 80.9, 0.08%
-fallback nodes.
+> A mass-prefix truncation (`--truncation_tolerance 0.01`: keep the smallest
+> prefix holding 99% of the row) remains as an arm, and the multi-hop arms
+> require it — a diffused row is dense and cannot be carried whole.
 
-The artifact stores the truncated rows and their bandwidths.
+The artifact stores the rows and their bandwidths.
 
 ---
 
 ## 2. Training: the candidate set
 
-For each anchor, the candidate set is **its whole truncated transition row** —
-every column the teacher put mass on, and nothing else. No negatives are drawn.
+For each anchor, the candidate set is **its whole transition row** — every
+column the teacher retrieved, and nothing else. No negatives are drawn.
 
 There is no budget, no selection and no RNG. The set is a deterministic function
-of the graph and is **identical in every epoch**. For collation, rows are padded
-to a common width with the anchor's own index, which the self-mask removes from
-every softmax, so a short row is simply supervised on a narrower support.
+of the graph, is **identical in every epoch**, and is the same width `graph_k`
+for every anchor. (The padding path — short rows padded with the anchor's own
+index, removed from every softmax by the self-mask — is still there for the arms
+that produce ragged rows, and is inert for the method.)
 
 Each step encodes the deduplicated union of the batch's candidate sets — the
-**shared pool**, ~1,400 texts for a batch of 64. This is essentially the whole
-step cost.
+**shared pool**. This is essentially the whole step cost, and it is now the
+union of `|B|` rows of width `graph_k` rather than of truncated rows: re-measure
+it before quoting a number (the ~1,400 texts per batch of 64 recorded here was a
+mutual graph with 99%-prefix rows).
 
 ---
 

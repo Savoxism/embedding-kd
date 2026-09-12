@@ -451,7 +451,7 @@ def test_every_support_policy_survives_the_collate_and_the_criterion(policy):
     criterion = GGPKDDistillation(
         diffusion_scales=(1,),
         teacher_embeddings=torch.randn(n_items, 12),
-        use_ambient_scale=False,
+        calibration_mode="none",
         relation_target="direct",
         row_weight=0.0,
         row_temps=torch.full((n_items,), 0.05),
@@ -485,7 +485,9 @@ def test_in_batch_arm_is_temperature_matched_to_the_teacher_arm():
     """
     from config import GGPKDConfig
 
-    config = GGPKDConfig(batch_local=True, relation_target="direct", use_ambient=False)
+    config = GGPKDConfig(
+        batch_local=True, relation_target="direct", calibration_mode="none"
+    )
     assert config.relation_target == "direct"
 
     with pytest.raises(ValueError, match="ambient_only"):

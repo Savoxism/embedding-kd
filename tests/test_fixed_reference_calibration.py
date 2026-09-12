@@ -1,4 +1,5 @@
 import numpy as np
+import pytest
 import torch
 
 from config import GGPKDConfig
@@ -149,7 +150,12 @@ def test_fixed_reference_masks_other_anchors_columns_from_calibration():
     assert metrics["loss_nbr"] == graph_metrics["loss_nbr"]
 
 
-def test_config_maps_legacy_ambient_flag_onto_calibration_mode():
-    assert GGPKDConfig(calibration_mode="fixed_reference").use_ambient is True
-    assert GGPKDConfig(calibration_mode="none").use_ambient is False
-    assert GGPKDConfig(use_ambient=False).calibration_mode == "none"
+def test_calibration_mode_is_the_only_ambient_switch():
+    """`use_ambient` was a second name for calibration_mode and has been removed."""
+    assert GGPKDConfig(calibration_mode="fixed_reference").calibration_mode == (
+        "fixed_reference"
+    )
+    assert GGPKDConfig(calibration_mode="none").calibration_mode == "none"
+    assert not hasattr(GGPKDConfig(), "use_ambient")
+    with pytest.raises(AttributeError):
+        GGPKDConfig(use_ambient=False)

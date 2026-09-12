@@ -11,7 +11,11 @@ from src.ggpkd.policy import (
     diffusion_weights,
 )
 
-RELATION_TARGETS = ("diffusion", "direct", "ambient_only")
+# "diffusion" is accepted as the former spelling of "transition": at the
+# method's single hop the target is the teacher transition row, and calling it
+# a diffusion target named a composition step that no longer runs.
+RELATION_TARGETS = ("transition", "direct", "ambient_only")
+RELATION_TARGET_ALIASES = {"diffusion": "transition"}
 CALIBRATION_MODES = ("none", "pool", "fixed_reference")
 
 
@@ -288,6 +292,10 @@ class GGPKDDistillation(nn.Module):
             "reported only by the evaluation probe"
         ),
         "sym_weight": "L_sym has been removed",
+        "use_ambient_scale": (
+            "one switch now: pass calibration_mode='none' to delete the r=0 "
+            "scale"
+        ),
         "direct_student_temp": (
             "tied to direct_temp: the ambient scale uses one temperature on both "
             "the teacher and the student side (Hinton et al., 2015)"
@@ -307,8 +315,7 @@ class GGPKDDistillation(nn.Module):
         transition_probs: torch.Tensor | None = None,
         row_weight: float = 0.5,
         row_temps: torch.Tensor | None = None,
-        relation_target: str = "diffusion",
-        use_ambient_scale: bool = True,
+        relation_target: str = "transition",
         calibration_mode: str | None = None,
         **kwargs,
     ):
@@ -335,7 +342,7 @@ class GGPKDDistillation(nn.Module):
             self.row_temps = None
         self.eps_norm = EPS_NORM
         self.diag_topk = DIAG_TOPK
-        # "diffusion" is the method. "direct" is the S3 control: identical selected
+        # "transition" is the method. "direct" is the S3 control: identical selected
         # columns, identical temperature, identical weight on the group -- only the
         # target changes, from the composed multi-scale transition rows to the
         # teacher's own cosine profile restricted to those same columns. It
@@ -350,6 +357,7 @@ class GGPKDDistillation(nn.Module):
         # scale still holds its weight in the normalization, so leaving it in would
         # silently scale the whole loss down by the dead group's share (0.64 at
         # R={1,2,4}) and hand the baseline a different effective learning rate.
+        relation_target = RELATION_TARGET_ALIASES.get(relation_target, relation_target)
         if relation_target not in RELATION_TARGETS:
             raise ValueError(
                 f"relation_target must be one of {RELATION_TARGETS}, "
@@ -395,7 +403,7 @@ class GGPKDDistillation(nn.Module):
         #     computed from: `relation_target="direct"` reads teacher cosines over
         #     whatever columns it is given, including columns carrying no graph
         #     mass at all.
-        #   *Is scale r=0 in the loss?* -> `use_ambient_scale`. It decides what is
+        #   *Is scale r=0 in the loss?* -> `calibration_mode`. It decides what is
         #     optimized.
         #
         # Conflating them made the minimal relational objective unreachable. The
@@ -412,10 +420,9 @@ class GGPKDDistillation(nn.Module):
         # current mini-batch. `fixed_reference` evaluates the same teacher/student
         # similarity KL on C_i = Omega_i union R, where R is fixed before
         # training. The latter changes only which columns calibration scores; the
-        # graph target and its domain remain Omega_i. `use_ambient_scale` is kept
-        # as a compatibility surface for older scripts and tests.
+        # graph target and its domain remain the anchor's own row.
         if calibration_mode is None:
-            calibration_mode = "pool" if use_ambient_scale else "none"
+            calibration_mode = "pool"
         if calibration_mode not in CALIBRATION_MODES:
             raise ValueError(
                 f"calibration_mode must be one of {CALIBRATION_MODES}, "
@@ -426,7 +433,7 @@ class GGPKDDistillation(nn.Module):
         if self.relation_target == "ambient_only" and not self.use_ambient_scale:
             raise ValueError(
                 "relation_target='ambient_only' is the ambient scale and nothing "
-                "else; use_ambient_scale=False would leave the objective empty"
+                "else; calibration_mode='none' would leave the objective empty"
             )
         self.use_direct = teacher_embeddings is not None
         if self.use_direct:

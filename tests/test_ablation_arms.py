@@ -19,7 +19,7 @@ def _criterion_inputs(batch=4, candidates=12, dim=16, n_items=60, scales=3):
     torch.manual_seed(0)
     teacher = torch.randn(n_items, dim)
     probs = torch.rand(batch, scales, candidates)
-    probs[:, :, candidates // 2 :] = 0.0 
+    probs[:, :, candidates // 2 :] = 0.0
     probs /= probs.sum(-1, keepdim=True)
     candidate_idx = torch.stack(
         [torch.randperm(n_items)[:candidates] for _ in range(batch)]
@@ -206,16 +206,19 @@ def test_unknown_knn_mode_is_rejected():
 def test_config_defaults_are_the_unablated_method():
     config = GGPKDConfig()
     assert config.support_policy == "topk"
-    assert config.relation_target == "diffusion"
-    assert config.use_ambient is True
-    assert config.knn_mode == "mutual"
+    assert config.relation_target == "transition"
+    assert GGPKDConfig(relation_target="diffusion").relation_target == (
+        "transition"
+    )
+    assert config.calibration_mode == "pool"
+    assert config.knn_mode == "directed"
     assert config.diffusion_scales == (1,)
 
 
 def test_config_rejects_the_one_impossible_combination():
     """`ambient_only` *is* scale r=0, so deleting the scale deletes the objective.
 
-    Its neighbour combination, `direct` + `use_ambient=False`, used to be refused
+    Its neighbour combination, `direct` + calibration_mode='none', used to be refused
     for the same reason and no longer is: the teacher bank now reaches the
     criterion independently of whether scale r=0 is in the loss. That pairing is
     the minimal relational objective the controlled support study trains on --
@@ -223,13 +226,13 @@ def test_config_rejects_the_one_impossible_combination():
     as buildable rather than leaving it to the study to discover.
     """
     with pytest.raises(ValueError, match="ambient scale"):
-        GGPKDConfig(relation_target="ambient_only", use_ambient=False)
+        GGPKDConfig(relation_target="ambient_only", calibration_mode="none")
 
 
 def test_minimal_relational_objective_is_buildable():
-    config = GGPKDConfig(relation_target="direct", use_ambient=False, row_weight=0.0)
+    config = GGPKDConfig(relation_target="direct", calibration_mode="none", row_weight=0.0)
     assert config.relation_target == "direct"
-    assert config.use_ambient is False
+    assert config.calibration_mode == "none"
 
 
 def test_criterion_without_the_ambient_scale_still_reads_the_bank():
@@ -243,7 +246,7 @@ def test_criterion_without_the_ambient_scale_still_reads_the_bank():
     criterion = GGPKDDistillation(
         diffusion_scales=(1,),
         teacher_embeddings=data["teacher"],
-        use_ambient_scale=False,
+        calibration_mode="none",
         relation_target="direct",
         row_weight=0.0,
         row_temps=data["graph"]["row_temps"],
@@ -265,7 +268,7 @@ def test_criterion_without_the_ambient_scale_still_reads_the_bank():
     with_ambient = GGPKDDistillation(
         diffusion_scales=(1,),
         teacher_embeddings=data["teacher"],
-        use_ambient_scale=True,
+        calibration_mode="pool",
         relation_target="direct",
         row_weight=0.0,
         row_temps=data["graph"]["row_temps"],

@@ -65,13 +65,6 @@ def parse_args():
     )
     parser.add_argument("--truncation_tolerance", type=float, default=None)
     parser.add_argument("--row_weight", type=float, default=None)
-    parser.add_argument("--row_start_epoch", type=int, default=None)
-    parser.add_argument(
-        "--direct_temp",
-        type=float,
-        default=None,
-        help="Calibration temperature; 0 derives it as the median graph bandwidth",
-    )
     parser.add_argument(
         "--diffusion_scales",
         type=str,
@@ -100,7 +93,7 @@ def parse_args():
     )
     parser.add_argument(
         "--relation_target",
-        choices=["diffusion", "direct", "ambient_only"],
+        choices=["transition", "diffusion", "direct", "ambient_only"],
         default=None,
         help="Target on the selected columns: diffusion (method), direct teacher "
         "cosine, or ambient_only (no graph relations at all)",
@@ -109,7 +102,7 @@ def parse_args():
         "--knn_mode",
         choices=["mutual", "directed", "symmetrized"],
         default=None,
-        help="kNN edge rule for the teacher graph: mutual (method), directed, symmetrized",
+        help="kNN edge rule for the teacher graph: directed (method), mutual, symmetrized",
     )
     parser.add_argument(
         "--batch_local",
@@ -272,8 +265,6 @@ def get_config(method: str, args):
         "graph_k",
         "truncation_tolerance",
         "row_weight",
-        "row_start_epoch",
-        "direct_temp",
         "diffusion_quota",
         "hard_neg_k",
         "random_neg_k",
@@ -316,7 +307,6 @@ def get_config(method: str, args):
 
     if args.calibration_mode is not None:
         config.calibration_mode = args.calibration_mode
-        config.use_ambient = args.calibration_mode != "none"
 
     # A store_true flag cannot express "leave the config alone". Keep it as a
     # compatibility alias, but reject two contradictory objective requests.
@@ -326,7 +316,6 @@ def get_config(method: str, args):
                 "--no_ambient conflicts with "
                 f"--calibration_mode {args.calibration_mode}"
             )
-        config.use_ambient = False
         config.calibration_mode = "none"
 
     # The baseline has no graph relations to target, so the objective it implies

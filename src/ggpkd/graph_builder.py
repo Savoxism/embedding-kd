@@ -82,7 +82,7 @@ def _knn_bandwidths(top_scores: np.ndarray, graph_k: int) -> np.ndarray:
     and it survives here in closed form -- no bisection, no target entropy.
 
     *A fixed sample size for every node.* The scores come from the raw top-k, read
-    before the mutual filter, so all k values exist for every node whenever
+    before any edge filter, so all k values exist for every node whenever
     graph_k < n_items. The entropic-affinity solve this replaces ran on the
     filtered neighbour list, where degree varies and 18.9% of the production
     corpus had degree at or below the requested perplexity: those rows never
@@ -93,12 +93,15 @@ def _knn_bandwidths(top_scores: np.ndarray, graph_k: int) -> np.ndarray:
     Calibrating on the raw top-k rather than on the surviving edges is deliberate.
     It is the wider set, so the gap is larger and the rows come out flatter than a
     degree-matched calibration would give; the trade is that the sample size stops
-    depending on how many edges the mutual filter happened to leave.
+    depending on how many edges an edge filter happened to leave. Under the
+    canonical ``directed`` mode nothing is filtered and the two sets coincide.
     """
     k_eff = min(int(graph_k), top_scores.shape[1])
     if k_eff < 2:
         raise ValueError(f"graph_k must retrieve at least 2 neighbours, got {k_eff}")
-    span = top_scores[:, 0].astype(np.float64) - top_scores[:, k_eff - 1].astype(np.float64)
+    span = top_scores[:, 0].astype(np.float64) - top_scores[:, k_eff - 1].astype(
+        np.float64
+    )
     return np.maximum(span / np.log(k_eff), MIN_BANDWIDTH)
 
 
@@ -247,7 +250,7 @@ def _build_transition(
     graph_k: int,
     graph_temp: float,
     fixed_bandwidth: bool,
-    knn_mode: str = "mutual",
+    knn_mode: str = "directed",
     holdout_edge_frac: float = 0.0,
     holdout_seed: int = 0,
 ) -> tuple[
@@ -259,10 +262,13 @@ def _build_transition(
     build changes with it -- same bandwidth solve, same truncation, same pools --
     so the three arms differ only in the edge set:
 
-    * ``mutual`` (canonical): keep j iff j in topk(i) *and* i in topk(j). A hub
-      that everything retrieves but that retrieves nothing back loses those edges.
-    * ``directed``: keep all of topk(i). Every node has degree graph_k, and hubs
-      keep every edge pointing at them.
+    * ``directed`` (canonical): keep all of topk(i). Every node has degree
+      graph_k, hubs keep every edge pointing at them, and a row is supervised on
+      exactly the relations the teacher retrieved for it.
+    * ``mutual``: keep j iff j in topk(i) *and* i in topk(j). A hub that
+      everything retrieves but that retrieves nothing back loses those edges.
+      This was the earlier default; it suppresses hubness but discards teacher
+      mass, and E2 measured it 0.36 points below ``directed``.
     * ``symmetrized``: keep the union, j in topk(i) *or* i in topk(j). Degrees are
       the largest of the three and hubs are amplified rather than suppressed.
 
@@ -282,7 +288,13 @@ def _build_transition(
     if knn_mode not in KNN_MODES:
         raise ValueError(f"knn_mode must be one of {KNN_MODES}, got {knn_mode!r}")
     n_items = top_indices.shape[0]
-    top_sets = [set(top_indices[i, :graph_k].tolist()) for i in range(n_items)]
+    # Only the mutual arm reads this, and building it is n_items sets of graph_k
+    # ints. The canonical directed graph filters nothing, so it never looks.
+    top_sets = (
+        [set(top_indices[i, :graph_k].tolist()) for i in range(n_items)]
+        if knn_mode == "mutual"
+        else None
+    )
     reverse = (
         _reverse_adjacency(top_indices, top_scores, graph_k)
         if knn_mode == "symmetrized"
@@ -308,7 +320,7 @@ def _build_transition(
         seen: set[int] = set()
         for pos, j in enumerate(top_indices[i, :graph_k]):
             j_int = int(j)
-            if knn_mode == "mutual" and i not in top_sets[j_int]:
+            if top_sets is not None and i not in top_sets[j_int]:
                 continue
             neighbors.append(j_int)
             scores.append(float(top_scores[i, pos]))
@@ -385,7 +397,9 @@ def _hubness_stats(row_neighbors: list[np.ndarray]) -> dict[str, float]:
     """Indegree concentration of the edge set.
 
     The kNN-mode comparison is not settled by a downstream score alone: mutual
-    kNN is claimed to suppress hubness, and that claim is about the *graph*. A hub
+    kNN is claimed to suppress hubness, and that claim is about the *graph*.
+    The method keeps the unfiltered top-k, so this is the statistic that says
+    what that choice costs on the graph side. A hub
     is a node that appears in many other nodes' neighbour lists, so the quantity
     is the indegree distribution -- its tail (max, p99) and how much of the total
     edge mass the top 1% of nodes absorb. Reported for every build so the three
@@ -394,9 +408,11 @@ def _hubness_stats(row_neighbors: list[np.ndarray]) -> dict[str, float]:
     n_items = len(row_neighbors)
     if n_items == 0:
         return {}
-    flat = np.concatenate([n for n in row_neighbors if n.size]) if any(
-        n.size for n in row_neighbors
-    ) else np.empty(0, dtype=np.int64)
+    flat = (
+        np.concatenate([n for n in row_neighbors if n.size])
+        if any(n.size for n in row_neighbors)
+        else np.empty(0, dtype=np.int64)
+    )
     indegree = np.bincount(flat.astype(np.int64), minlength=n_items)
     total_edges = int(indegree.sum())
     order = np.sort(indegree)[::-1]
@@ -750,6 +766,74 @@ def _gather_masses(
     return np.where(hit, support_data[clipped], 0.0)
 
 
+def _one_hop_pools(
+    row_neighbors: list[np.ndarray],
+    row_probs: list[np.ndarray],
+    tolerance: float | None,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, dict[str, float]]:
+    """Candidate pools for R = {1}: the anchor's transition row, as it stands.
+
+    At one hop the diffusion machinery computes an identity. The mixture over
+    scales has a single term, the r=1 support of anchor i *is* row i, and the
+    sparse transition matrix is built and multiplied only to read back the rows it
+    was built from. This path skips all of it, which also means the artifact is not
+    paying to store a second copy of the transition rows under another name.
+
+    With `tolerance` falsy the row is kept whole and the pool is exactly the
+    teacher's top-k. A positive tolerance restores the mass-prefix truncation as an
+    ablation arm.
+    """
+    n_items = len(row_neighbors)
+    selected_nodes: list[np.ndarray] = [None] * n_items
+    selected_probs: list[np.ndarray] = [None] * n_items
+    pool_fill = np.zeros(n_items, dtype=np.int64)
+    residual = 0.0
+    empty = 0
+
+    for i in range(n_items):
+        nodes = np.asarray(row_neighbors[i], dtype=np.int64)
+        probs = np.asarray(row_probs[i], dtype=np.float64)
+        total = float(probs.sum())
+        if tolerance:
+            # Sorted back into the row's own column order: the prefix decides which
+            # columns survive, not how they are laid out.
+            keep = np.sort(_mass_prefix(probs, total, float(tolerance)))
+            nodes, probs = nodes[keep], probs[keep]
+            kept = float(probs.sum())
+            residual += max(0.0, total - kept) / max(total, 1e-12)
+            total = kept
+        if nodes.size == 0 or total <= 0.0:
+            empty += 1
+            continue
+        selected_nodes[i] = nodes
+        selected_probs[i] = (probs / total).astype(np.float32)
+        pool_fill[i] = nodes.size
+
+    width = max(1, int(pool_fill.max()))
+    pool_indices = np.full((n_items, width), -1, dtype=np.int64)
+    pool_probs = np.zeros((1, n_items, width), dtype=np.float32)
+    for i in range(n_items):
+        nodes = selected_nodes[i]
+        if nodes is None or nodes.size == 0:
+            continue
+        pool_indices[i, : nodes.size] = nodes
+        pool_probs[0, i, : nodes.size] = selected_probs[i]
+
+    stats = {
+        "pool_width": float(width),
+        "pool_fill_avg": float(pool_fill.mean()),
+        "pool_fill_min": float(pool_fill.min()),
+        "hard_pool_fill_avg": 0.0,
+        "hard_pool_fill_min": 0.0,
+        "truncation_tolerance": 0.0 if not tolerance else float(tolerance),
+        "pool_capped_rows": 0.0,
+        "diffusion_capped_rows": 0.0,
+        "pool_residual_mass_r1": float(residual / max(1, n_items)),
+        "pool_empty_r1": float(empty / max(1, n_items)),
+    }
+    return pool_indices, pool_probs, np.full((n_items, 0), -1, dtype=np.int64), stats
+
+
 def _build_diffusion_pools(
     top_indices: np.ndarray,
     scales: tuple[int, ...],
@@ -775,6 +859,9 @@ def _build_diffusion_pools(
     two things: larger than the tolerance requires, which wastes memory and pads
     with -1, or smaller, which silently breaks the guarantee.
     """
+    if tuple(scales) == (1,) and hard_neg_pool == 0:
+        return _one_hop_pools(row_neighbors, row_probs, tolerance)
+
     n_items = top_indices.shape[0]
     n_scales = len(scales)
 
@@ -1010,7 +1097,6 @@ _METADATA_KEYS = (
     "scale_weights",
     "hard_neg_pool",
     "truncation_tolerance",
-    "lazy_walk",
     "knn_mode",
     "holdout_edge_frac",
     "holdout_seed",
@@ -1052,7 +1138,8 @@ def build_or_load_ggpkd_artifact(
     source_ids: Sequence[int] | None = None,
     fixed_bandwidth: bool = False,
     truncation_tolerance: float = TRUNCATION_TOLERANCE,
-    knn_mode: str = "mutual",
+    hard_negatives: bool = False,
+    knn_mode: str = "directed",
     holdout_edge_frac: float = 0.0,
     holdout_seed: int = 0,
 ) -> dict:
@@ -1073,7 +1160,10 @@ def build_or_load_ggpkd_artifact(
             f"transition row"
         )
     weights = normalized_diffusion_weights(scales)
-    hard_neg_pool = hard_negative_pool_size(graph_k)
+    # Sized from graph_k only when an arm actually draws hard negatives. The
+    # method draws none, and an unconditional pool cost every build a top-2k
+    # retrieval plus an (N, graph_k) table nothing read.
+    hard_neg_pool = hard_negative_pool_size(graph_k) if hard_negatives else 0
     if source_ids is None:
         source_array = np.zeros(n_items, dtype=np.int64)
     else:
@@ -1095,7 +1185,6 @@ def build_or_load_ggpkd_artifact(
         "scale_weights": tuple(round(float(w), 8) for w in weights),
         "hard_neg_pool": int(hard_neg_pool),
         "truncation_tolerance": float(truncation_tolerance),
-        "lazy_walk": True,
         # In _METADATA_KEYS below: two arms of the kNN ablation share every other
         # key, so without it the second arm would silently load the first's graph.
         "knn_mode": str(knn_mode),
@@ -1131,7 +1220,9 @@ def build_or_load_ggpkd_artifact(
     # Hard-negative storage is derived from graph width. Retrieval must still cover
     # both the graph pool and that derived hard-negative pool.
     topk_for_graph = min(n_items - 1, max(graph_k, hard_neg_pool + graph_k))
-    topk_device = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
+    topk_device = (
+        torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
+    )
     top_indices, top_scores = _compute_topk_cosine(
         teacher_embeddings, k=topk_for_graph, device=topk_device
     )

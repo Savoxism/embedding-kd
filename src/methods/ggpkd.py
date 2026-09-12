@@ -140,6 +140,7 @@ def build_data(ctx, df: pd.DataFrame, teacher_cls: torch.Tensor):
         graph_k=ctx.config.graph_k,
         fixed_bandwidth=ctx.config.fixed_bandwidth,
         truncation_tolerance=ctx.config.truncation_tolerance,
+        hard_negatives=ctx.config.hard_neg_k > 0,
         diffusion_scales=ctx.config.diffusion_scales,
         knn_mode=ctx.config.knn_mode,
         holdout_edge_frac=ctx.config.holdout_edge_frac,
@@ -243,28 +244,24 @@ def build_criterion(ctx, config):
     # criterion `None` and make it blame the graph artifact for what is really a
     # setup-ordering bug.
     artifact = ctx.ggpkd_artifact
-    # --direct_temp 0 derives the last free student temperature from the graph
-    # itself: the median entropic-affinity bandwidth. The ambient target is the
-    # same softmax-of-cosines construction as the transition rows with the
-    # sparsification removed, so the graph's own typical bandwidth is the natural
-    # scale for it. Written back onto the config so the run manifest and banner
-    # record the concrete value, exactly as derived diffusion_quota is.
-    if config.direct_temp == 0.0:
-        row_temps = artifact.get("row_temps")
-        config.direct_temp = (
-            float(row_temps.median()) if row_temps is not None else FIXED_BANDWIDTH_TEMP
-        )
-        print(
-            f"Derived direct_temp={config.direct_temp:.4f} "
-            "(median graph bandwidth; requested via --direct_temp 0)"
-        )
-    # `use_ambient=False` is the S4 deletion arm. It used to be expressed by
+    # The calibration temperature is derived from the graph itself: the median
+    # row bandwidth. The ambient target is the same softmax-of-cosines
+    # construction as the transition rows with the sparsification removed, so the
+    # graph's own typical bandwidth is the natural scale for it. Written onto the
+    # config so the run manifest and banner record the concrete value, exactly as
+    # the derived diffusion_quota is.
+    row_temps = artifact.get("row_temps")
+    config.direct_temp = (
+        float(row_temps.median()) if row_temps is not None else FIXED_BANDWIDTH_TEMP
+    )
+    print(f"Derived direct_temp={config.direct_temp:.4f} (median graph bandwidth)")
+    # `calibration_mode="none"` is the S4 deletion arm. It used to be expressed by
     # withholding the teacher bank, which also removed the only way to compute a
     # `direct` target -- and the controlled support study needs exactly that
     # combination: no ambient scale (so nothing couples the anchors and batch
     # composition cannot reach the loss) with direct targets (so a column drawn
     # off-graph still carries a real teacher opinion). The bank is therefore
-    # passed whenever some term reads it, and `use_ambient_scale` alone decides
+    # passed whenever some term reads it, and `calibration_mode` alone decides
     # whether scale r=0 is in the objective.
     needs_bank = config.calibration_mode != "none" or config.relation_target in (
         "direct",
@@ -273,7 +270,6 @@ def build_criterion(ctx, config):
     criterion = GGPKDDistillation(
         diffusion_scales=config.diffusion_scales,
         teacher_embeddings=ctx.teacher_cls_all if needs_bank else None,
-        use_ambient_scale=config.use_ambient,
         calibration_mode=config.calibration_mode,
         direct_temp=config.direct_temp,
         row_weight=config.row_weight,
@@ -295,7 +291,7 @@ def build_criterion(ctx, config):
 def on_epoch_start(ctx, epoch: int):
     """Gate the auxiliary row loss for this epoch."""
     cfg = ctx.config
-    use_row = cfg.row_weight > 0 and epoch + 1 >= cfg.row_start_epoch
+    use_row = cfg.row_weight > 0
     if ctx.criterion is not None and hasattr(ctx.criterion, "use_row_loss"):
         ctx.criterion.use_row_loss = use_row
     if use_row:

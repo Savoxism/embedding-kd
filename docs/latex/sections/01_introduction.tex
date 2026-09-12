@@ -28,39 +28,63 @@ While larger embedding models can achieve strong performance, their computationa
 
 Knowledge distillation (KD) offers a practical way to reduce this deployment burden by transferring knowledge from a high-capacity teacher to a more compact student~\citep{hinton2015distilling}. Recent embedding distillation frameworks have demonstrated strong empirical performance through direct teacher--student representation alignment~\citep{vujanic2026leaf}. For text embedding models, however, relational structure is also important, as many downstream applications operate directly on the similarities, distances, and relative ordering induced among embedded texts~\citep{reimers2019sentence,muennighoff2023mteb}. Pointwise representation alignment does not explicitly constrain these inter-text relationships and may therefore leave important aspects of the teacher's embedding geometry uncontrolled. This has motivated relational and structure-preserving distillation methods that explicitly transfer teacher-induced similarities, distances, angles, and other geometric relationships~\citep{tung2019similarity,park2019rkd,kim2023embeddistill,zhang2024jasperstella,dao2026talas}.
 
-At the corpus level, relational distillation would ideally account for the geometry induced among all training texts. Directly realizing such an objective, however, requires a quadratic number of pairwise relations. Relational KD is therefore commonly instantiated within mini-batches, where only relations among co-occurring texts are available for supervision~\citep{tung2019similarity,park2019rkd,passalis2020pkt}. Prior work has identified this batch locality as a limitation: batch-wise objectives observe only a fraction of dataset-level relations, with relational coverage becoming increasingly sparse as the dataset grows~\citep{qian2022fullkernel,ckabert}. Full-kernel approximations and memory-augmented methods have consequently been explored to extend relational supervision beyond individual batches~\citep{qian2022fullkernel,ckabert,yang2022crossimage}. These approaches broaden relational supervision beyond individual batches, but do not address which corpus relations should be prioritized under a limited relational budget. We formulate this as a signal-selection problem: mini-batch KD lets batch co-occurrence determine relational support, whereas GGPKD lets teacher relevance select the relations and uses mini-batches only for computation.
+At the corpus level, relational distillation would ideally account for the geometry induced among all training texts. Directly realizing such an objective, however, requires a quadratic number of pairwise relations. Relational KD is therefore commonly instantiated within mini-batches, where only relations among co-occurring texts are available for supervision~\citep{tung2019similarity,park2019rkd,passalis2020pkt}. Prior work has identified this batch locality as a limitation: batch-wise objectives observe only a fraction of dataset-level relations, with relational coverage becoming increasingly sparse as the dataset grows~\citep{qian2022fullkernel,ckabert}. Full-kernel approximations and memory-augmented methods have consequently been explored to extend relational supervision beyond individual batches~\citep{qian2022fullkernel,ckabert,yang2022crossimage}. These approaches broaden relational supervision beyond individual batches, but do not address which corpus relations should be prioritized under a limited relational budget. We formulate this as a support-selection problem: mini-batch KD lets batch co-occurrence decide which relations are supervised at all, whereas GGPKD lets teacher geometry decide which relations are eligible and uses mini-batches only to realize them.
 
-We argue that this approximation introduces a under-emphasized bottleneck. 
-Relational KD involves two distinct decisions: \emph{which relations should be 
-supervised} and \emph{how those relations should be computed efficiently}. Mini-batch 
-KD entangles the two. Although the relations themselves are defined by the teacher, 
-their supervision support is determined by random batch co-occurrence. Consequently, 
-an important teacher relation and an irrelevant corpus pair have the same probability 
-of being exposed during training. Increasing optimization over such batches therefore 
-does not directly address which parts of the teacher geometry are actually observed. This observation suggests a different principle: \emph{the teacher should select the 
-relations, while mini-batches should only compute them}. Based on this principle, we 
-introduce \textsc{GGPKD}, a framework for teacher-selected global relational 
-distillation. GGPKD first constructs a sparse mutual-nearest-neighbor graph from 
-cached teacher embeddings, using teacher geometry to identify meaningful local 
-relations. It then diffuses these local relations over the graph to construct 
-multi-scale relational targets that capture structure beyond immediate neighbors. 
-Finally, mass-aware candidate selection realizes these targets using only a small 
-number of student comparisons, while cross-anchor supervision couples overlapping 
-local views. The resulting procedure preserves teacher-selected corpus structure 
-without requiring dense pairwise computation or online teacher inference. Our contributions are below:
-% cần thêm
+We argue that this approximation introduces an under-emphasized bottleneck.
+Relational KD involves two distinct decisions: \emph{which relations should be
+supervised} and \emph{how those relations should be computed efficiently}.
+Mini-batch KD entangles the two. Although the relations themselves are defined
+by the teacher, their supervision support is determined by random batch
+co-occurrence. Consequently, an important teacher relation and an irrelevant
+corpus pair have the same probability of being exposed during training.
+Optimizing longer over such batches does not change which parts of the teacher
+geometry are observed, only how often the same uninformed sample is revisited.
+This observation suggests a different principle: \emph{teacher geometry should
+determine which relations are eligible for supervision, while mini-batches
+should serve to realize those relations efficiently.}
+
+Based on this principle, we introduce \textsc{GGPKD}, a framework for
+teacher-selected relational distillation. GGPKD encodes the corpus once with
+the teacher and builds a sparse mutual-nearest-neighbor graph from the cached
+embeddings. Each row of this graph is turned into a transition distribution
+whose bandwidth is read off the retrieved similarities rather than tuned, which
+makes the target invariant to how a particular teacher scales its cosines. An
+anchor is then supervised on exactly the columns its own row puts mass on, so
+the supervision support is a deterministic function of teacher geometry and is
+identical in every epoch. Mini-batches enter only as a computational device:
+the candidate sets of a batch are deduplicated into a shared pool that is
+encoded once, and that single encoding pass supports three uses of the same
+vectors---matching each anchor's transition row, calibrating similarity levels
+across the pool, and supervising the teacher-approved rows of non-anchor pool
+members. Batch composition therefore determines which eligible relations can be
+realized in the current update, not which relations are considered relevant.
+Because every bandwidth, temperature, and term weight is derived from the
+graph, the method exposes two hyperparameters: the graph width and the weight
+of the auxiliary-row term.
+
+Across nine datasets and three teacher--student settings, GGPKD attains the
+best mean score in all three settings. The gains are largest and most
+consistent on semantic textual similarity, while pair-classification results
+are less uniform. Our contributions are:
 \begin{itemize}
-    \item We formulate relational knowledge distillation as a \emph{support-selection}
-    problem and show that conventional mini-batch training selects relational supervision
-    independently of teacher relevance.
+    \item We formulate relational knowledge distillation as a
+    \emph{support-selection} problem, and separate relation eligibility, which
+    should be decided by teacher geometry, from relation realization, which is
+    a computational concern. Under this view, conventional mini-batch training
+    selects relational supervision independently of teacher relevance, and
+    corpus-level geometry preservation is controlled by two factors: alignment
+    on the supervised relations and coverage of the teacher's relational mass.
 
-    \item We propose \textsc{GGPKD}, which decouples teacher-driven relation selection
-    from mini-batch computation through sparse teacher topology, multi-scale diffusion,
-    and efficient candidate realization.
+    \item We introduce \textsc{GGPKD}, which realizes this principle with a
+    cached mutual-$k$NN teacher graph, per-row bandwidths derived from the
+    retrieved similarities, deterministic row-shaped supports, and amortized
+    auxiliary-row supervision that reuses already-encoded pool members. Every
+    temperature and weight is derived from the graph, leaving two
+    hyperparameters.
 
-    \item We theoretically connect missed teacher supervision to global geometry distortion
-    and empirically show that teacher-selected relation provides a more effective
-    approximation to corpus-level relational transfer under a fixed relational budget.
-
-    \item Experiment
+    \item We evaluate on nine datasets across three teacher--student settings,
+    where GGPKD obtains the best mean score in every setting and the strongest
+    results on semantic textual similarity, and show that its two
+    hyperparameters are flat enough that the defaults are not selected on test
+    results.
 \end{itemize}
