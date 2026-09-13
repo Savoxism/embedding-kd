@@ -13,7 +13,7 @@
 #   GPUS=0,1,2,3 bash scripts/exp/stage0_graph_k.sh
 #   DRY_RUN=1    bash scripts/exp/stage0_graph_k.sh
 #
-# Env: GPUS, SEEDS (42,43,44), PAIR, CORPUS, GRAPH_KS (25,50,100,200),
+# Env: GPUS, SEEDS (42), PAIR, CORPUS, GRAPH_KS (25,50,100,200),
 #      CACHE_ROOT, RESULT_BASE, CSV_OUT, DRY_RUN.
 set -euo pipefail
 
@@ -58,6 +58,8 @@ run_arms "$STAGE_REPO_ROOT" "$EXPERIMENT" || status=$?
 if [[ "${DRY_RUN:-0}" != "1" ]]; then
     echo
     echo "Rule: take the smallest graph_k within one seed-sd of the best Avg."
+    echo "With one seed there is no sd in this sweep: use ~0.08, the spread the"
+    echo "2026-09-12 three-seed sweep measured at every graph_k."
     echo "Small beats tied-and-large -- it is the whole cost argument."
     echo "Then run every later stage with GRAPH_K=<winner>."
     echo "Results: $CSV_OUT"

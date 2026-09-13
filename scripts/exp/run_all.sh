@@ -75,7 +75,7 @@ EOF
     echo "Stage $stage -- $script"
     echo "=============================================================="
     # Second pass: the operating point is already known, so Stage 0 has nothing
-    # left to sweep. It still runs at that one setting, because its 3 seeds are
+    # left to sweep. It still runs at that one setting, because its seeds are
     # the full-model reference Stages 1, 2D and 3 compare against.
     if [[ "$stage" == "0" && -n "${GRAPH_K:-}" ]]; then
         echo "GRAPH_K=$GRAPH_K is already chosen: running Stage 0 at that setting"

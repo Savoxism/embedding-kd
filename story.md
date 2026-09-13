@@ -75,9 +75,9 @@ teacher retrieves for it — **the same number of comparisons, chosen
 differently** — improves the student. What pays is that the comparisons are with
 genuinely related texts: neither leaving the batch, nor using another model's
 notion of similarity, reproduces the gain. And the effect tracks *how many*
-related texts an objective is shown, however it comes by them: composing batches
-from one neighbourhood improves the baseline, and so does enlarging the batch,
-which is a linear and very expensive way to buy the same thing.
+related texts an objective is shown: composing batches from one neighbourhood
+improves the baseline. Enlarging the batch buys the same count only linearly, at
+far more encoder work — a consequence of the count formula, not a trained result.
 
 *The like-for-like count is experimental control, not a constraint we impose on
 the method.* It is there so the difference cannot be attributed to one arm
@@ -187,12 +187,10 @@ but unrelated — matches the teacher's neighbours.
 **C1c.** *The effect tracks the number of related texts an objective sees, not
 the mechanism that supplies them.*
 Falsified if raising that number for a batch-local objective — by composing
-batches from one neighbourhood, or by enlarging the batch — leaves its score
-unmoved, or if raising it far enough does not close the gap.
-→ **C. Dose–response**. C.2 is also the arm that can hurt us: in the old runs the
-baseline climbed with batch size and at $B=256$ passed the teacher arm. Either
-that does not survive the new operating point, or the claim is stated per unit of
-encoder work.
+batches from one neighbourhood — leaves its score unmoved.
+→ **C. Dose–response**. Buying the count with batch size is not trained: no
+setting matches steps, data passes and learning rate across $B$ at once. It is
+stated from A's formula and listed as a limitation.
 
 **C1d.** *It has to be this teacher's notion of similarity, not any model's.*
 Falsified if comparisons chosen by the student's own kNN match. This is the arm
@@ -286,5 +284,5 @@ inference.
 6. **Downstream results** — main table, component ablation, sensitivity.
 7. **Limitations** — the fraction of a neighbourhood a pool exposes, graph cost,
    the calibration term's comparison set, the held-out result, the student-error
-   axis we do not test, what happens at very large batch (C.2), and
+   axis we do not test, what happens at very large batch (not trained), and
    pair-classification being less uniform.

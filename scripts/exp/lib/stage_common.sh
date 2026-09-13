@@ -17,7 +17,9 @@ stage_common_init() {
     PYTHON_BIN="${PYTHON_BIN:-$STAGE_REPO_ROOT/.venv/bin/python}"
     PAIR="${PAIR:-qwen3_0_6b_to_minilmv2_h384}"
     CORPUS="${CORPUS:-data/train_set/merged_3_data_5k_each.csv}"
-    SEEDS="${SEEDS:-42,43,44}"
+    # One seed while the stages are still being shaped; SEEDS=42,43,44 for the
+    # numbers that go into the paper.
+    SEEDS="${SEEDS:-42}"
     CACHE_ROOT="${CACHE_ROOT:-$STAGE_REPO_ROOT/cache/exp}"
     export PAIR SEEDS CACHE_ROOT PYTHON_BIN
     STAGE_MISSING=()

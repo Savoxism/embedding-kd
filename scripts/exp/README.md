@@ -20,7 +20,7 @@ DRY_RUN=1 GRAPH_K=50    bash scripts/exp/run_all.sh   # print the plan only
 | 0 | `stage0_graph_k.sh` | what operating point? also the full-model reference | 12 |
 | 1 | `stage1_deletions.sh` | does each component earn its place? | 12 |
 | 2B | `stage2b_ladder.sh` | which texts should an anchor be compared against? | 12/pair |
-| 2C | `stage2c_dose_response.sh` | does the score follow the count, however it is bought? | 27 |
+| 2C | `stage2c_dose_response.sh` | does the score follow the count when batch composition supplies it? | 15 |
 | 2D | `stage2d_components.sh` | ablation on the shipped objective | 9 |
 | 3 | `stage3_main_table.sh` | the deliverable | 6–15 |
 
@@ -43,7 +43,6 @@ ones in the same `results.csv` instead of overwriting the file. The pieces the
 export GRAPH_K=200 GPUS=0,1,2,3,4,5,6,7 JOBS_PER_GPU=2
 ARMS=row_centers_random,uniform_target bash scripts/exp/stage1_deletions.sh
 ARMS=student_knn                       bash scripts/exp/stage2b_ladder.sh
-HALF=c2                                bash scripts/exp/stage2c_dose_response.sh
 ARMS=full                              bash scripts/exp/stage2d_components.sh
 bash scripts/exp/exp3_heldout_geometry.sh   # needs Stage 2D's full run tree
 ```

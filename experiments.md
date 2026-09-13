@@ -14,7 +14,10 @@ are worth paying for. None of them may appear in the paper.
 
 ## Budget
 
-Counted after reuse — several cells are the same run serving two purposes.
+Counted after reuse — several cells are the same run serving two purposes, at 3
+seeds. **The scripts currently default to one seed (`SEEDS=42`)**, a third of
+every count below; pass `SEEDS=42,43,44` for the numbers that go into the paper.
+With one seed, read gaps against the ~0.08 seed sd the 2026-09-12 sweep measured.
 
 | | runs | reused from |
 |---|---|---|
@@ -24,8 +27,7 @@ Counted after reuse — several cells are the same run serving two purposes.
 | 1.3 uniform target | 3 | " |
 | A the count | **0** | analytic |
 | B comparison ladder (4 arms × 2 pairs) | 24 | — |
-| C.1 batch composition | 15 | `full @ random` = 0.1 winner |
-| C.2 batch size | 12 | $B=64$ from B |
+| C batch composition | 15 | `full @ random` = 0.1 winner |
 | D component ablation | 9 | −row, −calib from Stage 1 |
 | E held-out relations | **0** | post-hoc on D |
 | F main table | 6 | pair 1 = 0.1 winner |
@@ -48,11 +50,12 @@ part.
 **The 2026-09-12 sweep has three invalid tables.** `student_knn` trained on the
 teacher graph: the old helper wrote `graph_student_knn_k200.pt`, the runner looked
 for `graph_student_knn.pt`, found nothing, and built the teacher graph under that
-name — its scores equal the teacher arm's to two decimals. C.2 ran every batch
-size for 5 epochs, so B = 1024 took 65 optimizer steps against 1055 at B = 64.
-D had no full-objective arm under its own holdout. All three are fixed in the
-scripts; re-run them with `ARMS=` (see `scripts/exp/README.md`). The study now
-runs on `qwen3_0_6b_to_minilmv2_h384` only.
+name — its scores equal the teacher arm's to two decimals. The batch-size half
+of C ran every batch size for 5 epochs, so B = 1024 took 65 optimizer steps
+against 1055 at B = 64; it has been cut (see Cut). D had no full-objective arm
+under its own holdout. The other two are fixed in the scripts; re-run them with
+`ARMS=` (see `scripts/exp/README.md`). The study now runs on
+`qwen3_0_6b_to_minilmv2_h384` only.
 
 ---
 
@@ -152,7 +155,8 @@ together and came out *against* the hypothesis; a formula has no confound.
 **What batch size would fix it.** Solving for 63 informative comparisons at
 $N = 13{,}553$, $k = 200$ gives $B \approx 4{,}270$. That is the answer to "why
 not just use a bigger batch": you can buy the count with batch size, linearly, at
-two orders of magnitude of encoder work. C.2 checks the prediction.
+two orders of magnitude of encoder work. It is stated from the formula, not
+trained (see Cut).
 
 The figure: teacher similarity on the $x$-axis, probability of being compared on
 the $y$-axis, one curve per method. Batch-local is flat at $(B-1)/(N-1)$
@@ -203,13 +207,13 @@ Cost columns (`cost_*`, `train_encoded_texts_cum`) fall out of the same runs and
 carry C3 for free. Report `corpus_uniform`'s encode count beside ours: an
 off-graph draw deduplicates far worse, and that gap is part of the argument.
 
-### C. Dose–response on the count (27 runs)
+### C. Dose–response on the count (15 runs)
 
-A and B say a number matters. C moves that number two different ways and checks
-the score follows. This is the strongest form the claim can take, and it turns
-two previously awkward results into supporting ones.
+A and B say a number matters. C moves that number for a batch-local objective
+and checks the score follows, which turns a previously awkward result into a
+supporting one.
 
-**C.1 — raise the count by composing batches (15 runs).** `random` vs
+**Raise the count by composing batches (15 runs).** `random` vs
 `teacher_neighbor` batching, arms `pointwise` / `in_batch` / **full GGPKD**,
 3 seeds; `full @ random` is the Stage 0 winner. Filling a batch from one teacher
 neighbourhood raises the count for a batch-local objective and changes nothing
@@ -226,28 +230,7 @@ statistics for every objective and a raw spread proves nothing. The signature is
 *sign and target* — batch-local improves exactly when the batch happens to supply
 related texts; ours should not move.
 
-**C.2 — raise the count by enlarging the batch (12 runs).** `in_batch` and full
-GGPKD at $B \in \{256, 1024\}$, 3 seeds. $B = 64$ is C.1's `in_batch_random` and
-Stage 0's full run, which are the same objectives — not B's minimal one. Epochs
-scale with $B/64$ (20 and 80), so every arm takes ~1050 optimizer steps. At a
-fixed 5 epochs both arms fell with $B$ (full 75.94 → 74.86 → 72.21) because
-B = 1024 got 65 updates, which says nothing about the count. A predicts the
-baseline's count rises linearly in $B$ and needs $B \approx 4{,}270$ to reach
-ours, so it should climb and not arrive.
-
-**This is the arm that can hurt us, which is exactly why it is here.** In the old
-scaling runs the baseline did climb with batch size — at $N = 48$k: 71.85 (B=16)
-→ 72.82 (B=64) → **73.20** (B=256) — and at $B = 256$ it *passed* the teacher
-arm's 72.83. Counts of 0.06 → 0.26 → 1.06 explain the climb and do not explain
-the overtake. Either the anomaly does not survive the new operating point, or the
-claim is stated per unit of encoder work rather than per step — which the cost
-columns support, since a 1024-text batch encodes an order of magnitude more per
-update. Both outcomes are reportable; being surprised by this in review is not.
-
-**Both halves report the measured count**, not only the score, so the result is a
-curve: score against informative comparisons per anchor, with both ways of buying
-the count landing on it and ours at the right-hand end for a fraction of the
-encoder cost.
+**Report the measured count**, not only the score.
 
 ### D. Component ablation on the shipped objective (12 runs)
 
@@ -301,8 +284,16 @@ C4. It is not a search.
 
 - **Training at four corpus sizes.** Replaced by the formula in A, which gives
   the $1/N$ statement with no confound. The old runs varied $N$ and the number of
-  updates together and came out against the hypothesis; their one genuinely
-  informative signal — the baseline climbing with batch size — is now C.2.
+  updates together and came out against the hypothesis.
+- **Training at several batch sizes (was C.2).** No single setting holds the
+  other factors fixed across $B$: matching epochs gives B = 1024 65 optimizer
+  steps against 1055 at B = 64 (the 2026-09-12 sweep, where both arms fell with
+  $B$ for that reason), matching steps gives it 80 passes over the corpus against
+  5, and the learning rate is unscaled either way. The result could not be read
+  as a statement about the count. "Why not a bigger batch" is answered by A's
+  formula and the cost columns; very large batches go under Limitations. The old
+  observation that the baseline passed the teacher arm at B = 256 (N = 48k) was
+  measured on a different method and is not carried forward.
 - **`rewired`.** Identical to `corpus_uniform` under the current graph.
 - **Multi-hop radius ablation.** Removed from the codebase; reporting it would
   mean restoring the pipeline first.
@@ -323,8 +314,7 @@ Stage 1  1.1 row term                     6   ── each "no" deletes later wor
          1.3 uniform target               3
 Stage 2  A   the count                    0   ── formula + one figure
          B   ladder (4 arms, 2 pairs)     24
-         C.1 batch composition            15
-         C.2 batch size                   12   ── the arm that can hurt us
+         C   batch composition            15
          D   component ablation            9
          E   held-out relations           0   ── post-hoc on D
 Stage 3  F   main table                    6
