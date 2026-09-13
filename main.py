@@ -87,16 +87,32 @@ def parse_args():
     )
     parser.add_argument(
         "--relation_target",
-        choices=["transition", "diffusion", "direct", "ambient_only"],
+        choices=["transition", "diffusion", "direct", "ambient_only", "uniform"],
         default=None,
         help="Target on the selected columns: diffusion (method), direct teacher "
-        "cosine, or ambient_only (no graph relations at all)",
+        "cosine, ambient_only (no graph relations at all), or uniform (equal mass "
+        "on every retrieved neighbour, same columns and tau_i)",
     )
     parser.add_argument(
         "--knn_mode",
         choices=["mutual", "directed", "symmetrized"],
         default=None,
         help="kNN edge rule for the teacher graph: directed (method), mutual, symmetrized",
+    )
+    parser.add_argument(
+        "--neighbor_source",
+        choices=["teacher", "student"],
+        default=None,
+        help="Whose kNN decides each row's columns: teacher (method) or the base "
+        "student. Row temperatures stay the teacher's; student requires "
+        "--relation_target direct and --row_weight 0",
+    )
+    parser.add_argument(
+        "--row_centers",
+        choices=["teacher", "random"],
+        default=None,
+        help="Columns L_row scores each extra anchor against: the teacher's "
+        "neighbours in the pool (method) or as many random pool columns",
     )
     parser.add_argument(
         "--batch_local",
@@ -261,6 +277,8 @@ def get_config(method: str, args):
         "support_policy",
         "relation_target",
         "knn_mode",
+        "neighbor_source",
+        "row_centers",
         "batch_sampler",
         "holdout_edge_frac",
         "holdout_seed",

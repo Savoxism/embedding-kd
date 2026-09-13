@@ -6,7 +6,6 @@ private methods on the distiller, all of them reachable only through
 `if distill_method == "ggpkd"`.
 """
 
-
 import numpy as np
 import pandas as pd
 import torch
@@ -18,6 +17,7 @@ from src.distill.geometry import build_probe_index
 from src.distill.steps.ggpkd import step
 from src.ggpkd import GGPKDCandidateSampler, build_or_load_ggpkd_artifact
 from src.ggpkd.policy import FIXED_BANDWIDTH_TEMP
+from src.ggpkd.student_neighbors import encode_base_student
 from src.methods.spec import MethodSpec
 
 
@@ -110,6 +110,24 @@ def build_data(ctx, df: pd.DataFrame, teacher_cls: torch.Tensor):
     cosine pass in `build_or_load_ggpkd_artifact` has the teacher's VRAM to
     itself. (It only ever reads the cached embeddings, never the model.)
     """
+    cfg = ctx.config
+    neighbor_kwargs = {}
+    if cfg.neighbor_source == "student":
+        # The label carries everything that decides the student's embeddings, so
+        # the artifact is keyed on it and never loads under the teacher's name.
+        texts = df[ctx.ggpkd_anchor_column].astype(str).tolist()
+        neighbor_kwargs = {
+            "neighbor_source": (
+                f"student:{cfg.student_model_name}:cls:max_length={cfg.max_length}"
+            ),
+            "neighbor_embeddings": lambda: encode_base_student(
+                cfg.student_model_name,
+                ctx.tok_student,
+                texts,
+                cfg.max_length,
+                device=ctx.device_s,
+            ),
+        }
     ctx.ggpkd_artifact = build_or_load_ggpkd_artifact(
         teacher_embeddings=teacher_cls,
         cache_path=ctx.config.ggpkd_cache_path,
@@ -122,6 +140,7 @@ def build_data(ctx, df: pd.DataFrame, teacher_cls: torch.Tensor):
         holdout_edge_frac=ctx.config.holdout_edge_frac,
         holdout_seed=ctx.config.holdout_seed,
         source_ids=source_ids(ctx, df),
+        **neighbor_kwargs,
     )
     ctx.ggpkd_sampler = GGPKDCandidateSampler(
         artifact=ctx.ggpkd_artifact,
@@ -225,9 +244,10 @@ def build_criterion(ctx, config):
     # off-graph still carries a real teacher opinion). The bank is therefore
     # passed whenever some term reads it, and `calibration_mode` alone decides
     # whether scale r=0 is in the objective.
-    needs_bank = config.calibration_mode != "none" or config.relation_target in (
-        "direct",
-        "ambient_only",
+    needs_bank = (
+        config.calibration_mode != "none"
+        or config.relation_target in ("direct", "ambient_only")
+        or config.row_centers == "random"
     )
     criterion = GGPKDDistillation(
         teacher_embeddings=ctx.teacher_cls_all if needs_bank else None,
@@ -235,6 +255,7 @@ def build_criterion(ctx, config):
         direct_temp=config.direct_temp,
         row_weight=config.row_weight,
         relation_target=config.relation_target,
+        row_centers=config.row_centers,
         row_temps=artifact["row_temps"],
         transition_neighbors=artifact["transition_neighbors"],
         transition_probs=artifact["transition_probs"],
@@ -244,7 +265,9 @@ def build_criterion(ctx, config):
         f"batch_local={config.batch_local}, "
         f"calibration={config.calibration_mode}, "
         f"relation_target={config.relation_target}, "
-        f"row_weight={config.row_weight}"
+        f"row_weight={config.row_weight}, "
+        f"row_centers={config.row_centers}, "
+        f"neighbor_source={config.neighbor_source}"
     )
     return criterion
 

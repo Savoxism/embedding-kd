@@ -16,12 +16,12 @@
 # anchor has degree exactly graph_k, so it draws the same number from the same
 # distribution as corpus_uniform. Verified identical for 400/400 anchors.
 #
-#   GRAPH_K=50 GPUS=0,1,2,3 bash scripts/exp/stage2b_ladder.sh
-#   GRAPH_K=50 PAIRS=qwen3_0_6b_to_minilmv2_h384,qwen3_4b_to_bert_base \
-#       bash scripts/exp/stage2b_ladder.sh
+#   GRAPH_K=200 GPUS=0,1,2,3 bash scripts/exp/stage2b_ladder.sh
+#   GRAPH_K=200 ARMS=student_knn bash scripts/exp/stage2b_ladder.sh   # re-run one arm
 #
-# Env: PAIRS (both paper pairs), SUPPORT_SIZE (batch_size - 1), STUDENT_KNN=0
-#      to drop that arm, plus the usual GPUS/SEEDS/DRY_RUN.
+# Env: PAIRS (qwen3_0_6b_to_minilmv2_h384 only; the second pair is out of scope),
+#      SUPPORT_SIZE (batch_size - 1), STUDENT_KNN=0 to drop that arm, ARMS, plus
+#      the usual GPUS/SEEDS/DRY_RUN.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
@@ -40,7 +40,7 @@ BATCH_SIZE="${BATCH_SIZE:-64}"
 # and the baseline has exactly batch_size - 1 available.
 SUPPORT_SIZE="${SUPPORT_SIZE:-$((BATCH_SIZE - 1))}"
 STUDENT_KNN="${STUDENT_KNN:-1}"
-PAIRS="${PAIRS:-qwen3_0_6b_to_minilmv2_h384,qwen3_4b_to_bert_base}"
+PAIRS="${PAIRS:-qwen3_0_6b_to_minilmv2_h384}"
 
 MINIMAL="$(minimal_objective)"
 BUDGET="--diffusion_quota $SUPPORT_SIZE"
@@ -56,7 +56,6 @@ for pair in "${pair_list[@]}"; do
     echo "##############################################"
     echo "# ladder -- pair $pair"
     echo "##############################################"
-    corpus_key="$(basename "${CORPUS%.*}")"
 
     graph_spec="teacher|$CORPUS|$(method_graph_flags)"
     arms="in_batch|teacher|ggpkd|--batch_local $MINIMAL
@@ -65,34 +64,16 @@ teacher|teacher|ggpkd|$MINIMAL $BUDGET
 "
 
     if [[ "$STUDENT_KNN" == "1" ]]; then
-        # Neighbour sets from the *base student's* embeddings, targets still read
-        # off the teacher bank (`--relation_target direct`, already in MINIMAL),
-        # so which texts are compared is the only difference that matters.
+        # Columns from the *base student's* kNN, ranked by the student, so the
+        # quota takes the student's own top-$SUPPORT_SIZE. The artifact keeps the
+        # teacher's row temperatures and MINIMAL reads targets off the teacher
+        # bank, so which texts are compared is the only difference.
         #
-        # Caveat, and the reason experiments.md lists this arm as needing a
-        # patch: the artifact's row temperatures are then the student's spans,
-        # not the teacher's, so the arm differs in temperature as well. Report it
-        # as indicative until that is fixed.
-        student_graph="$CACHE_ROOT/$pair/$corpus_key/graph_student_knn_k$GRAPH_K.pt"
-        if [[ ! -f "$student_graph" ]]; then
-            if [[ "${DRY_RUN:-0}" == "1" ]]; then
-                # Building it means downloading the student and encoding the whole
-                # corpus, which a dry run must not do.
-                note "would build the base-student kNN graph at $student_graph"
-            else
-                echo "Building the base-student kNN graph for $pair (graph_k=$GRAPH_K)"
-                mkdir -p "$(dirname "$student_graph")"
-                "$PYTHON_BIN" "$SCRIPT_DIR/student_graph.py" \
-                    --pair "$pair" --train-data "$CORPUS" \
-                    --out "$student_graph" --graph-k "$GRAPH_K"
-            fi
-        fi
-        warn "student_knn also inherits the student's row temperatures; one-factor"
-        warn "  form needs the patch in experiments.md. Reporting it as indicative."
-        # Its "build" is a no-op: the artifact exists and the runner's prepare
-        # step loads it because the metadata matches.
+        # The graph is built by the runner's own prepare step: its cache key
+        # carries the neighbour source, so it can no longer load the teacher
+        # graph under this name -- which is what the 2026-09-12 sweep did.
         graph_spec+="
-student_knn|$CORPUS|$(method_graph_flags)"
+student_knn|$CORPUS|$(method_graph_flags) --neighbor_source student"
         arms+="student_knn|student_knn|ggpkd|$MINIMAL $BUDGET
 "
     fi

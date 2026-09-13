@@ -11,10 +11,16 @@
 #                  winner and is not repeated.
 #
 #   C.2 (12 runs)  raise the count by enlarging the batch. in_batch and full
-#                  GGPKD at B in {256, 1024}; B=64 comes from Stage 2B.
-#                  This is the arm that can hurt us -- in the old runs the
-#                  baseline climbed with batch size and at B=256 passed the
-#                  teacher arm. Run it before a reviewer asks.
+#                  GGPKD at B in {256, 1024}. B=64 is C.1's in_batch_random and
+#                  Stage 0's full run -- the same objectives, not Stage 2B's
+#                  minimal one. This is the arm that can hurt us -- in the old
+#                  runs the baseline climbed with batch size and at B=256 passed
+#                  the teacher arm. Run it before a reviewer asks.
+#
+#                  Optimizer steps are matched to B=64 (STEP_MATCH=1): epochs
+#                  scale with B/64. At a fixed 5 epochs the 2026-09-12 sweep gave
+#                  B=1024 65 updates against 1055 at B=64, and both arms fell
+#                  with B for that reason alone.
 #
 # Both halves are run on the SHIPPED objective, not the minimal one: the claim
 # that matters is about the method we publish, and C.1 is where the calibration
@@ -36,6 +42,9 @@ cd "$STAGE_REPO_ROOT"
 
 HALF="${HALF:-both}"
 BATCH_SIZES="${BATCH_SIZES:-256,1024}"
+STEP_MATCH="${STEP_MATCH:-1}"
+BASE_BATCH=64
+BASE_EPOCHS="${EPOCHS:-5}"
 GRAPH_SPEC_BASE="main|$CORPUS|$(method_graph_flags)"
 overall=0
 
@@ -76,15 +85,25 @@ if [[ "$HALF" == "both" || "$HALF" == "c2" ]]; then
     warn "  teacher arm's 72.83. Counts 0.06 -> 0.26 -> 1.06 explain the climb,"
     warn "  not the overtake. If it survives, state the claim per unit of"
     warn "  encoder work rather than per step."
-    echo
     C2_ARMS=""
     IFS=',' read -r -a sizes <<< "$BATCH_SIZES"
     for b in "${sizes[@]}"; do
         [[ "$b" =~ ^[0-9]+$ ]] || { echo "batch size must be an integer, got: $b" >&2; exit 2; }
-        C2_ARMS+="in_batch_b$b|main|ggpkd|--batch_local --relation_target direct --batch_size $b
-full_b$b|main|ggpkd|--batch_size $b
+        epoch_flag=""
+        if [[ "$STEP_MATCH" == "1" ]]; then
+            if (( b % BASE_BATCH != 0 )); then
+                echo "STEP_MATCH needs a multiple of $BASE_BATCH, got B=$b" >&2
+                exit 2
+            fi
+            epochs=$(( BASE_EPOCHS * b / BASE_BATCH ))
+            epoch_flag="--epochs $epochs"
+            note "B=$b: $epochs epochs, the optimizer steps of $BASE_EPOCHS epochs at B=$BASE_BATCH"
+        fi
+        C2_ARMS+="in_batch_b$b|main|ggpkd|--batch_local --relation_target direct --batch_size $b $epoch_flag
+full_b$b|main|ggpkd|--batch_size $b $epoch_flag
 "
     done
+    echo
     run_half "stage2c2_batch_size" "$C2_ARMS" || overall=$?
 fi
 

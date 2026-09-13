@@ -37,16 +37,22 @@ part.
 
 ---
 
-## Code that must be patched first
+## Code patches (done 2026-09-13)
 
-Three experiments cannot run as the code stands. All three are small and all
-three are load-bearing, so they are the first thing to write.
+| experiment | switch | what it changes, and nothing else |
+|---|---|---|
+| 1.1 random row centers | `--row_centers random` | each L_row row keeps its width $|\Omega_j|$; its columns are drawn uniformly from the pool and its target is the teacher softmax at $\tau_j$ over them |
+| 1.3 uniform target | `--relation_target uniform` | the transition row's columns and $\tau_i$, equal mass on every retrieved neighbour (L_rel and L_row) |
+| B `student_knn` | `--neighbor_source student` | columns from the base student's kNN; teacher row temperatures; the neighbour source is part of the artifact's cache key |
 
-| experiment | what is missing |
-|---|---|
-| 1.1 random row centers | the row loss always uses $\mathcal N_j \cap \mathcal P_B$; there is no switch to draw the extra anchors' columns at random |
-| 1.3 uniform target | `relation_target` has no value that treats every retrieved neighbour as equally similar |
-| B `student_knn` | the existing arm builds *both* the neighbour set and the temperatures from the student, so it is not one-factor |
+**The 2026-09-12 sweep has three invalid tables.** `student_knn` trained on the
+teacher graph: the old helper wrote `graph_student_knn_k200.pt`, the runner looked
+for `graph_student_knn.pt`, found nothing, and built the teacher graph under that
+name — its scores equal the teacher arm's to two decimals. C.2 ran every batch
+size for 5 epochs, so B = 1024 took 65 optimizer steps against 1055 at B = 64.
+D had no full-objective arm under its own holdout. All three are fixed in the
+scripts; re-run them with `ARMS=` (see `scripts/exp/README.md`). The study now
+runs on `qwen3_0_6b_to_minilmv2_h384` only.
 
 ---
 
@@ -174,10 +180,11 @@ against unrelated texts sits *on top of* the batch-local baseline, not between i
 and ours.
 
 `student_knn` is the most interesting arm in the paper — the ANCE comparison made
-empirical, and the one a reviewer thinks of unprompted. It needs the patch above:
-build the neighbour sets from the base student's embeddings but read the targets
-from the teacher (`--relation_target direct`), so that *which texts are compared*
-is the only difference.
+empirical, and the one a reviewer thinks of unprompted. `--neighbor_source
+student` builds the neighbour sets from the base student's embeddings, ranked by
+the student so the quota takes the student's own top-63, keeps the teacher's row
+temperatures, and reads the targets from the teacher (`--relation_target
+direct`), so that *which texts are compared* is the only difference.
 
 **`rewired` has been dropped: it is now the same arm as `corpus_uniform`.** It
 drew each anchor's *own degree* of random texts, which differed from a fixed
@@ -188,8 +195,9 @@ distribution; verified identical for 400/400 anchors. The "row shape" control it
 used to provide has moved to 1.3, which varies target values over a fixed set of
 texts — the only sense in which shape is still free.
 
-4 arms × 3 seeds × 2 teacher→student pairs. The second pair is what turns C1
-from "holds in our setting" into a claim.
+4 arms × 3 seeds on `qwen3_0_6b_to_minilmv2_h384`. The 2026-09-12 sweep also ran
+`qwen3_4b_to_bert_base` (teacher 77.32, corpus_uniform 75.53, in_batch 75.08);
+that pair is out of scope from here on.
 
 Cost columns (`cost_*`, `train_encoded_texts_cum`) fall out of the same runs and
 carry C3 for free. Report `corpus_uniform`'s encode count beside ours: an
@@ -219,7 +227,11 @@ statistics for every objective and a raw spread proves nothing. The signature is
 related texts; ours should not move.
 
 **C.2 — raise the count by enlarging the batch (12 runs).** `in_batch` and full
-GGPKD at $B \in \{256, 1024\}$, 3 seeds ($B = 64$ comes from B). A predicts the
+GGPKD at $B \in \{256, 1024\}$, 3 seeds. $B = 64$ is C.1's `in_batch_random` and
+Stage 0's full run, which are the same objectives — not B's minimal one. Epochs
+scale with $B/64$ (20 and 80), so every arm takes ~1050 optimizer steps. At a
+fixed 5 epochs both arms fell with $B$ (full 75.94 → 74.86 → 72.21) because
+B = 1024 got 65 updates, which says nothing about the count. A predicts the
 baseline's count rises linearly in $B$ and needs $B \approx 4{,}270$ to reach
 ours, so it should climb and not arrive.
 
@@ -237,11 +249,13 @@ curve: score against informative comparisons per anchor, with both ways of buyin
 the count landing on it and ours at the right-hand end for a fraction of the
 encoder cost.
 
-### D. Component ablation on the shipped objective (9 runs)
+### D. Component ablation on the shipped objective (12 runs)
 
-Minus both terms at once, plus `--knn_mode mutual` and
-`--truncation_tolerance 0.01`; the single-term arms come from Stage 1 and the
-full model from Stage 0. Those last two defaults were changed on a structural
+The full objective, minus both terms at once, plus `--knn_mode mutual` and
+`--truncation_tolerance 0.01`, all under the same 20 % holdout; the single-term
+arms come from Stage 1. The `full` arm is the reference: Stage 0's full run
+withheld nothing, so reading these arms against it confounds every gap with the
+holdout. Those last two defaults were changed on a structural
 argument and have never been measured on the full objective — the ladder put
 mutual 0.36 below directed on the minimal one, which is suggestive and not
 enough.
@@ -253,12 +267,15 @@ whether the student reproduces them anyway. This is the coverage half of the
 story and the only evidence that the method generalises past the comparisons it
 was shown.
 
-**It currently fails**, and the probe is broken: `pair_order` returns exactly
-1.0000 for every arm, and Spearman puts the teacher arms (0.70–0.73) *below* the
-arms that never saw related pairs (0.79–0.85). Fix the metric, then split
-Spearman into within-neighbourhood and across-neighbourhood — the hypothesis is
-that teacher arms sharpen local structure and compress the global cosine scale,
-and a single mixed Spearman rewards the flat arms for exactly that.
+**The probe was broken; it is fixed.** `pair_order` drew its columns from
+`range(n_anchors)` on an `[anchors, corpus]` matrix, so a sparse held-out mask
+left zero or one triplet and read exactly 1.0 or 0.0. Columns are now drawn from
+each anchor's own admissible set. Spearman puts the teacher arms (0.70–0.73)
+*below* the arms that never saw related pairs (0.79–0.85) on the pooled number;
+`spearman_anchor` now reports the mean per-anchor correlation beside it — the
+hypothesis is that teacher arms sharpen local structure and compress the global
+cosine scale, and a single pooled Spearman rewards the flat arms for exactly
+that. The probe scores against `graph_main_holdout.pt` by name.
 
 If the split does not rescue it, report the negative and drop "global geometry"
 from the title. A negative we report costs far less than one a reviewer finds.

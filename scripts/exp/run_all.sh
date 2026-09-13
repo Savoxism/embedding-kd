@@ -116,8 +116,7 @@ Training done. Two things left, neither of which needs a GPU:
      scripts/exp/coverage.py.
   E  held-out pairs, post-hoc on Stage 2D's checkpoints:
          bash scripts/exp/exp3_heldout_geometry.sh
-     That probe is currently broken -- pair_order returns exactly 1.0000 for
-     every arm. Fix it before reading the numbers.
+     Read spearman_anchor beside the pooled spearman.
 ==============================================================
 EOF
 fi

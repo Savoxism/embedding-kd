@@ -109,30 +109,13 @@ for PAIR in "${PAIR_LIST[@]}"; do
     PAIR_ARMS="$ARMS_SPEC"
 
     if [[ "$WITH_STUDENT_KNN" == "1" ]]; then
-        # The student-kNN arm needs a graph built from the *base* student's own
-        # embeddings. It is built here rather than declared in GRAPH_SPEC because
-        # it comes from a different encoder entirely, and it is opt-in because it
-        # carries a caveat the other arms do not: the artifact's row bandwidths
-        # tau_i are then the student's, not the teacher's, so this arm differs
-        # from the teacher arms in temperature as well as in support. Read it as
-        # indicative, and say so in the paper.
-        STUDENT_GRAPH="$CACHE_ROOT/$PAIR/$CORPUS_KEY/graph_student_knn.pt"
-        if [[ ! -f "$STUDENT_GRAPH" ]]; then
-            echo "Building the base-student kNN graph for $PAIR"
-            "$PYTHON_BIN" "$SCRIPT_DIR/student_graph.py" \
-                --pair "$PAIR" \
-                --train-data "$CORPUS" \
-                --out "$STUDENT_GRAPH" \
-                --holdout-frac "$HOLDOUT_FRAC" \
-                --holdout-seed "$HOLDOUT_SEED"
-        fi
-        # It joins as its own graph key whose "build" is a no-op: the artifact
-        # already exists on disk, and the runner's prepare step will load it
-        # rather than rebuild, because the metadata matches.
+        # Columns from the *base* student's kNN, teacher row temperatures and
+        # teacher-bank targets: the runner's prepare step builds it, keyed on the
+        # neighbour source so it cannot load a teacher graph under this name.
         PAIR_ARMS+="
 student_knn|student_knn|ggpkd|$MINIMAL $BUDGET"
         GRAPH_SPEC_PAIR="$GRAPH_SPEC
-student_knn|$CORPUS|--knn_mode mutual $HOLDOUT_FLAGS"
+student_knn|$CORPUS|--knn_mode directed --neighbor_source student $HOLDOUT_FLAGS"
     else
         GRAPH_SPEC_PAIR="$GRAPH_SPEC"
     fi

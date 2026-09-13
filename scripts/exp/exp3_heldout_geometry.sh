@@ -22,13 +22,15 @@
 #                  pairs the teacher calls unrelated, so it tracks anisotropy.
 #                  Reported for completeness, not as the headline.
 #
-# By default it scores the most recent E2 run. Point RUN_ROOT at another one to
-# score that instead, or at an exp1/exp4 run root to score those checkpoints with
-# the same instrument.
+# By default it scores the most recent Stage 2D run against graph_main_holdout.pt,
+# the directed holdout graph: its rows contain every column the mutual and
+# truncated arms could have been trained on, so the relation sets exclude
+# supervision for all four arms. Point RUN_ROOT / SOURCE_EXPERIMENT /
+# ARTIFACT_KEY elsewhere to score another family with the same instrument.
 #
 # Usage:
 #   bash scripts/exp/exp3_heldout_geometry.sh
-#   RUN_ROOT=results/exp2_support/<run_id>/<pair> bash scripts/exp/exp3_heldout_geometry.sh
+#   SOURCE_EXPERIMENT=exp2_support ARTIFACT_KEY=directed bash scripts/exp/exp3_heldout_geometry.sh
 
 set -euo pipefail
 
@@ -37,7 +39,8 @@ REPO_ROOT="$(cd -- "$SCRIPT_DIR/../.." && pwd)"
 cd "$REPO_ROOT"
 
 EXPERIMENT="exp3_heldout"
-SOURCE_EXPERIMENT="${SOURCE_EXPERIMENT:-exp2_support}"
+SOURCE_EXPERIMENT="${SOURCE_EXPERIMENT:-stage2d_components}"
+ARTIFACT_KEY="${ARTIFACT_KEY:-main_holdout}"
 PYTHON_BIN="${PYTHON_BIN:-$REPO_ROOT/.venv/bin/python}"
 CACHE_ROOT="${CACHE_ROOT:-$REPO_ROOT/cache/exp}"
 CORPUS="${CORPUS:-data/train_set/merged_3_data_5k_each.csv}"
@@ -82,12 +85,11 @@ for run_dir in "${RUN_DIRS[@]}"; do
     # so the evaluation reconstructs exactly the split the build used. The mutual
     # graph is the one every arm but teacher_topk used, and the holdout is
     # identical across keys because it is a function of the pair and the seed.
-    artifact="$CACHE_ROOT/$pair/$CORPUS_KEY/graph_mutual.pt"
+    # Named, never guessed: `find | head -1` used to pick whichever graph sorted
+    # first, which decides both the supervised set and the held-out edges.
+    artifact="$CACHE_ROOT/$pair/$CORPUS_KEY/graph_$ARTIFACT_KEY.pt"
     if [[ ! -f "$artifact" ]]; then
-        artifact="$(find "$CACHE_ROOT/$pair/$CORPUS_KEY" -name 'graph_*.pt' | head -1)"
-    fi
-    if [[ ! -f "$artifact" ]]; then
-        echo "No graph artifact for $pair under $CACHE_ROOT/$pair/$CORPUS_KEY" >&2
+        echo "No graph artifact $artifact; set ARTIFACT_KEY to the graph this run tree trained on" >&2
         exit 2
     fi
     out="$OUT_DIR/heldout_geometry_$pair.csv"

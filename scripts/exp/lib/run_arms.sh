@@ -159,6 +159,46 @@ run_arms() {
         return 2
     fi
 
+    # ARMS=a,b runs a subset of a stage without editing its spec -- a fixed arm or
+    # a missing one. Export merges by (pair, arm, seed), so the new rows replace
+    # the old ones in the same results.csv. Graphs no kept arm uses are not built.
+    if [[ -n "${ARMS:-}" ]]; then
+        local -a wanted=() kept_labels=() kept_graphs=() kept_methods=() kept_flags=()
+        local -a used_keys=() used_corpora=() used_flags=()
+        IFS=',' read -r -a wanted <<< "$ARMS"
+        for value in "${wanted[@]}"; do
+            index=-1
+            for ((i = 0; i < ${#arm_labels[@]}; i++)); do
+                [[ "${arm_labels[$i]}" == "$value" ]] && index=$i
+            done
+            if (( index < 0 )); then
+                echo "ARMS names an arm this sweep does not define: $value (have: ${arm_labels[*]})" >&2
+                return 2
+            fi
+            kept_labels+=("${arm_labels[$index]}")
+            kept_graphs+=("${arm_graphs[$index]}")
+            kept_methods+=("${arm_methods[$index]}")
+            kept_flags+=("${arm_flags[$index]}")
+        done
+        arm_labels=("${kept_labels[@]}")
+        arm_graphs=("${kept_graphs[@]}")
+        arm_methods=("${kept_methods[@]}")
+        arm_flags=("${kept_flags[@]}")
+        for ((i = 0; i < ${#graph_keys[@]}; i++)); do
+            for value in "${arm_graphs[@]}"; do
+                if [[ "$value" == "${graph_keys[$i]}" ]]; then
+                    used_keys+=("${graph_keys[$i]}")
+                    used_corpora+=("${graph_corpora[$i]}")
+                    used_flags+=("${graph_flags[$i]}")
+                    break
+                fi
+            done
+        done
+        graph_keys=("${used_keys[@]}")
+        graph_corpora=("${used_corpora[@]}")
+        graph_flags=("${used_flags[@]}")
+    fi
+
     local total_runs=$(( ${#arm_labels[@]} * ${#seeds[@]} ))
     echo "$experiment sweep $run_id"
     echo "  pair:   $pair"
@@ -234,7 +274,9 @@ run_arms() {
         printf 'seeds\t%s\n' "${seeds[*]}"
         printf 'gpus\t%s\n' "${gpu_list[*]}"
         printf 'cache_root\t%s\n' "$cache_root"
-        printf 'commit\t%s\n' "$(git -C "$repo_root" rev-parse HEAD 2>/dev/null || echo unknown)"
+        # A synced copy on the cluster is not a git checkout; the launcher's
+        # SOURCE_COMMIT is then the only record of which code ran.
+        printf 'commit\t%s\n' "$(git -C "$repo_root" rev-parse HEAD 2>/dev/null || echo "${SOURCE_COMMIT:-unknown}")"
     } > "$run_root/run_config.tsv"
 
     # GGPKD deduplicates identical anchors before caching; pointwise KD does not.
@@ -456,7 +498,7 @@ run_arms() {
     fi
 
     "$python_bin" "$export_script" "$run_root" --experiment "$experiment" \
-        --pair "$pair" --status-file "$status_dir" --out "$csv_out"
+        --pair "$pair" --status-file "$status_dir" --out "$csv_out" --merge
     mkdir -p "$(dirname "$pointer")"
     local pointer_tmp
     pointer_tmp="$(mktemp "${pointer}.tmp.XXXXXX")"

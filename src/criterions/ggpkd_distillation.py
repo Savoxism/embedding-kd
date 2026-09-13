@@ -13,9 +13,14 @@ from src.ggpkd.policy import (
 # "diffusion" is accepted as the former spelling of "transition": at the
 # method's single hop the target is the teacher transition row, and calling it
 # a diffusion target named a composition step that no longer runs.
-RELATION_TARGETS = ("transition", "direct", "ambient_only")
+# "uniform" is the Stage 1.3 control: the transition row's columns and per-row
+# temperature, with equal mass on every retrieved neighbour.
+RELATION_TARGETS = ("transition", "direct", "ambient_only", "uniform")
 RELATION_TARGET_ALIASES = {"diffusion": "transition"}
 CALIBRATION_MODES = ("none", "pool")
+# Which columns L_row scores an extra anchor j against: the teacher's N_j inside
+# the pool (method), or the same number of pool columns drawn at random (1.1b).
+ROW_CENTERS = ("teacher", "random")
 
 
 def _assert_finite_tensors(named_tensors: Sequence[tuple[str, torch.Tensor]]) -> None:
@@ -300,8 +305,7 @@ class GGPKDDistillation(nn.Module):
         ),
         "sym_weight": "L_sym has been removed",
         "use_ambient_scale": (
-            "one switch now: pass calibration_mode='none' to delete the r=0 "
-            "scale"
+            "one switch now: pass calibration_mode='none' to delete the r=0 scale"
         ),
         "direct_student_temp": (
             "tied to direct_temp: the ambient scale uses one temperature on both "
@@ -327,6 +331,7 @@ class GGPKDDistillation(nn.Module):
         row_temps: torch.Tensor | None = None,
         relation_target: str = "transition",
         calibration_mode: str | None = None,
+        row_centers: str = "teacher",
         **kwargs,
     ):
         super().__init__()
@@ -407,6 +412,18 @@ class GGPKDDistillation(nn.Module):
                 f"relation_target={self.relation_target!r} reads the teacher bank; "
                 "pass teacher_embeddings"
             )
+        if row_centers not in ROW_CENTERS:
+            raise ValueError(
+                f"row_centers must be one of {ROW_CENTERS}, got {row_centers!r}"
+            )
+        if row_centers == "random" and teacher_embeddings is None:
+            # A random column carries no transition mass, so its target can only
+            # be the teacher's cosine at tau_j -- which needs the bank.
+            raise ValueError(
+                "row_centers='random' scores L_row against the teacher bank; "
+                "pass teacher_embeddings"
+            )
+        self.row_centers = row_centers
         # Two separate questions that used to have one answer.
         #
         #   *Is the bank here?*  -> `use_direct`. It decides what a target can be
@@ -530,7 +547,9 @@ class GGPKDDistillation(nn.Module):
             batch_size, pool_size, dtype=torch.int32, device=teacher_probs.device
         )
         own_counts.scatter_add_(
-            1, occurrence_positions, torch.ones_like(occurrence_positions, dtype=torch.int32)
+            1,
+            occurrence_positions,
+            torch.ones_like(occurrence_positions, dtype=torch.int32),
         )
         own_mask = own_counts > 0
 
@@ -613,6 +632,38 @@ class GGPKDDistillation(nn.Module):
         probs = F.softmax(logits, dim=-1)
         return torch.where(empty, torch.zeros_like(probs), probs)
 
+    @torch.no_grad()
+    def _random_row_columns(
+        self,
+        source_positions: torch.Tensor,
+        source_nodes: torch.Tensor,
+        column_idx: torch.Tensor,
+        allowed: torch.Tensor,
+        row_tau: torch.Tensor | float,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """Stage 1.1b: each supervised row keeps its width and loses its columns.
+
+        Row j is scored over as many pool columns as the teacher exposed for it,
+        drawn uniformly from the pool (never j itself), against the teacher's
+        softmax at tau_j over those columns. On the real columns that softmax is
+        exactly the renormalized transition row, so the only thing this arm
+        changes is *which* columns row j is compared against.
+        """
+        rows, pool_size = allowed.shape
+        device = allowed.device
+        counts = allowed.sum(dim=1)
+        scores = torch.rand(rows, pool_size, device=device)
+        scores[torch.arange(rows, device=device), source_positions] = -1.0
+        kth = scores.sort(dim=1, descending=True).values.gather(
+            1, (counts - 1).clamp_min(0).view(-1, 1)
+        )
+        random_allowed = scores >= kth
+        logits = (
+            self._teacher_cosine_logits(source_nodes, column_idx, shared=True) / row_tau
+        )
+        logits = logits.masked_fill(~random_allowed, float("-inf"))
+        return random_allowed, F.softmax(logits, dim=-1)
+
     def _compute_row_loss(
         self,
         pool_norm: torch.Tensor,
@@ -693,6 +744,14 @@ class GGPKDDistillation(nn.Module):
             row_tau = self.row_temps.index_select(0, source_nodes).view(-1, 1)
         else:
             row_tau = self.graph_temp
+        if self.row_centers == "random":
+            allowed, target = self._random_row_columns(
+                source_positions, source_nodes, column_idx, allowed, row_tau
+            )
+        if self.relation_target == "uniform":
+            target = allowed.to(target.dtype) / allowed.sum(dim=1, keepdim=True).to(
+                target.dtype
+            )
         logits = (pool_norm.index_select(0, source_positions) @ pool_norm.t()) / row_tau
         logits = logits.masked_fill(~allowed, float("-inf"))
         log_probs = F.log_softmax(logits, dim=-1)
@@ -932,6 +991,15 @@ class GGPKDDistillation(nn.Module):
             weights = weights.sum(dim=0, keepdim=True)
             temps = temps[:1]
             n_scales = 1
+        elif self.relation_target == "uniform":
+            # Same columns, same tau_i, same weight as the transition target; only
+            # the values change, to equal mass on every retrieved neighbour in the
+            # anchor's draw. If this ties the method, how similar the teacher says
+            # each neighbour is carries nothing beyond which texts it retrieved.
+            support = target > 0
+            target = support.to(target.dtype) / support.sum(
+                dim=-1, keepdim=True
+            ).clamp_min(1).to(target.dtype)
 
         # Scale r=0: the teacher's own similarity over every scored column. Without
         # it, every column outside the anchor's diffusion pool carries target 0 and

@@ -2,9 +2,10 @@ from src.criterions.ggpkd_distillation import (
     CALIBRATION_MODES,
     RELATION_TARGET_ALIASES,
     RELATION_TARGETS,
+    ROW_CENTERS,
 )
 from src.data_utils.batch_samplers import BATCH_SAMPLERS
-from src.ggpkd.graph_builder import KNN_MODES
+from src.ggpkd.graph_builder import KNN_MODES, NEIGHBOR_SOURCES
 from src.ggpkd.policy import SUPPORT_POLICIES
 
 from .base_config import BaseConfig
@@ -84,6 +85,8 @@ class GGPKDConfig(BaseConfig):
     #                 is diffusion_quota=0 with the whole quota spent on uniform
     #                 corpus draws, which needs no flag of its own.
     support_policy = "topk"
+    # relation_target also accepts `uniform` (Stage 1.3): the transition row's
+    # columns and tau_i with equal mass on every retrieved neighbour.
     relation_target = "transition"
     # Calibration is orthogonal to the graph target (S4). `pool` is the method:
     # the ambient KL over the current batch's shared candidate union. `none`
@@ -91,6 +94,16 @@ class GGPKDConfig(BaseConfig):
     calibration_mode = "pool"
     knn_mode = "directed"
     batch_local = False
+    # neighbor_source whose kNN decides a row's columns (Stage 2B student_knn):
+    #                 teacher (method) or student -- the *base* student's own
+    #                 top-k. The row temperatures stay the teacher's and the
+    #                 target must come from the teacher bank, so the compared
+    #                 texts are the only thing that moves.
+    # row_centers     which columns L_row scores an extra anchor j against
+    #                 (Stage 1.1b): teacher (method, N_j within the pool) or
+    #                 random (as many pool columns, drawn uniformly).
+    neighbor_source = "teacher"
+    row_centers = "teacher"
 
     # ---- Motivation study: batch composition, edge holdout -------------------
     # These three exist for the controlled studies in scripts/exp/ and sit at the
@@ -398,3 +411,39 @@ class GGPKDConfig(BaseConfig):
                     "row_weight=0: L_row's row set is derived from the support "
                     "draw, so leaving it on makes the arms differ in two things"
                 )
+        if self.neighbor_source not in NEIGHBOR_SOURCES:
+            raise ValueError(
+                f"neighbor_source must be one of {NEIGHBOR_SOURCES}, "
+                f"got {self.neighbor_source!r}"
+            )
+        if self.neighbor_source == "student":
+            # The artifact's rows are the student's neighbours ranked by the
+            # student. Only the columns may come from there: a transition target
+            # or an L_row row would be the student's opinion, not the teacher's.
+            if self.relation_target != "direct":
+                raise ValueError(
+                    "neighbor_source='student' takes only the compared texts from "
+                    "the student, so its targets must be read off the teacher bank: "
+                    f"it requires relation_target='direct'; got {self.relation_target!r}"
+                )
+            if self.row_weight > 0:
+                raise ValueError(
+                    "neighbor_source='student' requires row_weight=0: L_row would "
+                    "supervise the student's own transition rows"
+                )
+            if self.support_policy in ("corpus_uniform", "rewired"):
+                raise ValueError(
+                    f"support_policy={self.support_policy!r} never reads the graph, "
+                    "so neighbor_source='student' would change nothing"
+                )
+        if self.row_centers not in ROW_CENTERS:
+            raise ValueError(
+                f"row_centers must be one of {ROW_CENTERS}, got {self.row_centers!r}"
+            )
+        if self.row_centers == "random" and (self.row_weight <= 0 or self.batch_local):
+            # The switch only reaches L_row; without the term the arm would be a
+            # silent duplicate of the row_weight=0 deletion arm.
+            raise ValueError(
+                "row_centers='random' changes L_row only, so it needs row_weight > 0 "
+                "and a graph (not batch_local)"
+            )

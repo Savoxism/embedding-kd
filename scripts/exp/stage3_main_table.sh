@@ -25,13 +25,15 @@ cd "$STAGE_REPO_ROOT"
 
 # Pair 1 is Stage 0's winner; naming it here only to be explicit about the reuse.
 STAGE0_PAIR="${STAGE0_PAIR:-qwen3_0_6b_to_minilmv2_h384}"
-PAIRS="${PAIRS:-qwen3_4b_to_bert_base,bge_m3_to_minilmv2_h768}"
+# Empty by default: the study is run on the Stage 0 pair only, whose main-table
+# row is Stage 0's winner. Set PAIRS to add the other two back.
+PAIRS="${PAIRS:-}"
 WITH_ROW_SWEEP="${WITH_ROW_SWEEP:-0}"
 ROW_WEIGHTS="${ROW_WEIGHTS:-0,0.5,2}"
 
 echo "Stage 3F: main table at graph_k=$GRAPH_K"
 note "pair $STAGE0_PAIR comes from Stage 0 and is not repeated"
-note "pairs run here: ${PAIRS//,/, }"
+note "pairs run here: ${PAIRS:-none}"
 echo
 
 overall=0

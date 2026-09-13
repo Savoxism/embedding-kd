@@ -138,7 +138,9 @@ def probe_geometry(
             # Uniformity on the hypersphere (Wang and Isola 2020), lower is better.
             "uniformity": float(
                 torch.log(
-                    torch.exp(-2.0 * (normalized[left] - normalized[right]).pow(2).sum(-1))
+                    torch.exp(
+                        -2.0 * (normalized[left] - normalized[right]).pow(2).sum(-1)
+                    )
                     .mean()
                     .clamp_min(1e-30)
                 )
@@ -272,31 +274,54 @@ def pair_order_accuracy(
     space -- a uniform collapse destroys ordering, while it can leave an
     unweighted cosine RMSE looking healthy.
 
-    Triplets are drawn uniformly from the admissible pairs of each anchor, so with
-    `restrict` set to the held-out mask this reads ordering among relations that
-    were never supervised. `margin` drops teacher ties, whose ordering is noise
-    and would otherwise be counted as a coin flip against the student.
-    """
-    n = teacher_cos.size(0)
-    if n < 3:
-        return 0.0
-    generator = torch.Generator().manual_seed(seed)
-    anchors = torch.randint(0, n, (n_triplets,), generator=generator)
-    left = torch.randint(0, n, (n_triplets,), generator=generator)
-    right = torch.randint(0, n, (n_triplets,), generator=generator)
+    Rows are anchors and columns are candidates, so the matrices may be
+    rectangular ([anchors, corpus]). Each triplet picks an anchor row with at
+    least two admissible columns, then draws both columns from *that row's*
+    admissible set, so with `restrict` set to the held-out mask this reads
+    ordering among relations that were never supervised. Without `restrict` a
+    square matrix excludes its diagonal. `margin` drops teacher ties, whose
+    ordering is noise and would otherwise be counted as a coin flip against the
+    student. Returns NaN when no triplet can be formed.
 
-    keep = (anchors != left) & (anchors != right) & (left != right)
-    if restrict is not None:
-        keep = keep & restrict[anchors, left] & restrict[anchors, right]
+    Columns used to be drawn from range(n_rows): on an [anchors, corpus] matrix
+    that sampled only the first n_rows corpus columns, so a sparse held-out mask
+    left zero or one surviving triplet and the metric read exactly 1.0 or 0.0.
+    """
+    n_rows, n_cols = teacher_cos.shape
+    if restrict is None:
+        restrict = torch.ones(n_rows, n_cols, dtype=torch.bool)
+        if n_rows == n_cols:
+            restrict.fill_diagonal_(False)
+    restrict = restrict.to(device="cpu", dtype=torch.bool)
+    counts = restrict.sum(dim=1)
+    rows = torch.nonzero(counts >= 2, as_tuple=False).flatten()
+    if rows.numel() == 0:
+        return float("nan")
+    # Row-major order, so row r's admissible columns are one contiguous slice.
+    flat_columns = torch.nonzero(restrict, as_tuple=False)[:, 1]
+    offsets = torch.cumsum(counts, dim=0) - counts
+
+    generator = torch.Generator().manual_seed(seed)
+    anchors = rows[torch.randint(0, rows.numel(), (n_triplets,), generator=generator)]
+    width = counts[anchors]
+
+    def _draw() -> torch.Tensor:
+        pick = (torch.rand(n_triplets, generator=generator) * width).long()
+        return flat_columns[offsets[anchors] + torch.minimum(pick, width - 1)]
+
+    left, right = _draw(), _draw()
+    keep = left != right
     if not bool(keep.any()):
-        return 0.0
-    anchors, left, right = anchors[keep], left[keep], right[keep]
+        return float("nan")
+    device = teacher_cos.device
+    anchors = anchors[keep].to(device)
+    left, right = left[keep].to(device), right[keep].to(device)
 
     teacher_gap = teacher_cos[anchors, left] - teacher_cos[anchors, right]
     student_gap = student_cos[anchors, left] - student_cos[anchors, right]
     decided = teacher_gap.abs() > margin
     if not bool(decided.any()):
-        return 0.0
+        return float("nan")
     agree = (teacher_gap[decided] > 0) == (student_gap[decided] > 0)
     return float(agree.double().mean())
 

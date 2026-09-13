@@ -1,7 +1,7 @@
 import hashlib
 import json
 import os
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from pathlib import Path
 
 import numpy as np
@@ -206,6 +206,8 @@ def _compute_topk_cosine(
 
 
 KNN_MODES = ("mutual", "directed", "symmetrized")
+# Whose kNN decides a row's columns. `student` is the ladder's student_knn arm.
+NEIGHBOR_SOURCES = ("teacher", "student")
 
 
 def _reverse_adjacency(
@@ -637,6 +639,7 @@ _METADATA_KEYS = (
     "artifact_version",
     "teacher_fingerprint",
     "source_fingerprint",
+    "neighbor_source",
 )
 
 
@@ -647,6 +650,7 @@ _METADATA_DEFAULTS = {
     "knn_mode": "mutual",
     "holdout_edge_frac": 0.0,
     "holdout_seed": 0,
+    "neighbor_source": "teacher",
 }
 
 
@@ -675,7 +679,18 @@ def build_or_load_ggpkd_artifact(
     knn_mode: str = "directed",
     holdout_edge_frac: float = 0.0,
     holdout_seed: int = 0,
+    neighbor_source: str = "teacher",
+    neighbor_embeddings: Callable[[], torch.Tensor] | None = None,
 ) -> dict:
+    """Build the transition graph, or load it when every metadata key matches.
+
+    `neighbor_source` other than "teacher" is a label for another encoder whose
+    kNN decides each row's columns; `neighbor_embeddings` produces that encoder's
+    corpus embeddings and is only called on a build. The row temperatures stay
+    the teacher's own bandwidths, so the neighbour set is the only thing that
+    differs from the teacher graph. The label is part of the cache key: an
+    artifact built from another encoder must never load under the teacher's name.
+    """
     n_items = int(teacher_embeddings.size(0))
     # Sized from graph_k only when an arm actually draws hard negatives. The
     # method draws none, and an unconditional pool cost every build a top-2k
@@ -712,6 +727,7 @@ def build_or_load_ggpkd_artifact(
         "artifact_version": ARTIFACT_VERSION,
         "teacher_fingerprint": _fingerprint(teacher_embeddings),
         "source_fingerprint": hashlib.sha1(source_array.tobytes()).hexdigest(),
+        "neighbor_source": str(neighbor_source),
     }
 
     artifact_path = Path(cache_path)
@@ -738,9 +754,32 @@ def build_or_load_ggpkd_artifact(
     topk_device = (
         torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
     )
-    top_indices, top_scores = _compute_topk_cosine(
-        teacher_embeddings, k=topk_for_graph, device=topk_device
-    )
+    teacher_top_scores = None
+    if neighbor_source == "teacher":
+        top_indices, top_scores = _compute_topk_cosine(
+            teacher_embeddings, k=topk_for_graph, device=topk_device
+        )
+    else:
+        if neighbor_embeddings is None:
+            raise ValueError(
+                f"neighbor_source={neighbor_source!r} needs neighbor_embeddings to "
+                "build the graph from"
+            )
+        neighbor_matrix = neighbor_embeddings()
+        if int(neighbor_matrix.size(0)) != n_items:
+            raise ValueError(
+                f"neighbor embeddings have {int(neighbor_matrix.size(0))} rows but "
+                f"there are {n_items} teacher embeddings"
+            )
+        # Columns and their order come from the other encoder; the teacher's
+        # top-k is read only for its bandwidths.
+        top_indices, top_scores = _compute_topk_cosine(
+            neighbor_matrix, k=topk_for_graph, device=topk_device
+        )
+        _, teacher_top_scores = _compute_topk_cosine(
+            teacher_embeddings, k=graph_k, device=topk_device
+        )
+        metadata["neighbor_fingerprint"] = _fingerprint(neighbor_matrix)
     # Recorded but deliberately NOT in _METADATA_KEYS. The teacher fingerprint
     # cannot see this: the same embeddings top-k'd on CPU and on GPU give the same
     # hash but slightly different neighbour lists, because the two reduction orders
@@ -765,6 +804,22 @@ def build_or_load_ggpkd_artifact(
         holdout_edge_frac=holdout_edge_frac,
         holdout_seed=holdout_seed,
     )
+    if teacher_top_scores is not None and not fixed_bandwidth:
+        # The rows above were ranked and softmaxed by the other encoder, which is
+        # what the candidate draw selects on. The temperature the criterion reads
+        # back is the teacher's, exactly as in the teacher graph.
+        neighbor_temps = row_temps
+        row_temps = _knn_bandwidths(teacher_top_scores, graph_k)
+        temp_stats.update(
+            {
+                "row_temp_mean": float(row_temps.mean()),
+                "row_temp_min": float(row_temps.min()),
+                "row_temp_max": float(row_temps.max()),
+                "row_temp_p50": float(np.median(row_temps)),
+                "degenerate_bandwidth_rows": int((row_temps <= MIN_BANDWIDTH).sum()),
+                "neighbor_row_temp_p50": float(np.median(neighbor_temps)),
+            }
+        )
     graph_log_path, graph_stats = _write_knn_graph_log(
         log_dir=log_dir,
         row_neighbors=row_neighbors,
@@ -780,9 +835,7 @@ def build_or_load_ggpkd_artifact(
     )
     graph_stats.update(temp_stats)
     graph_stats.update(pool_stats)
-    graph_stats.update(
-        _target_sharpness_stats(pool_indices, pool_probs)
-    )
+    graph_stats.update(_target_sharpness_stats(pool_indices, pool_probs))
 
     max_degree = max(len(neighbors) for neighbors in row_neighbors)
     transition_neighbors = np.full((n_items, max_degree), -1, dtype=np.int64)

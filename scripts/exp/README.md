@@ -32,19 +32,24 @@ curve from `coverage.py`, and **E** scores Stage 2D's checkpoints post-hoc with
 else — `GPUS`, `SEEDS`, `PAIR`/`PAIRS`, `CORPUS`, `CACHE_ROOT`, `DRY_RUN` — is
 forwarded to the stage scripts.
 
-### Three arms cannot run yet
+### Re-running part of a stage
 
-`stage1_deletions.sh` checks `main.py --help` and skips what the code does not
-support rather than failing one run at a time:
+`ARMS=a,b` runs only those arms of a stage and builds only the graphs they use.
+Export merges by `(experiment, pair, arm, seed)`, so the new rows replace the old
+ones in the same `results.csv` instead of overwriting the file. The pieces the
+2026-09-12 sweep got wrong, on `qwen3_0_6b_to_minilmv2_h384`:
 
-| arm | missing |
-|---|---|
-| `row_centers_random` | a switch that draws the extra anchors' columns at random |
-| `uniform_target` | a `relation_target` that is uniform over the retrieved neighbours |
-| `student_knn` (one-factor) | the arm currently takes its row temperatures from the student too |
+```bash
+export GRAPH_K=200 GPUS=0,1,2,3,4,5,6,7 JOBS_PER_GPU=2
+ARMS=row_centers_random,uniform_target bash scripts/exp/stage1_deletions.sh
+ARMS=student_knn                       bash scripts/exp/stage2b_ladder.sh
+HALF=c2                                bash scripts/exp/stage2c_dose_response.sh
+ARMS=full                              bash scripts/exp/stage2d_components.sh
+bash scripts/exp/exp3_heldout_geometry.sh   # needs Stage 2D's full run tree
+```
 
-The first two are skipped automatically. The third runs, with a warning, as an
-indicative arm.
+Stage 2D's graph keys are now `*_holdout`, so its old run tree scores against
+`graph_main_holdout.pt` too (`RUN_ROOT=<old 2D root>`).
 
 ---
 

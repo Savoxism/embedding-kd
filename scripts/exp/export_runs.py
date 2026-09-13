@@ -38,7 +38,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
-from scripts.ggpkd.run_metrics import (  # noqa: E402
+from scripts.ggpkd.run_metrics import (
     IN_DOMAIN,
     OUT_DOMAIN,
     TASK_LABELS,
@@ -60,6 +60,8 @@ CONFIG_FIELDS = (
     "diffusion_quota",
     "graph_k",
     "knn_mode",
+    "neighbor_source",
+    "row_centers",
     "holdout_edge_frac",
     "holdout_seed",
     "epochs",
@@ -166,13 +168,19 @@ def collect(run_dir: Path) -> dict[str, object]:
         config = blob.get("config", {}) or {}
         artifact_meta = (blob.get("artifact") or {}).get("metadata", {}) or {}
         row["run_id"] = blob.get("run_id", "")
-        row["git_commit"] = (blob.get("git") or {}).get("commit", "")
+        # run.json records the commit as `sha`; reading `commit` left the column
+        # empty for every run.
+        git = blob.get("git") or {}
+        row["git_commit"] = git.get("sha") or git.get("commit") or ""
     else:
         status = "no_manifest"
 
     # The artifact's own metadata wins for the graph fields: the config records
     # what was requested, the artifact records what was actually trained against.
-    merged_config = {**config, **{k: v for k, v in artifact_meta.items() if k in CONFIG_FIELDS}}
+    merged_config = {
+        **config,
+        **{k: v for k, v in artifact_meta.items() if k in CONFIG_FIELDS},
+    }
     row.update(_flatten("cfg_", merged_config, CONFIG_FIELDS))
 
     stats_path = run_dir / "run_stats.json"
@@ -193,7 +201,11 @@ def collect(run_dir: Path) -> dict[str, object]:
     records = _records(run_dir / "metrics.jsonl")
     epochs = _records(run_dir / "epochs.jsonl")
     final = next(
-        (record for record in reversed(records) if isinstance(record.get("test"), dict)),
+        (
+            record
+            for record in reversed(records)
+            if isinstance(record.get("test"), dict)
+        ),
         None,
     )
     if final is None:
@@ -225,6 +237,19 @@ def collect(run_dir: Path) -> dict[str, object]:
     return row
 
 
+def _row_key(row: dict) -> tuple[str, str, str, str]:
+    return tuple(str(row.get(name, "")) for name in ("experiment", "pair", "arm", "seed"))
+
+
+def _run_config(root: Path) -> dict[str, str]:
+    """The runner's run_config.tsv as a dict; empty when absent."""
+    path = root / "run_config.tsv"
+    if not path.is_file():
+        return {}
+    pairs = (line.split("\t", 1) for line in path.read_text(encoding="utf-8").splitlines())
+    return {key: value for key, value in (p for p in pairs if len(p) == 2)}
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("run_root", help="<RESULT_BASE>/<RUN_ID> written by a runner")
@@ -241,6 +266,13 @@ def main() -> int:
         default=None,
         help="where the runner wrote per-task exit codes; defaults to <root>/status",
     )
+    parser.add_argument(
+        "--merge",
+        action="store_true",
+        help="keep rows already in --out whose (experiment, pair, arm, seed) this "
+        "export does not produce, instead of overwriting the file. A stage that "
+        "runs several pairs, or re-runs one arm, then adds to one table",
+    )
     args = parser.parse_args()
 
     root = Path(args.run_root)
@@ -249,6 +281,9 @@ def main() -> int:
         raise SystemExit(f"no runs/ under {root}")
 
     status_dir = Path(args.status_file) if args.status_file else root / "status"
+    fallback_commit = _run_config(root).get("commit", "")
+    if fallback_commit == "unknown":
+        fallback_commit = ""
     rows = []
     for seed_dir in sorted(runs_dir.glob("*/seed_*")):
         arm = seed_dir.parent.name
@@ -268,10 +303,25 @@ def main() -> int:
                 exit_file.read_text(encoding="utf-8"), encoding="utf-8"
             )
         row.update(collect(seed_dir))
+        if not row.get("git_commit"):
+            row["git_commit"] = fallback_commit
         rows.append(row)
 
     if not rows:
         raise SystemExit(f"no run directories under {runs_dir}")
+    fresh = rows
+
+    out_path = Path(args.out)
+    if args.merge and out_path.is_file():
+        with out_path.open(newline="", encoding="utf-8") as handle:
+            previous = list(csv.DictReader(handle))
+        replaced = {_row_key(row) for row in rows}
+        kept = [row for row in previous if _row_key(row) not in replaced]
+        rows = kept + rows
+        print(
+            f"merge: kept {len(kept)} existing rows, replaced "
+            f"{len(previous) - len(kept)}, added {len(fresh)}"
+        )
 
     # Union of keys, with the identifying columns pinned to the front so the CSV
     # is readable without a spreadsheet.
@@ -279,17 +329,21 @@ def main() -> int:
     rest = sorted({key for row in rows for key in row} - set(lead))
     fieldnames = lead + rest
 
-    out_path = Path(args.out)
     out_path.parent.mkdir(parents=True, exist_ok=True)
-    with out_path.open("w", newline="", encoding="utf-8") as handle:
+    tmp_path = out_path.with_name(out_path.name + ".tmp")
+    with tmp_path.open("w", newline="", encoding="utf-8") as handle:
         writer = csv.DictWriter(handle, fieldnames=fieldnames, extrasaction="ignore")
         writer.writeheader()
         for row in rows:
             writer.writerow(row)
+    tmp_path.replace(out_path)
 
-    ok = sum(1 for row in rows if row["status"] == "ok")
-    print(f"wrote {out_path}: {len(rows)} runs, {ok} ok, {len(rows) - ok} incomplete")
-    for row in rows:
+    ok = sum(1 for row in fresh if row["status"] == "ok")
+    print(
+        f"wrote {out_path}: {len(fresh)} runs, {ok} ok, {len(fresh) - ok} incomplete"
+        f" ({len(rows)} rows in file)"
+    )
+    for row in fresh:
         if row["status"] != "ok":
             print(f"  {row['arm']} seed {row['seed']}: {row['status']}")
     return 0

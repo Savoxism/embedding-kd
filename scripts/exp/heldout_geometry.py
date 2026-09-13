@@ -27,7 +27,10 @@ this runs on any checkpoint after the fact:
 
 Three metrics per set, and no more. Each answers something a reader can name:
 
-    spearman       rank correlation of teacher and student cosines over the set.
+    spearman       rank correlation of teacher and student cosines over the set,
+                   pooled across anchors -- so it also reads the global cosine
+                   scale. `spearman_anchor` is the mean per-anchor correlation,
+                   which reads only each anchor's own ordering.
     knn_recall     of the teacher's top-k inside the set, how many the student
                    also ranks top-k *across every unsupervised column*. The wide
                    ranking pool is the point: scored only among themselves, five
@@ -246,6 +249,10 @@ def score(
         # orders these particular pairs the way the teacher does, so they read the
         # set directly.
         "spearman": _spearman(flat_teacher, flat_student),
+        # The pooled number above mixes every anchor's pairs, so an arm that
+        # sharpens each neighbourhood but compresses the global scale reads worse
+        # than a flat one. This one asks only about each anchor's own ordering.
+        "spearman_anchor": _per_anchor_spearman(teacher_rows, student_rows, mask),
         "pair_order": pair_order_accuracy(
             teacher_rows, student_rows, restrict=mask, n_triplets=200000, seed=seed
         ),
@@ -253,6 +260,22 @@ def score(
         # neighbours among everything it could have ranked instead.
         "knn_recall": _positive_recall(teacher_rows, student_rows, mask, pool, knn_k),
     }
+
+
+def _per_anchor_spearman(
+    teacher_rows: torch.Tensor,
+    student_rows: torch.Tensor,
+    mask: torch.Tensor,
+    min_pairs: int = 3,
+) -> float:
+    """Mean over anchors of the Spearman between that anchor's own pairs."""
+    values = []
+    for row in range(mask.size(0)):
+        columns = mask[row]
+        if int(columns.sum()) < min_pairs:
+            continue
+        values.append(_spearman(teacher_rows[row][columns], student_rows[row][columns]))
+    return float(np.mean(values)) if values else float("nan")
 
 
 def _positive_recall(
@@ -409,6 +432,7 @@ def main() -> int:
         "pairs_per_anchor",
         "pool_per_anchor",
         "spearman",
+        "spearman_anchor",
         "knn_recall",
         "pair_order",
         "knn_k",
