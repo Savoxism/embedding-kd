@@ -21,10 +21,12 @@ run_arms() {
     local run_root="$result_base/$run_id"
     local csv_out="${CSV_OUT:-$repo_root/runs/$experiment/results.csv}"
     local dry_run="${DRY_RUN:-0}"
+    local jobs_per_gpu="${JOBS_PER_GPU:-1}"
     local graph_spec="${GRAPH_SPEC:-}"
     local arms_spec="${ARMS_SPEC:-}"
     local -a seeds=()
     local -a gpu_list=()
+    local -a physical_gpu_list=()
     local -a graph_keys=()
     local -a graph_corpora=()
     local -a graph_flags=()
@@ -47,6 +49,7 @@ run_arms() {
         echo "No nvidia-smi and no GPUS override; set GPUS explicitly" >&2
         return 2
     fi
+    physical_gpu_list=("${gpu_list[@]}")
 
     if [[ ! -x "$python_bin" ]]; then
         echo "Project virtual-environment Python is not executable: $python_bin" >&2
@@ -58,6 +61,10 @@ run_arms() {
     fi
     if (( ${#seeds[@]} == 0 || ${#gpu_list[@]} == 0 )); then
         echo "At least one seed and one GPU are required" >&2
+        return 2
+    fi
+    if [[ ! "$jobs_per_gpu" =~ ^[1-9][0-9]*$ ]]; then
+        echo "JOBS_PER_GPU must be a positive integer, got: $jobs_per_gpu" >&2
         return 2
     fi
     for value in "${seeds[@]}"; do
@@ -83,6 +90,14 @@ run_arms() {
             fi
             break
         done
+    done
+
+    # Treat each repetition as an independent scheduler slot. This is opt-in so
+    # existing runs remain one-process-per-GPU, while large-memory accelerators
+    # can keep more than one small training process resident when requested.
+    gpu_list=()
+    for ((j = 0; j < jobs_per_gpu; j++)); do
+        gpu_list+=("${physical_gpu_list[@]}")
     done
 
     while IFS='|' read -r key corpus flags; do
@@ -150,7 +165,8 @@ run_arms() {
     echo "  arms:   ${#arm_labels[@]}"
     echo "  graphs: ${#graph_keys[@]}"
     echo "  seeds:  ${seeds[*]}"
-    echo "  gpus:   ${gpu_list[*]}"
+    echo "  gpus:   ${physical_gpu_list[*]}"
+    echo "  slots:  ${#gpu_list[@]} ($jobs_per_gpu job(s) per GPU)"
     echo "  runs:   $total_runs"
     echo "  root:   $run_root"
 
